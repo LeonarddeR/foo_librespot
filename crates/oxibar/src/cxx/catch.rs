@@ -141,13 +141,37 @@ struct Caught {
 	destructor: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
+unsafe extern "C" {
+	// vcruntime's per-thread pointer to the C++ exception record being handled, the one a `throw;`
+	// rethrows. msvcp's std::current_exception reads it the same way.
+	fn __current_exception() -> *mut *mut c_void;
+}
+
+fn is_cxx_record(record: &EXCEPTION_RECORD) -> bool {
+	record.ExceptionCode == CXX_EXCEPTION_CODE
+		&& record.NumberParameters == 4
+		&& EH_MAGIC_NUMBERS.contains(&record.ExceptionInformation[0])
+}
+
 /// Decides whether `record` is a C++ exception `try_host` should catch, and reads it.
 unsafe fn inspect(record: &EXCEPTION_RECORD) -> Option<Caught> {
-	if record.ExceptionCode != CXX_EXCEPTION_CODE
-		|| record.NumberParameters != 4
-		|| !EH_MAGIC_NUMBERS.contains(&record.ExceptionInformation[0])
-	{
+	if !is_cxx_record(record) {
 		return None;
+	}
+	let mut record = record;
+	// A bare `throw;` raises a record with no object and no ThrowInfo. C++ frame handlers then
+	// handle vcruntime's current exception instead; so must we, or the rethrow escapes try_host
+	// and aborts in catch_unwind.
+	let rethrown = record.ExceptionInformation[1] == 0 && record.ExceptionInformation[2] == 0;
+	if rethrown {
+		let current = unsafe { *__current_exception() }.cast::<EXCEPTION_RECORD>();
+		if current.is_null() {
+			return None;
+		}
+		record = unsafe { &*current };
+		if !is_cxx_record(record) {
+			return None;
+		}
 	}
 	let object = record.ExceptionInformation[1] as *mut c_void;
 	let throw_info = record.ExceptionInformation[2] as *const ThrowInfo;
@@ -192,7 +216,10 @@ unsafe fn inspect(record: &EXCEPTION_RECORD) -> Option<Caught> {
 			None => format!("non-standard C++ exception {type_name}"),
 		};
 		let unwind = (*throw_info).unwind();
-		let destructor = (unwind != 0)
+		// A rethrown object still belongs to the catch block that rethrew it, and vcruntime may
+		// destroy it when that block's frame unwinds. Destroying it here too would be a double
+		// destruction; leaving it at worst leaks one exception object.
+		let destructor = (unwind != 0 && !rethrown)
 			.then(|| std::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void)>(at(unwind)));
 		Some(Caught {
 			exception: HostException {
@@ -314,6 +341,58 @@ mod tests {
 		#[allow(clippy::cast_possible_wrap)]
 		let access_violation = 0xC0000005_u32 as i32;
 		assert_eq!(status.code(), Some(access_violation));
+	}
+
+	unsafe extern "C" {
+		// vcruntime's per-thread "exception being handled", which a C++ `throw;` rethrows.
+		fn __current_exception() -> *mut *mut std::ffi::c_void;
+	}
+
+	#[test]
+	fn catches_rethrow_of_the_current_exception() {
+		use crate::bindings::Windows::Win32::{
+			EXCEPTION_NONCONTINUABLE, EXCEPTION_RECORD, RaiseException,
+		};
+		use crate::cxx::rtti::{image_base, throw_info};
+		use crate::cxx::throw::{StdException, destroy_exception};
+
+		// Inside a C++ catch block, vcruntime records the exception being handled. `throw;` then
+		// raises a record with no object and no ThrowInfo, meaning "that exception again".
+		let mut object = StdException::new("again");
+		let mut information = [0usize; 15];
+		information[0] = 0x19930520;
+		information[1] = (&raw mut object) as usize;
+		information[2] = std::ptr::from_ref(throw_info(ExceptionKind::Aborted)) as usize;
+		information[3] = image_base();
+		#[allow(clippy::cast_sign_loss)]
+		let original = EXCEPTION_RECORD {
+			ExceptionCode: 0xE06D7363,
+			ExceptionFlags: EXCEPTION_NONCONTINUABLE as u32,
+			ExceptionRecord: std::ptr::null_mut(),
+			ExceptionAddress: std::ptr::null_mut(),
+			NumberParameters: 4,
+			ExceptionInformation: information,
+		};
+		let result = unsafe {
+			let current = __current_exception();
+			let saved = *current;
+			*current = (&raw const original).cast_mut().cast();
+			#[allow(clippy::cast_sign_loss)]
+			let result = try_host(|| {
+				RaiseException(
+					0xE06D7363,
+					EXCEPTION_NONCONTINUABLE as u32,
+					Some(&[0x19930520, 0, 0, 0]),
+				);
+			});
+			*current = saved;
+			result
+		};
+		let error = result.unwrap_err();
+		assert_eq!(error.kind, ExceptionKind::Aborted);
+		assert_eq!(error.message, "again");
+		// The catch block that rethrew owns the original object, so the test destroys it.
+		unsafe { destroy_exception(&raw mut object) };
 	}
 
 	#[test]

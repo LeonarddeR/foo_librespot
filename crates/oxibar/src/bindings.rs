@@ -1,5 +1,21 @@
 pub mod Windows {
 	pub mod Win32 {
+		#[inline]
+		pub unsafe fn RaiseException(
+			dwexceptioncode: u32,
+			dwexceptionflags: u32,
+			lparguments: Option<&[usize]>,
+		) {
+			windows_core::link!("kernel32.dll" "system" fn RaiseException(dwexceptioncode : u32, dwexceptionflags : u32, nnumberofarguments : u32, lparguments : *const usize));
+			unsafe {
+				RaiseException(
+					dwexceptioncode,
+					dwexceptionflags,
+					lparguments.map_or(0, |slice| slice.len().try_into().unwrap()),
+					lparguments.map_or(core::ptr::null(), |slice| slice.as_ptr()),
+				)
+			}
+		}
 		#[cfg(any(target_arch = "arm64ec", target_arch = "x86_64"))]
 		#[inline]
 		pub unsafe fn RtlUnwindEx(
@@ -474,6 +490,7 @@ pub mod Windows {
 			pub NonVolatileRegisters: PBYTE,
 		}
 		pub type EXCEPTION_DISPOSITION = i32;
+		pub const EXCEPTION_NONCONTINUABLE: i32 = 1;
 		#[repr(C)]
 		#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 		pub struct EXCEPTION_RECORD {
