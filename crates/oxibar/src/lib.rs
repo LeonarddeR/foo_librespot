@@ -11,7 +11,9 @@ pub mod abi;
 	clippy::nursery
 )]
 mod bindings;
+pub mod boundary;
 pub mod cxx;
+pub mod error;
 pub mod guid;
 pub mod service;
 #[cfg(test)]
