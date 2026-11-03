@@ -33,6 +33,25 @@ jobs:
       - name: cargo fmt -- --check
         run: cargo fmt --all -- --check
 
+  bindings:
+    name: Check generated bindings
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/bindgen
+      - name: Regenerate bindings
+        run: cargo bindgen --locked
+      - name: Check generated files are current
+        run: git diff --exit-code
+
   actionlint:
     name: Lint workflows
     runs-on: ubuntu-latest
@@ -122,7 +141,7 @@ jobs:
   # Single required check for branch rulesets; fails if any needed job failed or was skipped.
   all-checks-pass:
     name: Check if all checks pass
-    needs: [style, actionlint, clippy, build, test]
+    needs: [style, bindings, actionlint, clippy, build, test]
     if: always()
     runs-on: ubuntu-latest
     steps:

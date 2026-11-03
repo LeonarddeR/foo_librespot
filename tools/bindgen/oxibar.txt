@@ -1,0 +1,9 @@
+--out crates/oxibar/src/bindings.rs
+
+--filter
+    CONTEXT
+    DISPATCHER_CONTEXT
+    EXCEPTION_DISPOSITION
+    EXCEPTION_RECORD
+    RtlUnwindEx
+    UNWIND_HISTORY_TABLE

@@ -1,0 +1,11 @@
+[package]
+name = "oxibar_bindgen"
+description = "Regenerates oxibar's committed windows-bindgen output"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+windows-bindgen = "0.100.0"

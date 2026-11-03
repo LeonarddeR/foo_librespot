@@ -36,3 +36,10 @@ Do not re-litigate these without new evidence.
 - ReplayGain values may arrive only after a track's first play.
 - `panic = "unwind"`, never `abort`: a panic must reach foobar2000 as a C++ exception.
 - The dynamic CRT, as foobar2000 itself uses. No `+crt-static`.
+
+## Win32 bindings
+
+- Every Win32 item comes from the committed, generated `crates/oxibar/src/bindings.rs`. Never edit it by hand.
+- `tools/bindgen/` is a standalone crate with its own lockfile, not a workspace member. To use a new API, add it to `--filter` in `tools/bindgen/oxibar.txt` and run `cargo bindgen`. CI fails if the committed output is stale.
+- `windows-core` is the only Windows runtime crate; the `windows` umbrella crate is not used.
+- CRT and vcruntime functions (`_CxxThrowException`, `__std_exception_copy`, `free`, …) are not in the metadata; declare them in a local `extern` block, as Rust's std does.

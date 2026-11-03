@@ -30,3 +30,8 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
+      - name: Run cargo-deny (bindgen tool)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: tools/bindgen/Cargo.toml
+          command: check advisories bans licenses sources

@@ -12,3 +12,6 @@ include = ["src/**", "Cargo.toml", "sdk-license.txt"]
 
 [lints]
 workspace = true
+
+[dependencies]
+windows-core = { workspace = true }

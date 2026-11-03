@@ -1,6 +1,17 @@
 //! Rust bindings for writing foobar2000 2.x components without C++.
 
 pub mod abi;
+#[allow(
+	non_snake_case,
+	non_camel_case_types,
+	non_upper_case_globals,
+	dead_code,
+	clippy::all,
+	clippy::pedantic,
+	clippy::nursery
+)]
+mod bindings;
+pub mod cxx;
 pub mod guid;
 pub mod service;
 
