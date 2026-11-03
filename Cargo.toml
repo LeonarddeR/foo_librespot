@@ -10,6 +10,7 @@ license = "MIT"
 repository = "https://github.com/LeonarddeR/foo_librespot"
 
 [workspace.dependencies]
+libloading = "0.9"
 windows-core = "0.100.0"
 
 [workspace.lints.clippy]

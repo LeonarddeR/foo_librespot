@@ -34,3 +34,19 @@ Run the crashing part in a child process:
 2. In the real test, start `std::env::current_exe()` with `--exact <full test path> --ignored --nocapture` and `OXIBAR_CHILD=1`, and assert its exit code, for example `0xC0000005` for an access violation.
 
 `cxx::catch::tests::access_violation_is_not_caught` is the example.
+
+## Testing a component DLL
+
+`oxibar::testing` (the `testing` feature) is a fake foobar2000.
+`FakeApi` plays the host: it registers services, records console output and reports a temporary profile folder.
+`LoadedComponent::load` loads a built component DLL into it the way foobar2000 does: it calls `foobar2000_get_interface`, `set_library_path` and `services_init(true)`, and can then create every registered service.
+Tests call the services through their vtables, so they exercise the same code paths foobar2000 does.
+
+The DLL must be built before the tests run, because nextest does not build it:
+
+```
+cargo build --workspace --all-features
+cargo nextest run --workspace --all-features
+```
+
+Set `FOO_OXITONE_DLL_PATH` to test a DLL from somewhere else, such as a CI artifact.

@@ -15,3 +15,8 @@ workspace = true
 
 [dependencies]
 windows-core = { workspace = true }
+libloading = { workspace = true, optional = true }
+
+[features]
+# A fake foobar2000 host and a DLL loader, for testing components.
+testing = ["dep:libloading"]

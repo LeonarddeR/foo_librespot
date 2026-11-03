@@ -203,6 +203,11 @@ impl<T: ServiceImpl> Singleton<T> {
 	pub fn value(&'static self) -> &'static T {
 		&self.0.value
 	}
+
+	/// The singleton as a raw service pointer, for building static tables.
+	pub(crate) const fn as_raw(&'static self) -> *const ServiceBase {
+		(&raw const self.0).cast()
+	}
 }
 
 #[cfg(test)]

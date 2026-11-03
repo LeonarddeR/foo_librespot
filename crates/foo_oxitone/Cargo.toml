@@ -1,0 +1,21 @@
+[package]
+name = "foo_oxitone"
+description = "A test-tone foobar2000 component that proves the OxiBar bindings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+oxibar = { path = "../oxibar" }
+
+[dev-dependencies]
+oxibar = { path = "../oxibar", features = ["testing"] }
+
+[lints]
+workspace = true

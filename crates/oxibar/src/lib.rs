@@ -12,12 +12,22 @@ pub mod abi;
 )]
 mod bindings;
 pub mod boundary;
+pub mod component;
+pub mod console;
 pub mod cxx;
 pub mod error;
 pub mod guid;
+pub mod host;
+pub mod initquit;
 pub mod service;
+pub mod strings;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 #[cfg(test)]
 mod testing_support;
+
+/// This version of OxiBar.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The `FOOBAR2000_TARGET_VERSION` of the SDK these bindings are transcribed from (2.0).
 pub const SDK_TARGET_VERSION: u32 = 81;
