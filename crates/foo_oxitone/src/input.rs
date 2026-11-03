@@ -4,12 +4,36 @@ use std::ffi::CStr;
 
 use oxibar::abort::Abort;
 use oxibar::audio_chunk::{AudioChunk, CHANNEL_MASK_STEREO};
+use oxibar::console;
+use oxibar::cxx::ExceptionKind;
 use oxibar::error::{Error, Result};
 use oxibar::file_info::FileInfo;
+use oxibar::filesystem::get_stats;
 use oxibar::guid::Guid;
+use oxibar::host::host;
 use oxibar::input::{Input, OpenReason};
 
 use crate::tone::{CHUNK_FRAMES, DURATION_SECONDS, SAMPLE_RATE, Tone, ToneSpec, has_scheme, parse};
+
+/// Makes foobar2000 throw one of its own C++ exceptions, by asking its filesystem about a file
+/// that does not exist, and returns it as the error to throw back: proof that OxiBar can catch
+/// foobar2000's exceptions and rethrow them with their type intact.
+fn host_check(abort: &Abort) -> Error {
+	let profile = host().profile_path();
+	let profile = if profile.contains("://") { profile } else { format!("file://{profile}") };
+	let path = format!("{}\\oxitone-hostcheck-missing.wav", profile.trim_end_matches(['\\', '/']));
+	match get_stats(&path, abort) {
+		Err(error) => {
+			let type_name = error.host_type.as_deref().unwrap_or("an exception");
+			console::print(&format!(
+				"foo_oxitone: caught {type_name} from foobar2000: {}",
+				error.message
+			));
+			error
+		}
+		Ok(_) => Error::new(ExceptionKind::Io, format!("hostcheck: {path} unexpectedly exists")),
+	}
+}
 
 /// One opened `oxitone://` track.
 pub struct ToneInput {
@@ -26,13 +50,12 @@ impl Input for ToneInput {
 		has_scheme(path)
 	}
 
-	fn open(path: &str, _reason: OpenReason, _abort: &Abort) -> Result<Self> {
+	fn open(path: &str, _reason: OpenReason, abort: &Abort) -> Result<Self> {
 		match parse(path) {
 			Some(ToneSpec::Sine { hz }) => {
 				Ok(Self { tone: Tone::new(hz), buffer: Vec::with_capacity(CHUNK_FRAMES * 2) })
 			}
-			// Completed when the host round trip is added.
-			Some(ToneSpec::HostCheck) => Err(Error::not_implemented()),
+			Some(ToneSpec::HostCheck) => Err(host_check(abort)),
 			#[cfg(feature = "test-panic")]
 			Some(ToneSpec::Panic) => panic!("oxitone://panic was opened"),
 			None => Err(Error::unsupported_format(format!("not a valid oxitone:// path: {path}"))),

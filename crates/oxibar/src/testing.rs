@@ -12,11 +12,12 @@ use crate::abi::componentversion::ComponentVersionVtbl;
 use crate::abi::console::{self, ConsoleReceiverVtbl};
 use crate::abi::file::FileStats;
 use crate::abi::file_info::{FileInfo as RawFileInfo, FileInfoVtbl, ReplayGainInfo};
+use crate::abi::filesystem::{self, FilesystemVtblPrefix};
 use crate::abi::initquit::InitQuitVtbl;
 use crate::abi::input::{DecoderVtbl, InputEntryVtbl};
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 use crate::abi::string_base::{StringBase, StringBaseVtbl};
-use crate::cxx::{HostException, try_host};
+use crate::cxx::{ExceptionKind, HostException, try_host};
 use crate::guid::Guid;
 use crate::host;
 use crate::service::{ServiceImpl, ServiceObject, ServicePtr, new_service};
@@ -765,6 +766,100 @@ unsafe extern "C-unwind" fn abort_is_aborting(this: *const AbortCallback) -> boo
 
 unsafe extern "C-unwind" fn abort_get_event(_this: *const AbortCallback) -> *mut c_void {
 	std::ptr::null_mut()
+}
+
+/// A filesystem that claims `file://` paths and finds nothing there: its `get_stats` throws
+/// `exception_io_not_found`, as foobar2000's own filesystem does for a missing file.
+pub struct FakeFilesystem;
+
+impl FakeFilesystem {
+	pub fn service() -> ServicePtr {
+		new_service(Self)
+	}
+}
+
+unsafe impl ServiceImpl for FakeFilesystem {
+	type Vtbl = FilesystemVtblPrefix;
+	const IIDS: &'static [Guid] = &[filesystem::IID];
+	const VTBL: &'static FilesystemVtblPrefix = &FilesystemVtblPrefix {
+		base: ServiceBaseVtbl::new::<Self>(),
+		get_canonical_path: filesystem_no_path,
+		is_our_path: filesystem_is_our_path,
+		get_display_path: filesystem_no_path,
+		open: filesystem_open,
+		remove: filesystem_remove,
+		move_file: filesystem_move,
+		is_remote: filesystem_is_remote,
+		get_stats: filesystem_get_stats,
+	};
+}
+
+unsafe extern "C-unwind" fn filesystem_no_path(
+	_this: *mut ServiceBase,
+	_path: *const c_char,
+	_out: *mut StringBase,
+) -> bool {
+	false
+}
+
+unsafe extern "C-unwind" fn filesystem_is_our_path(
+	_this: *mut ServiceBase,
+	path: *const c_char,
+) -> bool {
+	unsafe { bytes_of(path, usize::MAX) }.starts_with(b"file://")
+}
+
+unsafe extern "C-unwind" fn filesystem_open(
+	_this: *mut ServiceBase,
+	_out: *mut *mut ServiceBase,
+	_path: *const c_char,
+	_mode: u32,
+	_abort: *mut AbortCallback,
+) {
+	unsafe {
+		crate::cxx::throw(ExceptionKind::IoNotFound, ExceptionKind::IoNotFound.default_message())
+	}
+}
+
+unsafe extern "C-unwind" fn filesystem_remove(
+	_this: *mut ServiceBase,
+	_path: *const c_char,
+	_abort: *mut AbortCallback,
+) {
+	unsafe {
+		crate::cxx::throw(ExceptionKind::IoNotFound, ExceptionKind::IoNotFound.default_message())
+	}
+}
+
+unsafe extern "C-unwind" fn filesystem_move(
+	_this: *mut ServiceBase,
+	_source: *const c_char,
+	_destination: *const c_char,
+	_abort: *mut AbortCallback,
+) {
+	unsafe {
+		crate::cxx::throw(ExceptionKind::IoNotFound, ExceptionKind::IoNotFound.default_message())
+	}
+}
+
+unsafe extern "C-unwind" fn filesystem_is_remote(
+	_this: *mut ServiceBase,
+	_path: *const c_char,
+) -> bool {
+	false
+}
+
+unsafe extern "C-unwind" fn filesystem_get_stats(
+	_this: *mut ServiceBase,
+	_path: *const c_char,
+	_stats: *mut FileStats,
+	_is_writeable: *mut bool,
+	_abort: *mut AbortCallback,
+) {
+	// Thrown straight from the slot, as C++ code would; there is no catch_unwind here to abort.
+	unsafe {
+		crate::cxx::throw(ExceptionKind::IoNotFound, ExceptionKind::IoNotFound.default_message())
+	}
 }
 
 /// Calls an `input_entry` service through its vtable, as foobar2000 does.

@@ -136,3 +136,21 @@ fn panicking_input_open_reaches_host_as_bug_check() {
 	assert_eq!(error.kind, ExceptionKind::BugCheck);
 	assert!(error.message.contains("oxitone://panic"), "{}", error.message);
 }
+
+#[test]
+fn hostcheck_rethrows_host_not_found_and_logs() {
+	let (api, component) = common::load();
+	api.add_service(oxibar::abi::filesystem::IID, oxibar::testing::FakeFilesystem::service());
+	let entry = InputEntryHandle::new(
+		component.create_all(&INPUT_ENTRY).pop().expect("an input_entry service"),
+	);
+	let abort = FakeAbort::new(false);
+	let error = entry.open_v3(&DECODER, "oxitone://hostcheck", None, None, &abort).unwrap_err();
+	assert_eq!(error.kind, ExceptionKind::IoNotFound);
+	let logged = api.console_lines().iter().any(|line| {
+		line.starts_with(
+			"foo_oxitone: caught .?AVexception_io_not_found@foobar2000_io@@ from foobar2000",
+		)
+	});
+	assert!(logged, "{:?}", api.console_lines());
+}

@@ -8,6 +8,7 @@ pub mod componentversion;
 pub mod console;
 pub mod file;
 pub mod file_info;
+pub mod filesystem;
 pub mod initquit;
 pub mod input;
 pub mod service;
