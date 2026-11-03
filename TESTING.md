@@ -24,3 +24,13 @@ fn describes_the_behaviour() {
 ```
 
 Name the test after the behaviour it checks, not after the function it calls.
+
+## Tests that must crash
+
+Some behaviour can only be checked by letting a process crash, such as "`try_host` does not catch an access violation".
+Run the crashing part in a child process:
+
+1. Write the crashing test as `#[ignore]` and make it return at once unless the `OXIBAR_CHILD` environment variable is set. Call `testing_support::suppress_crash_dialogs()` first, so Windows shows no crash dialog.
+2. In the real test, start `std::env::current_exe()` with `--exact <full test path> --ignored --nocapture` and `OXIBAR_CHILD=1`, and assert its exit code, for example `0xC0000005` for an access violation.
+
+`cxx::catch::tests::access_violation_is_not_caught` is the example.

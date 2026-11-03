@@ -34,15 +34,28 @@ unsafe extern "C" {
 	// constructor allocate and free the message exactly as ours do.
 	fn __std_exception_copy(from: *const StdExceptionData, to: *mut StdExceptionData);
 	fn __std_exception_destroy(data: *mut StdExceptionData);
-	fn _CxxThrowException(object: *mut c_void, throw_info: *const rtti::ThrowInfo) -> !;
+
 	fn free(block: *mut c_void);
+}
+
+unsafe extern "C-unwind" {
+	// Declared C-unwind: the exception it raises unwinds through the Rust frames that call it.
+	fn _CxxThrowException(object: *mut c_void, throw_info: *const rtti::ThrowInfo) -> !;
 }
 
 static VTBL: StdExceptionVtbl = StdExceptionVtbl { scalar_deleting_destructor, what };
 
 #[cfg(test)]
-pub(crate) static DESTROYED: std::sync::atomic::AtomicUsize =
-	std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+	// Per thread, so tests running in parallel threads don't see each other's exceptions.
+	static DESTROYED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many exception objects this thread has destroyed so far.
+#[cfg(test)]
+pub(crate) fn destroyed_on_this_thread() -> usize {
+	DESTROYED.get()
+}
 
 impl StdException {
 	/// A `std::exception` owning a copy of `message`. Interior NUL bytes end the message early,
@@ -72,7 +85,7 @@ impl StdException {
 pub(crate) unsafe extern "C" fn destroy_exception(this: *mut StdException) {
 	unsafe { __std_exception_destroy(&raw mut (*this).data) };
 	#[cfg(test)]
-	DESTROYED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+	DESTROYED.set(DESTROYED.get() + 1);
 }
 
 /// The copy constructor the catchable types name, used when C++ catches by value or copies the

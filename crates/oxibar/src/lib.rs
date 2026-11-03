@@ -14,6 +14,8 @@ mod bindings;
 pub mod cxx;
 pub mod guid;
 pub mod service;
+#[cfg(test)]
+mod testing_support;
 
 /// The `FOOBAR2000_TARGET_VERSION` of the SDK these bindings are transcribed from (2.0).
 pub const SDK_TARGET_VERSION: u32 = 81;

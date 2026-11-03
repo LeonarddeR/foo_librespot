@@ -44,6 +44,11 @@ pub mod Windows {
 				)
 			}
 		}
+		#[inline]
+		pub unsafe fn SetErrorMode(umode: u32) -> u32 {
+			windows_core::link!("kernel32.dll" "system" fn SetErrorMode(umode : u32) -> u32);
+			unsafe { SetErrorMode(umode) }
+		}
 		#[repr(C, align(16))]
 		#[cfg(any(target_arch = "arm64ec", target_arch = "x86", target_arch = "x86_64"))]
 		#[derive(Clone, Copy)]
@@ -574,6 +579,8 @@ pub mod Windows {
 		}
 		#[cfg(target_arch = "aarch64")]
 		pub type RUNTIME_FUNCTION = ARM64_RUNTIME_FUNCTION;
+		pub const SEM_FAILCRITICALERRORS: i32 = 1;
+		pub const SEM_NOGPFAULTERRORBOX: i32 = 2;
 		#[repr(C)]
 		#[cfg(any(target_arch = "aarch64", target_arch = "arm64ec", target_arch = "x86_64"))]
 		#[derive(Clone, Copy, Debug, Eq, PartialEq)]

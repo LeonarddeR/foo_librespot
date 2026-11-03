@@ -22,8 +22,6 @@ pub(crate) struct TypeDescriptor {
 	name: [u8; NAME_CAPACITY],
 }
 
-// The accessors are read by try_host when it inspects a caught exception.
-#[cfg_attr(not(test), allow(dead_code))]
 impl TypeDescriptor {
 	const fn named(name: &str) -> Self {
 		let bytes = name.as_bytes();
@@ -37,6 +35,7 @@ impl TypeDescriptor {
 		Self { vftable: AtomicPtr::new(std::ptr::null_mut()), spare: 0, name: buffer }
 	}
 
+	#[cfg(test)]
 	pub fn name(&self) -> &str {
 		let len = self.name.iter().position(|&byte| byte == 0).unwrap_or(NAME_CAPACITY);
 		std::str::from_utf8(&self.name[..len]).unwrap_or("")
@@ -61,7 +60,6 @@ pub(crate) struct CatchableType {
 	copy_function: AtomicI32,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl CatchableType {
 	const fn new() -> Self {
 		Self {
@@ -79,6 +77,7 @@ impl CatchableType {
 		self.type_descriptor.load(Ordering::Relaxed)
 	}
 
+	#[cfg(test)]
 	pub fn copy_function(&self) -> i32 {
 		self.copy_function.load(Ordering::Relaxed)
 	}
@@ -100,7 +99,6 @@ pub(crate) struct ThrowInfo {
 	catchable_type_array: AtomicI32,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl ThrowInfo {
 	const fn new() -> Self {
 		Self {
