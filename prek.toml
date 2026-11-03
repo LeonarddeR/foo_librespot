@@ -1,0 +1,33 @@
+# Configuration file for `prek`, a git hook framework written in Rust.
+# See https://prek.j178.dev for more information.
+#:schema https://www.schemastore.org/prek.json
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "check-added-large-files" },
+  { id = "check-case-conflict" },
+  { id = "check-illegal-windows-names" },
+  { id = "check-merge-conflict" },
+  { id = "check-toml" },
+  { id = "check-yaml" },
+  { id = "end-of-file-fixer" },
+  { id = "fix-byte-order-marker" },
+  { id = "trailing-whitespace" },
+]
+
+# The kjanat actionlint fork has no pre-commit hook release yet, so run the
+# installed binary (winget kjanat.actionlint, or the v1.17.0 release).
+[[repos]]
+repo = "local"
+hooks = [
+  { id = "actionlint", name = "actionlint (kjanat fork)", entry = "actionlint", language = "system", files = '^\.github/workflows/', pass_filenames = false },
+]
+
+[[repos]]
+repo = "https://github.com/doublify/pre-commit-rust"
+rev = "v1.0"
+hooks = [
+  { id = "fmt" },
+  { id = "clippy" },
+]

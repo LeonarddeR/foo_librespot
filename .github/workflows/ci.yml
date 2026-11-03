@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  style:
+    name: Check style
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: cargo fmt -- --check
+        run: cargo fmt --all -- --check
+
+  actionlint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: actionlint (kjanat fork)
+        uses: kjanat/actionlint@v1.17.0
+
+  clippy:
+    name: Clippy
+    runs-on: windows-2025-vs2026
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  build:
+    name: Build
+    runs-on: windows-2025-vs2026
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: build
+      - name: cargo build --release
+        run: cargo build --workspace --release
+      - name: Upload DLLs
+        uses: actions/upload-artifact@v7
+        with:
+          name: dlls
+          path: |
+            target/release/*.dll
+            target/release/*.pdb
+          if-no-files-found: ignore
+          compression-level: 9
+
+  test:
+    name: Test
+    runs-on: windows-2025-vs2026
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2.86.5
+        with:
+          tool: cargo-nextest
+      # The DLL tests load the built component DLLs, which nextest does not build.
+      - name: Build the component DLLs
+        run: cargo build --workspace --all-features
+      - name: Run tests
+        run: cargo nextest run --workspace --all-features --profile ci
+      - name: Publish test report
+        uses: mikepenz/action-junit-report@v6
+        if: always()
+        with:
+          report_paths: target/nextest/ci/junit.xml
+          check_name: Tests
+          detailed_summary: true
+          include_passed: false
+          require_tests: true
+
+  # Single required check for branch rulesets; fails if any needed job failed or was skipped.
+  all-checks-pass:
+    name: Check if all checks pass
+    needs: [style, actionlint, clippy, build, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if all checks pass
+        uses: re-actors/alls-green@v1.2.2
+        with:
+          jobs: ${{ toJSON(needs) }}

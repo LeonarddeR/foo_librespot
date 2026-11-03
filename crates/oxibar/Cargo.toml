@@ -1,0 +1,14 @@
+[package]
+name = "oxibar"
+description = "Rust bindings for writing foobar2000 components"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Own code is MIT; files transcribed from the foobar2000 SDK stay under the SDK licence.
+license = "MIT AND BSD-Source-Code"
+repository.workspace = true
+publish = false
+include = ["src/**", "Cargo.toml", "sdk-license.txt"]
+
+[lints]
+workspace = true
