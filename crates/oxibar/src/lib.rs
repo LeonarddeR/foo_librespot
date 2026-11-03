@@ -1,6 +1,8 @@
 //! Rust bindings for writing foobar2000 2.x components without C++.
 
 pub mod abi;
+pub mod abort;
+pub mod audio_chunk;
 #[allow(
 	non_snake_case,
 	non_camel_case_types,
@@ -16,9 +18,11 @@ pub mod component;
 pub mod console;
 pub mod cxx;
 pub mod error;
+pub mod file_info;
 pub mod guid;
 pub mod host;
 pub mod initquit;
+pub mod input;
 pub mod service;
 pub mod strings;
 #[cfg(any(test, feature = "testing"))]

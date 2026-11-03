@@ -2,16 +2,21 @@
 //! drives services through their vtables, exactly as foobar2000 does.
 
 use std::ffi::{CString, c_char, c_void};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use crate::abi::abort_callback::{AbortCallback, AbortCallbackVtbl};
+use crate::abi::audio_chunk::{AudioChunk as RawAudioChunk, AudioChunkVtbl};
 use crate::abi::component::{Api, ApiVtbl, ServiceClassRef};
 use crate::abi::componentversion::ComponentVersionVtbl;
 use crate::abi::console::{self, ConsoleReceiverVtbl};
+use crate::abi::file::FileStats;
+use crate::abi::file_info::{FileInfo as RawFileInfo, FileInfoVtbl, ReplayGainInfo};
 use crate::abi::initquit::InitQuitVtbl;
+use crate::abi::input::{DecoderVtbl, InputEntryVtbl};
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 use crate::abi::string_base::{StringBase, StringBaseVtbl};
-use crate::cxx::try_host;
+use crate::cxx::{HostException, try_host};
 use crate::guid::Guid;
 use crate::host;
 use crate::service::{ServiceImpl, ServiceObject, ServicePtr, new_service};
@@ -341,6 +346,612 @@ pub fn on_init(service: &ServicePtr) {
 	let raw = service.as_raw();
 	let vtbl = unsafe { &*(*raw).vtbl.cast::<InitQuitVtbl>() };
 	try_host(|| unsafe { (vtbl.on_init)(raw) }).expect("on_init threw");
+}
+
+/// A `file_info` implemented in Rust. Field names match case-insensitively, as in foobar2000.
+#[repr(C)]
+pub struct FakeFileInfo {
+	base: RawFileInfo,
+	length: f64,
+	replaygain: ReplayGainInfo,
+	meta: Vec<(CString, Vec<CString>)>,
+	info: Vec<(CString, CString)>,
+}
+
+static FAKE_FILE_INFO_VTBL: FileInfoVtbl = FileInfoVtbl {
+	get_length: info_get_length,
+	set_length: info_set_length,
+	set_replaygain: info_set_replaygain,
+	get_replaygain: info_get_replaygain,
+	meta_get_count: info_meta_get_count,
+	meta_enum_name: info_meta_enum_name,
+	meta_enum_value_count: info_meta_enum_value_count,
+	meta_enum_value: info_meta_enum_value,
+	meta_find_ex: info_meta_find,
+	meta_set_ex: info_meta_set,
+	meta_insert_value_ex: info_meta_insert_value,
+	meta_remove_mask: info_ignore_mask,
+	meta_reorder: info_meta_reorder,
+	meta_remove_values: info_meta_remove_values,
+	meta_modify_value_ex: info_meta_modify_value,
+	info_get_count: info_info_get_count,
+	info_enum_name: info_info_enum_name,
+	info_enum_value: info_info_enum_value,
+	info_set_ex: info_info_set,
+	info_remove_mask: info_ignore_mask,
+	info_find_ex: info_info_find,
+	copy: info_ignore_copy,
+	copy_meta: info_ignore_copy,
+	copy_info: info_ignore_copy,
+	meta_set_nocheck_ex: info_meta_set,
+	info_set_nocheck_ex: info_info_set,
+};
+
+const REPLAYGAIN_UNSET: ReplayGainInfo =
+	ReplayGainInfo { album_gain: -1000.0, track_gain: -1000.0, album_peak: -1.0, track_peak: -1.0 };
+
+impl FakeFileInfo {
+	pub fn new() -> Box<Self> {
+		Box::new(Self {
+			base: RawFileInfo { vtbl: &raw const FAKE_FILE_INFO_VTBL },
+			length: 0.0,
+			replaygain: REPLAYGAIN_UNSET,
+			meta: Vec::new(),
+			info: Vec::new(),
+		})
+	}
+
+	/// The `file_info &` to pass to a slot.
+	pub fn as_raw(&mut self) -> *mut RawFileInfo {
+		(&raw mut self.base).cast()
+	}
+
+	pub fn length(&self) -> f64 {
+		self.length
+	}
+
+	pub fn replaygain(&self) -> ReplayGainInfo {
+		self.replaygain
+	}
+
+	/// All values of the metadata field `name`.
+	pub fn meta(&self, name: &str) -> Vec<String> {
+		self.meta
+			.iter()
+			.find(|(field, _)| field.to_string_lossy().eq_ignore_ascii_case(name))
+			.map(|(_, values)| {
+				values.iter().map(|value| value.to_string_lossy().into_owned()).collect()
+			})
+			.unwrap_or_default()
+	}
+
+	/// The technical info field `name`.
+	pub fn info(&self, name: &str) -> Option<String> {
+		self.info
+			.iter()
+			.find(|(field, _)| field.to_string_lossy().eq_ignore_ascii_case(name))
+			.map(|(_, value)| value.to_string_lossy().into_owned())
+	}
+}
+
+unsafe fn fake_info<'a>(this: *const RawFileInfo) -> &'a mut FakeFileInfo {
+	unsafe { &mut *this.cast::<FakeFileInfo>().cast_mut() }
+}
+
+unsafe fn owned(text: *const c_char, length: usize) -> CString {
+	CString::new(unsafe { bytes_of(text, length) }).expect("bytes_of stops at NUL")
+}
+
+unsafe extern "C-unwind" fn info_get_length(this: *const RawFileInfo) -> f64 {
+	unsafe { fake_info(this) }.length
+}
+
+unsafe extern "C-unwind" fn info_set_length(this: *mut RawFileInfo, length: f64) {
+	unsafe { fake_info(this) }.length = length;
+}
+
+unsafe extern "C-unwind" fn info_set_replaygain(
+	this: *mut RawFileInfo,
+	info: *const ReplayGainInfo,
+) {
+	unsafe { fake_info(this).replaygain = *info };
+}
+
+unsafe extern "C-unwind" fn info_get_replaygain(
+	this: *const RawFileInfo,
+	ret: *mut ReplayGainInfo,
+) -> *mut ReplayGainInfo {
+	unsafe { ret.write(fake_info(this).replaygain) };
+	ret
+}
+
+unsafe extern "C-unwind" fn info_meta_get_count(this: *const RawFileInfo) -> usize {
+	unsafe { fake_info(this) }.meta.len()
+}
+
+unsafe extern "C-unwind" fn info_meta_enum_name(
+	this: *const RawFileInfo,
+	index: usize,
+) -> *const c_char {
+	unsafe { fake_info(this) }.meta.get(index).map_or(std::ptr::null(), |(name, _)| name.as_ptr())
+}
+
+unsafe extern "C-unwind" fn info_meta_enum_value_count(
+	this: *const RawFileInfo,
+	index: usize,
+) -> usize {
+	unsafe { fake_info(this) }.meta.get(index).map_or(0, |(_, values)| values.len())
+}
+
+unsafe extern "C-unwind" fn info_meta_enum_value(
+	this: *const RawFileInfo,
+	index: usize,
+	value: usize,
+) -> *const c_char {
+	unsafe { fake_info(this) }
+		.meta
+		.get(index)
+		.and_then(|(_, values)| values.get(value))
+		.map_or(std::ptr::null(), |v| v.as_ptr())
+}
+
+unsafe extern "C-unwind" fn info_meta_find(
+	this: *const RawFileInfo,
+	name: *const c_char,
+	length: usize,
+) -> usize {
+	let info = unsafe { fake_info(this) };
+	let name = unsafe { bytes_of(name, length) };
+	info.meta
+		.iter()
+		.position(|(field, _)| field.as_bytes().eq_ignore_ascii_case(name))
+		.unwrap_or(usize::MAX)
+}
+
+unsafe extern "C-unwind" fn info_meta_set(
+	this: *mut RawFileInfo,
+	name: *const c_char,
+	name_length: usize,
+	value: *const c_char,
+	value_length: usize,
+) -> usize {
+	let info = unsafe { fake_info(this) };
+	let index = unsafe { info_meta_find(this, name, name_length) };
+	let value = unsafe { owned(value, value_length) };
+	if index == usize::MAX {
+		info.meta.push((unsafe { owned(name, name_length) }, vec![value]));
+		info.meta.len() - 1
+	} else {
+		info.meta[index].1 = vec![value];
+		index
+	}
+}
+
+unsafe extern "C-unwind" fn info_meta_insert_value(
+	this: *mut RawFileInfo,
+	index: usize,
+	value_index: usize,
+	value: *const c_char,
+	value_length: usize,
+) {
+	let info = unsafe { fake_info(this) };
+	let value = unsafe { owned(value, value_length) };
+	if let Some((_, values)) = info.meta.get_mut(index) {
+		values.insert(value_index.min(values.len()), value);
+	}
+}
+
+unsafe extern "C-unwind" fn info_ignore_mask(_this: *mut RawFileInfo, _mask: *const c_void) {}
+
+unsafe extern "C-unwind" fn info_meta_reorder(_this: *mut RawFileInfo, _order: *const usize) {}
+
+unsafe extern "C-unwind" fn info_meta_remove_values(
+	_this: *mut RawFileInfo,
+	_index: usize,
+	_mask: *const c_void,
+) {
+}
+
+unsafe extern "C-unwind" fn info_meta_modify_value(
+	this: *mut RawFileInfo,
+	index: usize,
+	value_index: usize,
+	value: *const c_char,
+	value_length: usize,
+) {
+	let info = unsafe { fake_info(this) };
+	let value = unsafe { owned(value, value_length) };
+	if let Some(slot) = info.meta.get_mut(index).and_then(|(_, values)| values.get_mut(value_index))
+	{
+		*slot = value;
+	}
+}
+
+unsafe extern "C-unwind" fn info_info_get_count(this: *const RawFileInfo) -> usize {
+	unsafe { fake_info(this) }.info.len()
+}
+
+unsafe extern "C-unwind" fn info_info_enum_name(
+	this: *const RawFileInfo,
+	index: usize,
+) -> *const c_char {
+	unsafe { fake_info(this) }.info.get(index).map_or(std::ptr::null(), |(name, _)| name.as_ptr())
+}
+
+unsafe extern "C-unwind" fn info_info_enum_value(
+	this: *const RawFileInfo,
+	index: usize,
+) -> *const c_char {
+	unsafe { fake_info(this) }.info.get(index).map_or(std::ptr::null(), |(_, value)| value.as_ptr())
+}
+
+unsafe extern "C-unwind" fn info_info_find(
+	this: *const RawFileInfo,
+	name: *const c_char,
+	length: usize,
+) -> usize {
+	let info = unsafe { fake_info(this) };
+	let name = unsafe { bytes_of(name, length) };
+	info.info
+		.iter()
+		.position(|(field, _)| field.as_bytes().eq_ignore_ascii_case(name))
+		.unwrap_or(usize::MAX)
+}
+
+unsafe extern "C-unwind" fn info_info_set(
+	this: *mut RawFileInfo,
+	name: *const c_char,
+	name_length: usize,
+	value: *const c_char,
+	value_length: usize,
+) -> usize {
+	let info = unsafe { fake_info(this) };
+	let index = unsafe { info_info_find(this, name, name_length) };
+	let value = unsafe { owned(value, value_length) };
+	if index == usize::MAX {
+		info.info.push((unsafe { owned(name, name_length) }, value));
+		info.info.len() - 1
+	} else {
+		info.info[index].1 = value;
+		index
+	}
+}
+
+unsafe extern "C-unwind" fn info_ignore_copy(_this: *mut RawFileInfo, _source: *const RawFileInfo) {
+}
+
+/// An `audio_chunk` implemented in Rust, recording what the decoder wrote.
+#[repr(C)]
+pub struct FakeAudioChunk {
+	base: RawAudioChunk,
+	data: Vec<f64>,
+	sample_count: usize,
+	sample_rate: u32,
+	channels: u32,
+	channel_mask: u32,
+}
+
+static FAKE_AUDIO_CHUNK_VTBL: AudioChunkVtbl = AudioChunkVtbl {
+	get_data_overload_0: chunk_get_data,
+	get_data_overload_1: chunk_get_data,
+	get_data_size: chunk_get_data_size,
+	set_data_size: chunk_set_data_size,
+	get_srate: chunk_get_srate,
+	set_srate: chunk_set_srate,
+	get_channels: chunk_get_channels,
+	get_channel_config: chunk_get_channel_config,
+	set_channels: chunk_set_channels,
+	get_sample_count: chunk_get_sample_count,
+	set_sample_count: chunk_set_sample_count,
+};
+
+impl FakeAudioChunk {
+	pub fn new() -> Box<Self> {
+		Box::new(Self {
+			base: RawAudioChunk { vtbl: &raw const FAKE_AUDIO_CHUNK_VTBL },
+			data: Vec::new(),
+			sample_count: 0,
+			sample_rate: 0,
+			channels: 0,
+			channel_mask: 0,
+		})
+	}
+
+	/// The `audio_chunk &` to pass to a slot.
+	pub fn as_raw(&mut self) -> *mut RawAudioChunk {
+		(&raw mut self.base).cast()
+	}
+
+	pub fn sample_count(&self) -> usize {
+		self.sample_count
+	}
+
+	pub fn sample_rate(&self) -> u32 {
+		self.sample_rate
+	}
+
+	pub fn channels(&self) -> u32 {
+		self.channels
+	}
+
+	pub fn channel_mask(&self) -> u32 {
+		self.channel_mask
+	}
+
+	/// The interleaved samples of the chunk's frames.
+	pub fn samples(&self) -> &[f64] {
+		let count = (self.sample_count * self.channels as usize).min(self.data.len());
+		&self.data[..count]
+	}
+}
+
+unsafe fn fake_chunk<'a>(this: *const RawAudioChunk) -> &'a mut FakeAudioChunk {
+	unsafe { &mut *this.cast::<FakeAudioChunk>().cast_mut() }
+}
+
+unsafe extern "C-unwind" fn chunk_get_data(this: *mut RawAudioChunk) -> *mut f64 {
+	unsafe { fake_chunk(this) }.data.as_mut_ptr()
+}
+
+unsafe extern "C-unwind" fn chunk_get_data_size(this: *const RawAudioChunk) -> usize {
+	unsafe { fake_chunk(this) }.data.len()
+}
+
+unsafe extern "C-unwind" fn chunk_set_data_size(this: *mut RawAudioChunk, size: usize) {
+	unsafe { fake_chunk(this) }.data.resize(size, 0.0);
+}
+
+unsafe extern "C-unwind" fn chunk_get_srate(this: *const RawAudioChunk) -> u32 {
+	unsafe { fake_chunk(this) }.sample_rate
+}
+
+unsafe extern "C-unwind" fn chunk_set_srate(this: *mut RawAudioChunk, rate: u32) {
+	unsafe { fake_chunk(this) }.sample_rate = rate;
+}
+
+unsafe extern "C-unwind" fn chunk_get_channels(this: *const RawAudioChunk) -> u32 {
+	unsafe { fake_chunk(this) }.channels
+}
+
+unsafe extern "C-unwind" fn chunk_get_channel_config(this: *const RawAudioChunk) -> u32 {
+	unsafe { fake_chunk(this) }.channel_mask
+}
+
+unsafe extern "C-unwind" fn chunk_set_channels(this: *mut RawAudioChunk, count: u32, config: u32) {
+	let chunk = unsafe { fake_chunk(this) };
+	chunk.channels = count;
+	chunk.channel_mask = config;
+}
+
+unsafe extern "C-unwind" fn chunk_get_sample_count(this: *const RawAudioChunk) -> usize {
+	unsafe { fake_chunk(this) }.sample_count
+}
+
+unsafe extern "C-unwind" fn chunk_set_sample_count(this: *mut RawAudioChunk, count: usize) {
+	unsafe { fake_chunk(this) }.sample_count = count;
+}
+
+/// An `abort_callback` implemented in Rust.
+#[repr(C)]
+pub struct FakeAbort {
+	base: AbortCallback,
+	aborting: AtomicBool,
+}
+
+static FAKE_ABORT_VTBL: AbortCallbackVtbl =
+	AbortCallbackVtbl { is_aborting: abort_is_aborting, get_abort_event: abort_get_event };
+
+impl FakeAbort {
+	pub fn new(aborting: bool) -> Box<Self> {
+		Box::new(Self {
+			base: AbortCallback { vtbl: &raw const FAKE_ABORT_VTBL },
+			aborting: AtomicBool::new(aborting),
+		})
+	}
+
+	/// The `abort_callback &` to pass to a slot.
+	pub fn as_raw(&self) -> *mut AbortCallback {
+		(&raw const self.base).cast_mut()
+	}
+
+	pub fn set_aborting(&self, aborting: bool) {
+		self.aborting.store(aborting, Ordering::SeqCst);
+	}
+}
+
+unsafe extern "C-unwind" fn abort_is_aborting(this: *const AbortCallback) -> bool {
+	unsafe { &*this.cast::<FakeAbort>() }.aborting.load(Ordering::SeqCst)
+}
+
+unsafe extern "C-unwind" fn abort_get_event(_this: *const AbortCallback) -> *mut c_void {
+	std::ptr::null_mut()
+}
+
+/// Calls an `input_entry` service through its vtable, as foobar2000 does.
+pub struct InputEntryHandle(ServicePtr);
+
+impl InputEntryHandle {
+	pub fn new(service: ServicePtr) -> Self {
+		Self(service)
+	}
+
+	fn vtbl(&self) -> &InputEntryVtbl {
+		unsafe { &*(*self.0.as_raw()).vtbl.cast::<InputEntryVtbl>() }
+	}
+
+	pub fn is_our_path(&self, path: &str) -> bool {
+		let path = CString::new(path).expect("no NUL in a path");
+		try_host(|| unsafe {
+			(self.vtbl().is_our_path)(self.0.as_raw(), path.as_ptr(), c"".as_ptr())
+		})
+		.expect("is_our_path threw")
+	}
+
+	pub fn is_our_content_type(&self, content_type: &str) -> bool {
+		let content_type = CString::new(content_type).expect("no NUL in a content type");
+		unsafe { (self.vtbl().is_our_content_type)(self.0.as_raw(), content_type.as_ptr()) }
+	}
+
+	pub fn flags(&self) -> u32 {
+		unsafe { (self.vtbl().get_flags)(self.0.as_raw()) }
+	}
+
+	pub fn guid(&self) -> Guid {
+		let mut guid = std::mem::MaybeUninit::<Guid>::uninit();
+		unsafe { *(self.vtbl().get_guid)(self.0.as_raw(), guid.as_mut_ptr()) }
+	}
+
+	pub fn name(&self) -> String {
+		unsafe { std::ffi::CStr::from_ptr((self.vtbl().get_name)(self.0.as_raw())) }
+			.to_string_lossy()
+			.into_owned()
+	}
+
+	pub fn preferences_guid(&self) -> Guid {
+		let mut guid = std::mem::MaybeUninit::<Guid>::uninit();
+		unsafe { *(self.vtbl().get_preferences_guid)(self.0.as_raw(), guid.as_mut_ptr()) }
+	}
+
+	pub fn is_low_merit(&self) -> bool {
+		unsafe { (self.vtbl().is_low_merit)(self.0.as_raw()) }
+	}
+
+	/// `open_v3`, passing `hint` and `logger` by value: the input must release them.
+	pub fn open_v3(
+		&self,
+		what_for: &Guid,
+		path: &str,
+		hint: Option<ServicePtr>,
+		logger: Option<ServicePtr>,
+		abort: &FakeAbort,
+	) -> Result<DecoderHandle, HostException> {
+		let path = CString::new(path).expect("no NUL in a path");
+		let mut hint = hint.map_or(std::ptr::null_mut(), ServicePtr::into_raw);
+		let mut logger = logger.map_or(std::ptr::null_mut(), ServicePtr::into_raw);
+		let mut ret = std::mem::MaybeUninit::<*mut ServiceBase>::uninit();
+		try_host(|| unsafe {
+			(self.vtbl().open_v3)(
+				self.0.as_raw(),
+				ret.as_mut_ptr(),
+				what_for,
+				&raw mut hint,
+				path.as_ptr(),
+				&raw mut logger,
+				abort.as_raw(),
+			);
+		})?;
+		let service = unsafe { ServicePtr::from_raw_owned(ret.assume_init()) }
+			.expect("open_v3 returned a service");
+		Ok(DecoderHandle(service))
+	}
+
+	/// `open_for_decoding` (slot 5), with no file hint.
+	pub fn open_for_decoding(
+		&self,
+		path: &str,
+		abort: &FakeAbort,
+	) -> Result<DecoderHandle, HostException> {
+		let path = CString::new(path).expect("no NUL in a path");
+		let mut hint: *mut ServiceBase = std::ptr::null_mut();
+		let mut out: *mut ServiceBase = std::ptr::null_mut();
+		try_host(|| unsafe {
+			(self.vtbl().open_for_decoding)(
+				self.0.as_raw(),
+				&raw mut out,
+				&raw mut hint,
+				path.as_ptr(),
+				abort.as_raw(),
+			);
+		})?;
+		let service = unsafe { ServicePtr::from_raw_owned(out) }
+			.expect("open_for_decoding returned a service");
+		Ok(DecoderHandle(service))
+	}
+}
+
+/// Calls a decoder through its `input_decoder_v5` vtable, as foobar2000 does.
+#[derive(Debug)]
+pub struct DecoderHandle(ServicePtr);
+
+impl DecoderHandle {
+	pub fn service(&self) -> &ServicePtr {
+		&self.0
+	}
+
+	fn vtbl(&self) -> &DecoderVtbl {
+		unsafe { &*(*self.0.as_raw()).vtbl.cast::<DecoderVtbl>() }
+	}
+
+	pub fn subsong_count(&self) -> u32 {
+		unsafe { (self.vtbl().get_subsong_count)(self.0.as_raw()) }
+	}
+
+	pub fn get_info(
+		&self,
+		subsong: u32,
+		info: &mut FakeFileInfo,
+		abort: &FakeAbort,
+	) -> Result<(), HostException> {
+		try_host(|| unsafe {
+			(self.vtbl().get_info)(self.0.as_raw(), subsong, info.as_raw(), abort.as_raw());
+		})
+	}
+
+	pub fn file_stats(&self, abort: &FakeAbort) -> FileStats {
+		let mut stats = std::mem::MaybeUninit::<FileStats>::uninit();
+		unsafe {
+			*(self.vtbl().get_file_stats)(self.0.as_raw(), stats.as_mut_ptr(), abort.as_raw())
+		}
+	}
+
+	pub fn initialize(
+		&self,
+		subsong: u32,
+		flags: u32,
+		abort: &FakeAbort,
+	) -> Result<(), HostException> {
+		try_host(|| unsafe {
+			(self.vtbl().initialize)(self.0.as_raw(), subsong, flags, abort.as_raw());
+		})
+	}
+
+	pub fn run(
+		&self,
+		chunk: &mut FakeAudioChunk,
+		abort: &FakeAbort,
+	) -> Result<bool, HostException> {
+		try_host(|| unsafe { (self.vtbl().run)(self.0.as_raw(), chunk.as_raw(), abort.as_raw()) })
+	}
+
+	pub fn run_raw(
+		&self,
+		chunk: &mut FakeAudioChunk,
+		abort: &FakeAbort,
+	) -> Result<bool, HostException> {
+		try_host(|| unsafe {
+			(self.vtbl().run_raw)(
+				self.0.as_raw(),
+				chunk.as_raw(),
+				std::ptr::null_mut(),
+				abort.as_raw(),
+			)
+		})
+	}
+
+	pub fn seek(&self, seconds: f64, abort: &FakeAbort) -> Result<(), HostException> {
+		try_host(|| unsafe { (self.vtbl().seek)(self.0.as_raw(), seconds, abort.as_raw()) })
+	}
+
+	pub fn can_seek(&self) -> bool {
+		try_host(|| unsafe { (self.vtbl().can_seek)(self.0.as_raw()) }).expect("can_seek threw")
+	}
+
+	/// `set_logger`, passing `logger` by value: the decoder must release it.
+	pub fn set_logger(&self, logger: ServicePtr) {
+		let mut logger = logger.into_raw();
+		try_host(|| unsafe { (self.vtbl().set_logger)(self.0.as_raw(), &raw mut logger) })
+			.expect("set_logger threw");
+	}
 }
 
 #[cfg(feature = "testing")]
