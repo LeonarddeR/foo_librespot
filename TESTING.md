@@ -50,3 +50,15 @@ cargo nextest run --workspace --all-features
 ```
 
 Set `FOO_OXITONE_DLL_PATH` to test a DLL from somewhere else, such as a CI artifact.
+
+## Testing in a real foobar2000
+
+`tools/fb2k-portable.ps1` keeps a portable foobar2000 in `.fb2k-portable`, so your normal profile is never touched:
+
+```
+pwsh tools/fb2k-portable.ps1 -Setup
+pwsh tools/fb2k-portable.ps1 -Install foo_oxitone
+pwsh tools/fb2k-portable.ps1 -Run /add oxitone://440
+```
+
+Each milestone has a manual checklist in `docs/checklists/`, starting with [the phase 1 gate](docs/checklists/phase-1-oxibar-gate.md).
