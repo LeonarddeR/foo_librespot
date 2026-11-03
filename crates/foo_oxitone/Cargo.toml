@@ -19,3 +19,7 @@ oxibar = { path = "../oxibar", features = ["testing"] }
 
 [lints]
 workspace = true
+
+[features]
+# Adds an oxitone://panic path that panics in open, to test panic handling across the DLL.
+test-panic = []
