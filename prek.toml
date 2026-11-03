@@ -24,10 +24,10 @@ hooks = [
   { id = "actionlint", name = "actionlint (kjanat fork)", entry = "actionlint", language = "system", files = '^\.github/workflows/', pass_filenames = false },
 ]
 
+# fmt and clippy with the same flags CI uses, so test code is linted before it is pushed.
 [[repos]]
-repo = "https://github.com/doublify/pre-commit-rust"
-rev = "v1.0"
+repo = "local"
 hooks = [
-  { id = "fmt" },
-  { id = "clippy" },
+  { id = "cargo-fmt", name = "cargo fmt", entry = "cargo fmt --all -- --check", language = "system", types = ["rust"], pass_filenames = false },
+  { id = "cargo-clippy", name = "cargo clippy", entry = "cargo clippy --workspace --all-targets --all-features -- -D warnings", language = "system", types = ["rust"], pass_filenames = false },
 ]

@@ -39,6 +39,8 @@ mod tests {
 	use crate::cxx::{ExceptionKind, throw, try_host};
 	use crate::error::{Error, Result};
 
+	// Only ever called from Rust, so the Rust fn pointer argument is fine.
+	#[allow(improper_ctypes_definitions)]
 	unsafe extern "C-unwind" fn shim(body: fn() -> Result<i32>) -> i32 {
 		unsafe { guard(body) }
 	}
