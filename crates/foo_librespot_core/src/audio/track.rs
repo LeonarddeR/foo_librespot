@@ -2,6 +2,7 @@
 
 use librespot_audio::{AudioDecrypt, AudioFile, StreamLoaderController};
 use librespot_core::Session;
+use librespot_core::error::ErrorKind;
 use librespot_metadata::audio::{AudioFileFormat, AudioFiles, AudioItem};
 use librespot_metadata::availability::AudioItemAvailability;
 use librespot_metadata::track::Tracks;
@@ -68,13 +69,47 @@ pub async fn fetch_track(
 	// The key is always asked for with the original track id, even for an alternative.
 	let key = match session.audio_key().request(id, file_id).await {
 		Ok(key) => Some(key),
-		Err(error) => {
-			// Not every file is encrypted; an encrypted one then fails to decode instead.
-			log::warn!("no audio key for {}, trying without decryption: {error}", id.to_base62());
-			None
-		}
+		Err(error) => match on_key_failure(format, error.kind) {
+			KeyFailure::PlayUnencrypted => {
+				log::warn!(
+					"no audio key for {}, trying without decryption: {error}",
+					id.to_base62()
+				);
+				None
+			}
+			KeyFailure::Fail { reset_session } => {
+				controller.close();
+				if reset_session {
+					// The next call connects again instead of reusing the dead connection.
+					session.shutdown();
+				}
+				return Err(CoreError::Spotify(error));
+			}
+		},
 	};
 	Ok(FetchedTrack { file: AudioDecrypt::new(key, file), format, controller })
+}
+
+/// What to do when Spotify doesn't hand over a file's audio key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyFailure {
+	/// Some files aren't encrypted; if this one is, decoding fails on its own.
+	PlayUnencrypted,
+	/// Give up. `reset_session` when the key request timed out: the access point connection is
+	/// most likely dead, though librespot only notices when its keep-alive fails minutes later.
+	Fail { reset_session: bool },
+}
+
+/// Spotify's Ogg Vorbis files are always encrypted, so without the key there is nothing to play,
+/// and decoding the encrypted bytes would only report a misleading decode error. librespot's
+/// player tries without a key anyway; that only makes sense for its other formats.
+pub fn on_key_failure(format: AudioFileFormat, kind: ErrorKind) -> KeyFailure {
+	if !AudioFiles::is_ogg_vorbis(format) {
+		return KeyFailure::PlayUnencrypted;
+	}
+	KeyFailure::Fail {
+		reset_session: matches!(kind, ErrorKind::Aborted | ErrorKind::DeadlineExceeded),
+	}
 }
 
 async fn find_alternative(session: &Session, alternatives: Vec<SpotifyUri>) -> Option<AudioItem> {
@@ -164,7 +199,9 @@ mod tests {
 	use librespot_metadata::availability::UnavailabilityReason;
 	use librespot_metadata::track::Tracks;
 
-	use super::{Playability, playability};
+	use librespot_core::error::ErrorKind;
+
+	use super::{KeyFailure, Playability, on_key_failure, playability};
 	use crate::{FileId, SpotifyId, SpotifyUri};
 
 	fn one_file() -> AudioFiles {
@@ -176,6 +213,32 @@ mod tests {
 			SpotifyUri::Track { id: SpotifyId::from_raw(&[2; 16]).unwrap() },
 			SpotifyUri::Track { id: SpotifyId::from_raw(&[3; 16]).unwrap() },
 		])
+	}
+
+	#[test]
+	fn vorbis_without_a_key_fails() {
+		assert_eq!(
+			on_key_failure(AudioFileFormat::OGG_VORBIS_320, ErrorKind::PermissionDenied),
+			KeyFailure::Fail { reset_session: false }
+		);
+	}
+
+	#[test]
+	fn key_timeout_resets_the_session() {
+		for kind in [ErrorKind::Aborted, ErrorKind::DeadlineExceeded] {
+			assert_eq!(
+				on_key_failure(AudioFileFormat::OGG_VORBIS_160, kind),
+				KeyFailure::Fail { reset_session: true }
+			);
+		}
+	}
+
+	#[test]
+	fn mp3_without_a_key_continues_unencrypted() {
+		assert_eq!(
+			on_key_failure(AudioFileFormat::MP3_320, ErrorKind::Aborted),
+			KeyFailure::PlayUnencrypted
+		);
 	}
 
 	#[test]
