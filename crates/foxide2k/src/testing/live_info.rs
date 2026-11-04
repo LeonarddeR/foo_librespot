@@ -54,16 +54,6 @@ impl Drop for FakeLiveInfoList {
 	}
 }
 
-/// `T`'s copy assignment: `out` takes a reference to `item`'s payload and drops its own.
-unsafe fn assign(out: *mut InputLiveInfo, item: &InputLiveInfo) {
-	let added = unsafe { ServicePtr::from_raw_add_ref(item.payload) }.map(ServicePtr::into_raw);
-	let out = unsafe { &mut *out };
-	let old = std::mem::replace(&mut out.payload, added.unwrap_or(std::ptr::null_mut()));
-	drop(unsafe { ServicePtr::from_raw_owned(old) });
-	out.scope = item.scope;
-	out.delta_time = item.delta_time;
-}
-
 unsafe fn of<'a>(this: *const ListBase<InputLiveInfo>) -> &'a FakeLiveInfoList {
 	unsafe { &*this.cast::<FakeLiveInfoList>() }
 }
@@ -77,7 +67,7 @@ unsafe extern "C-unwind" fn get_item_ex(
 	out: *mut InputLiveInfo,
 	n: usize,
 ) {
-	unsafe { assign(out, &of(this).items.borrow()[n]) };
+	unsafe { (*out).assign_from(&of(this).items.borrow()[n]) };
 }
 
 unsafe extern "C-unwind" fn insert_items(

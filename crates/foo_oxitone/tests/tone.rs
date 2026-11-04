@@ -6,9 +6,7 @@ use std::f64::consts::PI;
 
 use foxide2k::abi::input::{DECODER, INFO_READER, INPUT_ENTRY};
 use foxide2k::cxx::ExceptionKind;
-use foxide2k::testing::{
-	DecoderHandle, FakeAbort, FakeAudioChunk, FakeFileInfo, FakeLiveInfoList, InputEntryHandle,
-};
+use foxide2k::testing::{DecoderHandle, FakeAbort, FakeAudioChunk, FakeFileInfo, InputEntryHandle};
 
 fn sine(hz: f64, frame: f64) -> f64 {
 	0.25 * (2.0 * PI * hz * frame / 44_100.0).sin()
@@ -21,14 +19,7 @@ fn entry() -> InputEntryHandle {
 
 /// The bitrate foobar2000 shows after polling the decoder's live info, if it changed.
 fn live_bitrate(decoder: &DecoderHandle) -> Option<String> {
-	let list = FakeLiveInfoList::new();
-	decoder.poll_live_info(&list, &FakeAbort::new(false)).unwrap();
-	if list.scopes().is_empty() {
-		return None;
-	}
-	let mut info = FakeFileInfo::new();
-	assert!(list.apply(0, &mut info).unwrap());
-	info.info("bitrate")
+	decoder.live_info()?.info("bitrate")
 }
 
 #[test]

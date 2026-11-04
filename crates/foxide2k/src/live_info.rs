@@ -14,7 +14,7 @@ use crate::error::Result;
 use crate::file_info::FileInfo;
 use crate::guid::Guid;
 use crate::input::release_by_value;
-use crate::service::{ServiceImpl, ServiceObject, ServicePtr, new_service};
+use crate::service::{ServiceImpl, ServiceObject, new_service};
 
 #[cfg(test)]
 static FILTERS_ALIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -94,13 +94,7 @@ unsafe extern "C-unwind" fn one_item(
 ) {
 	unsafe {
 		guard(|| {
-			let item = &(*this.cast::<OneItem>()).item;
-			let added = ServicePtr::from_raw_add_ref(item.payload).map(ServicePtr::into_raw);
-			let out = &mut *out;
-			let old = std::mem::replace(&mut out.payload, added.unwrap_or(std::ptr::null_mut()));
-			drop(ServicePtr::from_raw_owned(old));
-			out.scope = item.scope;
-			out.delta_time = item.delta_time;
+			(*out).assign_from(&(*this.cast::<OneItem>()).item);
 			Ok(())
 		});
 	}

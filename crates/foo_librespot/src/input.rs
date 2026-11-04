@@ -35,13 +35,11 @@ pub fn item_id(path: &str) -> Option<ItemId> {
 	parse_link(path).ok()?.item()
 }
 
-/// One opened Spotify track.
+/// One opened Spotify track or episode.
 pub struct SpotifyInput {
 	id: ItemId,
 	track: Option<AbortableTrack>,
 	buffer: Vec<f64>,
-	/// Whether foobar2000 was told the codec and bitrate of the file being played.
-	reported: bool,
 }
 
 impl SpotifyInput {
@@ -65,12 +63,7 @@ impl Input for SpotifyInput {
 		let id = item_id(path).ok_or_else(|| {
 			Error::unsupported_format(format!("not a Spotify track or episode: {path}"))
 		})?;
-		Ok(Self {
-			id,
-			track: None,
-			buffer: Vec::with_capacity(CHUNK_FRAMES * CHANNELS),
-			reported: false,
-		})
+		Ok(Self { id, track: None, buffer: Vec::with_capacity(CHUNK_FRAMES * CHANNELS) })
 	}
 
 	fn get_info(&mut self, info: &mut FileInfo<'_>, abort: &Abort) -> Result<()> {
@@ -117,10 +110,7 @@ impl Input for SpotifyInput {
 			reason = "clamped to 0 and up"
 		)]
 		let frame = (seconds.max(0.0) * f64::from(SAMPLE_RATE)).round() as u64;
-		self.track()?.seek(frame, &|| abort.is_aborting()).map_err(host_error)?;
-		// foobar2000 forgets live info on a seek.
-		self.reported = false;
-		Ok(())
+		self.track()?.seek(frame, &|| abort.is_aborting()).map_err(host_error)
 	}
 
 	fn can_seek(&self) -> bool {
@@ -128,17 +118,13 @@ impl Input for SpotifyInput {
 	}
 
 	/// The stored info can't know which file plays: that depends on the preferred bitrate and
-	/// on which files Spotify has, so the status bar learns it here, after the first chunk and
-	/// after each seek.
-	fn live_info(&mut self) -> Vec<(String, String)> {
-		let Some(track) = self.track.as_ref().filter(|_| !self.reported) else {
-			return Vec::new();
-		};
+	/// on which files Spotify has, so the status bar learns it here.
+	fn live_info(&self) -> Vec<(String, String)> {
+		let Some(track) = &self.track else { return Vec::new() };
 		let mut fields = vec![("codec".to_owned(), track.codec().to_owned())];
 		if let Some(kbps) = track.kbps() {
 			fields.push(("bitrate".to_owned(), kbps.to_string()));
 		}
-		self.reported = true;
 		fields
 	}
 }
@@ -149,14 +135,11 @@ mod tests {
 
 	use foo_librespot_core::CoreError;
 	use foxide2k::abi::input::INFO_READER;
-	use foxide2k::abi::live_info::SCOPE_INFO;
 	use foxide2k::audio_chunk::CHANNEL_MASK_STEREO;
 	use foxide2k::cxx::ExceptionKind;
 	use foxide2k::file_info_impl::FileInfoImpl;
 	use foxide2k::input::entry_service;
-	use foxide2k::testing::{
-		DecoderHandle, FakeAbort, FakeAudioChunk, FakeLiveInfoList, InputEntryHandle,
-	};
+	use foxide2k::testing::{DecoderHandle, FakeAbort, FakeAudioChunk, InputEntryHandle};
 
 	use super::SpotifyInput;
 	use crate::backend;
@@ -245,13 +228,7 @@ mod tests {
 
 	/// What foobar2000 shows after polling the decoder's live info once.
 	fn shown_after_poll(decoder: &DecoderHandle) -> Option<(String, String)> {
-		let list = FakeLiveInfoList::new();
-		decoder.poll_live_info(&list, &FakeAbort::new(false)).unwrap();
-		if list.scopes() != [SCOPE_INFO] {
-			return None;
-		}
-		let mut info = FileInfoImpl::new();
-		assert!(list.apply(0, &mut info).unwrap());
+		let info = decoder.live_info()?;
 		Some((info.info("codec")?, info.info("bitrate")?))
 	}
 

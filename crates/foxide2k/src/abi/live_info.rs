@@ -30,6 +30,7 @@ use crate::abi::file_info::FileInfo;
 use crate::abi::input::ByValueServicePtr;
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 use crate::guid::Guid;
+use crate::service::ServicePtr;
 
 /// `file_info_filter` (`SDK\guids.cpp:1164`).
 pub const FILE_INFO_FILTER_IID: Guid = Guid::from_u128(0x45d0b800_de83_4a77_ad34_3f842d40e795);
@@ -51,6 +52,21 @@ pub struct InputLiveInfo {
 impl Default for InputLiveInfo {
 	fn default() -> Self {
 		Self { payload: std::ptr::null_mut(), scope: 0, delta_time: 0.0 }
+	}
+}
+
+impl InputLiveInfo {
+	/// Copy assignment, as `input_live_info_t`'s: takes a reference to `from`'s payload and
+	/// releases the one held.
+	///
+	/// # Safety
+	/// Both payloads must be null or point to live services.
+	pub unsafe fn assign_from(&mut self, from: &Self) {
+		let added = unsafe { ServicePtr::from_raw_add_ref(from.payload) }.map(ServicePtr::into_raw);
+		let old = std::mem::replace(&mut self.payload, added.unwrap_or(std::ptr::null_mut()));
+		drop(unsafe { ServicePtr::from_raw_owned(old) });
+		self.scope = from.scope;
+		self.delta_time = from.delta_time;
 	}
 }
 

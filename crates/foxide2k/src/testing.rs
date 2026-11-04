@@ -725,11 +725,7 @@ impl DecoderHandle {
 
 	/// `get_dynamic_info`: the timestamp delta when the decoder changed `info`, else `None`.
 	pub fn dynamic_info(&self, info: &mut FakeFileInfo) -> Result<Option<f64>, HostException> {
-		let mut delta = f64::NAN;
-		let changed = try_host(|| unsafe {
-			(self.vtbl().get_dynamic_info)(self.0.as_raw(), info.as_raw(), &raw mut delta)
-		})?;
-		Ok(changed.then_some(delta))
+		self.dynamic(self.vtbl().get_dynamic_info, info)
 	}
 
 	/// `get_dynamic_info_track`, the same way as [`Self::dynamic_info`].
@@ -737,11 +733,33 @@ impl DecoderHandle {
 		&self,
 		info: &mut FakeFileInfo,
 	) -> Result<Option<f64>, HostException> {
+		self.dynamic(self.vtbl().get_dynamic_info_track, info)
+	}
+
+	fn dynamic(
+		&self,
+		slot: unsafe extern "C-unwind" fn(*mut ServiceBase, *mut RawFileInfo, *mut f64) -> bool,
+		info: &mut FakeFileInfo,
+	) -> Result<Option<f64>, HostException> {
 		let mut delta = f64::NAN;
-		let changed = try_host(|| unsafe {
-			(self.vtbl().get_dynamic_info_track)(self.0.as_raw(), info.as_raw(), &raw mut delta)
-		})?;
+		let changed = try_host(|| unsafe { slot(self.0.as_raw(), info.as_raw(), &raw mut delta) })?;
 		Ok(changed.then_some(delta))
+	}
+
+	/// What foobar2000 shows after polling the decoder's live info once: every change applied
+	/// to a blank info, or `None` when nothing changed.
+	pub fn live_info(&self) -> Option<Box<FakeFileInfo>> {
+		let list = FakeLiveInfoList::new();
+		self.poll_live_info(&list, &FakeAbort::new(false)).expect("poll_live_info threw");
+		if list.scopes().is_empty() {
+			return None;
+		}
+		let mut info = FakeFileInfo::new();
+		for (index, scope) in list.scopes().into_iter().enumerate() {
+			assert_eq!(scope, crate::abi::live_info::SCOPE_INFO, "only technical info changes");
+			assert!(list.apply(index, &mut info).expect("apply_filter threw"));
+		}
+		Some(info)
 	}
 
 	/// `poll_live_info`, as foobar2000 2.25 and later call it after each `run`.

@@ -2,7 +2,7 @@
 
 use std::ffi::{CStr, c_char, c_void};
 use std::marker::PhantomData;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::abi::abort_callback::AbortCallback;
 use crate::abi::audio_chunk::AudioChunk as RawAudioChunk;
@@ -53,10 +53,12 @@ pub trait Input: Sized + Send + 'static {
 	/// Seeking past the end must succeed; the next `decode_run` then returns false.
 	fn decode_seek(&mut self, seconds: f64, abort: &Abort) -> Result<()>;
 	fn can_seek(&self) -> bool;
-	/// Technical info that changed since the last call, as field names and values, such as the
-	/// bitrate once a file is chosen. foobar2000 asks after each `decode_run`, shows the change
-	/// from the start of the last chunk, and forgets it when the track seeks.
-	fn live_info(&mut self) -> Vec<(String, String)> {
+	/// The technical info of what plays now, as field names and values, such as the bitrate of
+	/// the file chosen; empty while there is none. foobar2000 asks after each `decode_run`.
+	/// foxide2k passes it on when it differs from what foobar2000 last got, and again after each
+	/// seek or `decode_initialize`, where foobar2000 forgets it; it shows from the start of the
+	/// last chunk.
+	fn live_info(&self) -> Vec<(String, String)> {
 		Vec::new()
 	}
 }
@@ -133,7 +135,7 @@ fn open<T: Input>(
 	};
 	let abort = unsafe { Abort::from_raw(abort) };
 	let input = T::open(unsafe { path_of(path) }, reason, &abort)?;
-	Ok(new_service(Decoder { input: Mutex::new(input) }))
+	Ok(new_service(Decoder { input: Mutex::new(input), reported: Mutex::new(Vec::new()) }))
 }
 
 /// Slots 5-7, `open_for_decoding`, `open_for_info_read` and `open_for_info_write`, as
@@ -230,6 +232,8 @@ unsafe extern "C-unwind" fn fallback_is_our_payload(
 /// The decoder `open` returns: one opened track behind every reader and decoder interface.
 struct Decoder<T> {
 	input: Mutex<T>,
+	/// The live info foobar2000 has now; cleared where it forgets it.
+	reported: Mutex<Vec<(String, String)>>,
 }
 
 impl<T: Input> Decoder<T> {
@@ -241,6 +245,10 @@ impl<T: Input> Decoder<T> {
 		self.input.lock().map_err(|_| {
 			Error::new(ExceptionKind::BugCheck, "the input panicked earlier and is unusable")
 		})
+	}
+
+	fn reported(&self) -> MutexGuard<'_, Vec<(String, String)>> {
+		self.reported.lock().unwrap_or_else(PoisonError::into_inner)
 	}
 }
 
@@ -325,7 +333,10 @@ unsafe extern "C-unwind" fn initialize<T: Input>(
 	unsafe {
 		guard(|| {
 			check_subsong(subsong)?;
-			Decoder::<T>::of(this).input()?.decode_initialize(flags, &Abort::from_raw(abort))
+			let decoder = Decoder::<T>::of(this);
+			decoder.input()?.decode_initialize(flags, &Abort::from_raw(abort))?;
+			decoder.reported().clear();
+			Ok(())
 		});
 	}
 }
@@ -350,7 +361,12 @@ unsafe extern "C-unwind" fn seek<T: Input>(
 	abort: *mut AbortCallback,
 ) {
 	unsafe {
-		guard(|| Decoder::<T>::of(this).input()?.decode_seek(seconds, &Abort::from_raw(abort)));
+		guard(|| {
+			let decoder = Decoder::<T>::of(this);
+			decoder.input()?.decode_seek(seconds, &Abort::from_raw(abort))?;
+			decoder.reported().clear();
+			Ok(())
+		});
 	}
 }
 
@@ -405,9 +421,16 @@ unsafe extern "C-unwind" fn poll_live_info<T: Input>(
 ) {
 	unsafe {
 		guard(|| {
-			// The decoder is unlocked again before foobar2000's list is called.
-			let fields = Decoder::<T>::of(this).input()?.live_info();
-			if fields.is_empty() { Ok(()) } else { live_info::add_info_change(ret, fields) }
+			let decoder = Decoder::<T>::of(this);
+			// The input is unlocked again before foobar2000's list is called.
+			let fields = decoder.input()?.live_info();
+			let mut reported = decoder.reported();
+			if fields.is_empty() || *reported == fields {
+				return Ok(());
+			}
+			live_info::add_info_change(ret, fields.clone())?;
+			*reported = fields;
+			Ok(())
 		});
 	}
 }
@@ -439,7 +462,6 @@ mod tests {
 
 	struct TestInput {
 		runs: usize,
-		reported: bool,
 	}
 
 	impl Input for TestInput {
@@ -452,7 +474,7 @@ mod tests {
 
 		fn open(path: &str, _reason: OpenReason, _abort: &Abort) -> Result<Self> {
 			if path == "test://ok" {
-				Ok(Self { runs: 0, reported: false })
+				Ok(Self { runs: 0 })
 			} else {
 				Err(Error::unsupported_format("not a test path"))
 			}
@@ -486,12 +508,14 @@ mod tests {
 			true
 		}
 
-		fn live_info(&mut self) -> Vec<(String, String)> {
-			if self.runs != 1 || self.reported {
-				return Vec::new();
-			}
-			self.reported = true;
-			vec![("bitrate".to_owned(), "320".to_owned())]
+		/// A variable bitrate: 320 kbit/s in the first chunk, 256 after.
+		fn live_info(&self) -> Vec<(String, String)> {
+			let kbps = match self.runs {
+				0 => return Vec::new(),
+				1 => "320",
+				_ => "256",
+			};
+			vec![("bitrate".to_owned(), kbps.to_owned())]
 		}
 	}
 
@@ -653,6 +677,10 @@ mod tests {
 		decoder
 	}
 
+	fn bitrate(decoder: &DecoderHandle) -> Option<String> {
+		decoder.live_info()?.info("bitrate")
+	}
+
 	#[test]
 	fn live_info_reaches_foobar2000_as_a_file_info_filter_once() {
 		let decoder = playing();
@@ -662,9 +690,28 @@ mod tests {
 		let mut info = FakeFileInfo::new();
 		assert!(list.apply(0, &mut info).unwrap());
 		assert_eq!(info.info("bitrate").as_deref(), Some("320"));
-		let again = FakeLiveInfoList::new();
-		decoder.poll_live_info(&again, &FakeAbort::new(false)).unwrap();
-		assert_eq!(again.scopes(), []);
+		assert_eq!(bitrate(&decoder), None);
+	}
+
+	#[test]
+	fn changed_live_info_is_reported_again() {
+		let decoder = playing();
+		assert_eq!(bitrate(&decoder).as_deref(), Some("320"));
+		decoder.run(&mut FakeAudioChunk::new(), &FakeAbort::new(false)).unwrap();
+		assert_eq!(bitrate(&decoder).as_deref(), Some("256"));
+		assert_eq!(bitrate(&decoder), None);
+	}
+
+	#[test]
+	fn live_info_is_reported_again_after_a_seek_or_a_new_initialize() {
+		let decoder = playing();
+		let abort = FakeAbort::new(false);
+		assert!(bitrate(&decoder).is_some());
+		decoder.seek(1.0, &abort).unwrap();
+		assert_eq!(bitrate(&decoder).as_deref(), Some("320"));
+		assert_eq!(bitrate(&decoder), None);
+		decoder.initialize(0, 0, &abort).unwrap();
+		assert_eq!(bitrate(&decoder).as_deref(), Some("320"));
 	}
 
 	#[test]

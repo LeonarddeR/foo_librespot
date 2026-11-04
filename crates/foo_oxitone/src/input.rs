@@ -42,8 +42,6 @@ const KBPS: &str = "1411";
 pub struct ToneInput {
 	tone: Tone,
 	buffer: Vec<f64>,
-	/// Whether foobar2000 has been told the bitrate since decoding started or last seeked.
-	reported: bool,
 }
 
 impl Input for ToneInput {
@@ -57,11 +55,9 @@ impl Input for ToneInput {
 
 	fn open(path: &str, _reason: OpenReason, abort: &Abort) -> Result<Self> {
 		match parse(path) {
-			Some(ToneSpec::Sine { hz }) => Ok(Self {
-				tone: Tone::new(hz),
-				buffer: Vec::with_capacity(CHUNK_FRAMES * 2),
-				reported: false,
-			}),
+			Some(ToneSpec::Sine { hz }) => {
+				Ok(Self { tone: Tone::new(hz), buffer: Vec::with_capacity(CHUNK_FRAMES * 2) })
+			}
 			Some(ToneSpec::HostCheck) => Err(host_check(abort)),
 			#[cfg(feature = "test-panic")]
 			Some(ToneSpec::Panic) => panic!("oxitone://panic was opened"),
@@ -97,7 +93,6 @@ impl Input for ToneInput {
 	fn decode_seek(&mut self, seconds: f64, abort: &Abort) -> Result<()> {
 		abort.check()?;
 		self.tone.seek(seconds);
-		self.reported = false;
 		Ok(())
 	}
 
@@ -107,10 +102,7 @@ impl Input for ToneInput {
 
 	/// Proves live info in a real foobar2000: the status bar shows the bitrate while a tone
 	/// plays, also after a seek.
-	fn live_info(&mut self) -> Vec<(String, String)> {
-		if std::mem::replace(&mut self.reported, true) {
-			return Vec::new();
-		}
+	fn live_info(&self) -> Vec<(String, String)> {
 		vec![("bitrate".to_owned(), KBPS.to_owned())]
 	}
 }
