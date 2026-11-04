@@ -101,7 +101,7 @@ struct Inner {
 
 struct Shared {
 	inner: Mutex<Inner>,
-	/// Signalled whenever a login ends, for [`LoginController::wait_for_login`].
+	/// Signalled whenever a login ends, for [`LoginController::wait`].
 	ended: Condvar,
 	open_url: Box<dyn Fn(&str) + Send + Sync>,
 }
@@ -171,25 +171,32 @@ impl LoginController {
 	pub fn press(&self) {
 		let state = self.state();
 		match state {
-			LoginState::LoggedOut | LoginState::Failed(_) => self.begin(),
+			LoginState::LoggedOut | LoginState::Failed(_) => {
+				self.begin();
+			}
 			LoginState::Asking | LoginState::Confirming(_) => self.cancel(),
 			LoginState::LoggedIn(_) => self.logout(),
 		}
 	}
 
-	/// Starts a login, but only when logged out and none is running.
-	pub fn start(&self) {
+	/// Starts a login, but only when logged out and none is running. Returns the login to
+	/// [`Self::wait`] for: the one it started, or else the one running or just ended.
+	pub fn start(&self) -> u64 {
 		self.refresh();
-		if matches!(self.state(), LoginState::LoggedOut | LoginState::Failed(_)) {
-			self.begin();
+		if matches!(self.state(), LoginState::LoggedOut | LoginState::Failed(_))
+			&& let Some(login) = self.begin()
+		{
+			return login;
 		}
+		self.0.lock().generation
 	}
 
-	fn begin(&self) {
+	/// Starts a login unless one is running, and returns it.
+	fn begin(&self) -> Option<u64> {
 		let generation = {
 			let mut inner = self.0.lock();
 			if inner.state.is_running() {
-				return;
+				return None;
 			}
 			inner.generation += 1;
 			inner.declined = false;
@@ -237,6 +244,7 @@ impl LoginController {
 			}
 			Err(_) => {}
 		}
+		Some(generation)
 	}
 
 	/// Cancels a running login; otherwise does nothing.
@@ -275,14 +283,21 @@ impl LoginController {
 		(self.0.open_url)(&code.url);
 	}
 
-	/// Starts a login if none is running, then waits for it to end. Returns the username,
+	/// Waits for `login`, from [`Self::start`], to end. Returns the username,
 	/// [`CoreError::NotLoggedIn`] when the user cancelled it, and [`CoreError::Aborted`] when
 	/// `is_aborting` turned true. An aborted wait leaves the login running: the user may still
-	/// confirm it.
-	pub fn wait_for_login(&self, is_aborting: &dyn Fn() -> bool) -> Result<String, CoreError> {
-		self.start();
+	/// confirm it. A login cancelled before the wait began ends it at once: the wait never starts
+	/// a login of its own, so no login runs without a window to confirm it in.
+	pub fn wait(&self, login: u64, is_aborting: &dyn Fn() -> bool) -> Result<String, CoreError> {
 		let mut inner = self.0.lock();
 		loop {
+			if inner.generation != login {
+				// Cancelled, and perhaps replaced by a login of someone else's since.
+				return match &inner.state {
+					LoginState::LoggedIn(name) => Ok(name.clone().unwrap_or_default()),
+					_ => Err(CoreError::NotLoggedIn),
+				};
+			}
 			match &inner.state {
 				LoginState::LoggedIn(name) => return Ok(name.clone().unwrap_or_default()),
 				LoginState::Failed(message) => {
@@ -554,12 +569,24 @@ mod tests {
 	}
 
 	#[test]
-	fn wait_for_login_starts_one_login_and_returns_the_username() {
+	fn a_login_cancelled_before_its_wait_began_ends_the_wait_without_another_login() {
+		let fake = installed();
+		let (controller, _opened) = controller();
+		let login = controller.start();
+		controller.cancel();
+		let deadline = Instant::now() + Duration::from_secs(1);
+		let result = controller.wait(login, &|| Instant::now() > deadline);
+		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
+		assert_eq!(fake.logins_started(), 1);
+	}
+
+	#[test]
+	fn start_then_wait_gives_one_login_and_the_username() {
 		let fake = installed();
 		let (controller, _opened) = controller();
 		let waiter = {
 			let controller = Arc::clone(&controller);
-			std::thread::spawn(move || controller.wait_for_login(&|| false))
+			std::thread::spawn(move || controller.wait(controller.start(), &|| false))
 		};
 		eventually(|| fake.logins_started() == 1);
 		fake.send_code(code());
@@ -575,7 +602,7 @@ mod tests {
 		let waiters: Vec<_> = (0..2)
 			.map(|_| {
 				let controller = Arc::clone(&controller);
-				std::thread::spawn(move || controller.wait_for_login(&|| false))
+				std::thread::spawn(move || controller.wait(controller.start(), &|| false))
 			})
 			.collect();
 		eventually(|| fake.logins_started() == 1);
@@ -588,7 +615,7 @@ mod tests {
 	}
 
 	#[test]
-	fn wait_for_login_stops_when_aborted_and_leaves_the_login_running() {
+	fn wait_stops_when_aborted_and_leaves_the_login_running() {
 		let fake = installed();
 		let (controller, _opened) = controller();
 		let aborting = Arc::new(AtomicBool::new(false));
@@ -596,7 +623,7 @@ mod tests {
 			let controller = Arc::clone(&controller);
 			let aborting = Arc::clone(&aborting);
 			std::thread::spawn(move || {
-				controller.wait_for_login(&|| aborting.load(Ordering::SeqCst))
+				controller.wait(controller.start(), &|| aborting.load(Ordering::SeqCst))
 			})
 		};
 		eventually(|| fake.logins_started() == 1);
@@ -610,12 +637,12 @@ mod tests {
 	}
 
 	#[test]
-	fn wait_for_login_reports_a_failed_or_cancelled_login() {
+	fn wait_reports_a_failed_or_cancelled_login() {
 		let fake = installed();
 		let (controller, _opened) = controller();
 		let wait = || {
 			let controller = Arc::clone(&controller);
-			std::thread::spawn(move || controller.wait_for_login(&|| false))
+			std::thread::spawn(move || controller.wait(controller.start(), &|| false))
 		};
 		let waiter = wait();
 		eventually(|| fake.logins_started() == 1);

@@ -156,9 +156,9 @@ mod tests {
 
 	use super::{CONTENT_TYPE, SpotifyFilesystem, SpotifyLoader};
 	use crate::backend;
-	use crate::login::controller;
 	use crate::testing::{
-		FakeBackend, TRACK_ID, confirm_login_when_started, installed_prompt, stop_after, track_info,
+		FakeBackend, TRACK_ID, cancel_login_when_started, confirm_login_when_started,
+		installed_prompt, stop_after, track_info,
 	};
 
 	const ALBUM: &str = "4wPtS24asgBAG4VOmYYB9O";
@@ -431,12 +431,7 @@ mod tests {
 		let fake = installed();
 		let _prompt = installed_prompt();
 		fake.require_login();
-		let user = std::thread::spawn(move || {
-			while fake.logins_started() == 0 {
-				std::thread::sleep(Duration::from_millis(5));
-			}
-			controller().cancel();
-		});
+		let user = cancel_login_when_started(&fake);
 		let error = import_album(&FakeAbort::new(false)).unwrap_err();
 		user.join().unwrap();
 		assert_eq!(error.kind, ExceptionKind::Io);

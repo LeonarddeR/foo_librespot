@@ -52,21 +52,22 @@ pub fn install_prompt(prompt: Box<dyn LoginPrompt>) {
 	assert!(PROMPT.set(prompt).is_ok(), "a prompt was already in use");
 }
 
-/// Starts a login, unless one is running, and shows the login window.
-pub fn prompt_login() {
-	controller().start();
+/// Starts a login, unless one is running, and shows the login window. Returns the login.
+pub fn prompt_login() -> u64 {
+	let login = controller().start();
 	prompt().show();
+	login
 }
 
 /// Starts a login and waits until the user confirms it, cancels it, or foobar2000 aborts.
 /// On the main thread it only shows the window: waiting there would freeze the window it waits
 /// for.
 pub fn login_on_first_use(is_aborting: &dyn Fn() -> bool) -> Result<(), CoreError> {
-	prompt_login();
+	let login = prompt_login();
 	if host().is_main_thread() {
 		return Err(CoreError::NotLoggedIn);
 	}
-	controller().wait_for_login(is_aborting).map(drop)
+	controller().wait(login, is_aborting).map(drop)
 }
 
 /// [`login_on_first_use`] for a play that found the user logged out. Once the user has
