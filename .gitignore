@@ -3,3 +3,6 @@ target
 .superpowers/
 docs/superpowers/
 .fb2k-portable/
+
+# The dev CLI keeps its Spotify login here.
+.spotify-dev/

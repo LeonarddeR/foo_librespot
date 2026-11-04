@@ -3,6 +3,12 @@ all-features = true
 
 [advisories]
 yanked = "deny"
+# All three come in through librespot-core and have no fix that librespot's version range allows.
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "Marvin attack needs private-key RSA operations; librespot only verifies the access point's signature with a public key" },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml only parses the product-info XML Spotify's access point sends over the authenticated, encrypted connection; librespot-core pins quick-xml 0.38" },
+    { id = "RUSTSEC-2026-0195", reason = "affects NsReader only; librespot-core uses quick_xml::Reader" },
+]
 
 [licenses]
 # Workspace crates are publish = false; their licences are declared in their manifests.
@@ -29,3 +35,5 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# librespot-org/librespot PR #1855's branch, pinned by commit in Cargo.toml until it is released.
+allow-git = ["https://github.com/Neppkun/librespot"]

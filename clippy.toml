@@ -1,2 +1,2 @@
 # Product and SDK names that appear in docs without backticks. ".." keeps clippy's defaults.
-doc-valid-idents = ["..", "OxiBar", "ThrowInfo", "CatchableType", "TypeDescriptor", "foobar2000", "librespot", "foo_oxitone", "foo_librespot", "ReplayGain"]
+doc-valid-idents = ["..", "OxiBar", "ThrowInfo", "CatchableType", "TypeDescriptor", "foobar2000", "librespot", "foo_oxitone", "foo_librespot", "foo_spotify", "ReplayGain"]
