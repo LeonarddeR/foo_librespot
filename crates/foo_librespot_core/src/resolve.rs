@@ -11,6 +11,7 @@ use futures_util::stream::{self, StreamExt};
 use librespot_core::Session;
 use librespot_core::date::Date;
 use librespot_core::error::ErrorKind;
+use librespot_metadata::show::ShowConsumptionOrder;
 use librespot_metadata::{Album, Episode, Metadata, Playlist, Show, Track};
 use librespot_protocol::extended_metadata::{
 	BatchedEntityRequest, BatchedExtensionResponse, EntityRequest, ExtensionQuery,
@@ -91,7 +92,8 @@ pub trait MetadataSource: Send + Sync {
 		id: SpotifyId,
 	) -> impl Future<Output = Result<(String, Vec<SpotifyUri>), CoreError>> + Send;
 
-	/// The show name and its episode ids in the order Spotify lists them.
+	/// The show name and its episode ids in listening order: oldest first for a show meant to be
+	/// heard from the start, newest first for the rest.
 	fn show(
 		&self,
 		id: SpotifyId,
@@ -212,6 +214,19 @@ fn playlist_entry(uri: &SpotifyUri) -> Entry {
 		other => SkipReason::Unsupported(other.item_type().to_owned()),
 	};
 	Entry::Skip(Skipped { uri: uri.to_uri(), reason })
+}
+
+/// `newest_first`, the order Spotify lists a show's episodes in, put in the order the show is
+/// meant to be heard: from the first episode for a sequential show, such as a Bible-in-a-year
+/// podcast, and from the newest for the rest.
+pub fn listening_order(
+	mut newest_first: Vec<SpotifyId>,
+	order: ShowConsumptionOrder,
+) -> Vec<SpotifyId> {
+	if order == ShowConsumptionOrder::SEQUENTIAL {
+		newest_first.reverse();
+	}
+	newest_first
 }
 
 /// Runs `request` again while librespot refuses it for its own rate limit, waiting longer each
@@ -430,7 +445,7 @@ impl MetadataSource for LibrespotMetadata {
 		let uri = SpotifyUri::Show { id };
 		let show = retry_rate_limited(|| Show::get(&self.session, &uri)).await?;
 		let ids = show.episodes.0.iter().map(SpotifyId::try_from).collect::<Result<Vec<_>, _>>()?;
-		Ok((show.name, ids))
+		Ok((show.name, listening_order(ids, show.consumption_order)))
 	}
 }
 
@@ -489,9 +504,11 @@ mod tests {
 	use protobuf::well_known_types::any::Any;
 	use protobuf::{EnumOrUnknown, MessageField};
 
+	use librespot_metadata::show::ShowConsumptionOrder;
+
 	use super::{
-		CachedSource, MetadataSource, SkipReason, TrackCache, extension_values, resolve,
-		retry_rate_limited,
+		CachedSource, MetadataSource, SkipReason, TrackCache, extension_values, listening_order,
+		resolve, retry_rate_limited,
 	};
 	use crate::link::{ItemId, Link, LinkKind};
 	use crate::metadata::TrackInfo;
@@ -658,6 +675,24 @@ mod tests {
 		let mut batches = source.batches.lock().unwrap().clone();
 		batches.sort_unstable();
 		assert_eq!(batches, [50, 100, 100]);
+	}
+
+	#[test]
+	fn a_show_meant_to_be_heard_from_the_start_lists_its_first_episode_first() {
+		// Spotify lists every show's episodes newest first.
+		let newest_first = vec![id(3), id(2), id(1)];
+		assert_eq!(
+			listening_order(newest_first.clone(), ShowConsumptionOrder::SEQUENTIAL),
+			[id(1), id(2), id(3)]
+		);
+		assert_eq!(
+			listening_order(newest_first.clone(), ShowConsumptionOrder::RECENT),
+			newest_first
+		);
+		assert_eq!(
+			listening_order(newest_first.clone(), ShowConsumptionOrder::EPISODIC),
+			newest_first
+		);
 	}
 
 	#[tokio::test]
