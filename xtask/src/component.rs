@@ -1,12 +1,13 @@
 //! The `.fb2k-component` package: a zip that foobar2000 installs from Preferences > Components.
 
-use std::error::Error;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
+
+use crate::Result;
 
 /// The package's file name for `version`.
 pub fn file_name(version: &str) -> String {
@@ -24,13 +25,29 @@ pub fn entries(root: &Path, dll: &Path, licenses: &Path) -> Vec<(PathBuf, &'stat
 	]
 }
 
-/// Writes `entries` to a new archive at `out`, deflated, in the order given.
-pub fn write(out: &Path, entries: &[(PathBuf, &'static str)]) -> Result<(), Box<dyn Error>> {
-	let mut archive = ZipWriter::new(File::create(out)?);
+/// Writes `entries` to a new archive at `out`, deflated, in the order given. The archive is
+/// written beside `out` and only takes its name once it is complete, so a failure leaves
+/// whatever was at `out` alone instead of a valid but incomplete package under the release name.
+pub fn write(out: &Path, entries: &[(PathBuf, &'static str)]) -> Result<()> {
+	let partial = out.with_extension("partial");
+	let written = write_archive(&partial, entries);
+	if written.is_err() {
+		let _ = fs::remove_file(&partial);
+	}
+	written?;
+	fs::rename(&partial, out).map_err(|error| format!("{}: {error}", out.display()))?;
+	Ok(())
+}
+
+fn write_archive(out: &Path, entries: &[(PathBuf, &'static str)]) -> Result<()> {
+	let file = File::create(out).map_err(|error| format!("{}: {error}", out.display()))?;
+	let mut archive = ZipWriter::new(file);
 	let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 	for (source, name) in entries {
 		archive.start_file(*name, options)?;
-		io::copy(&mut File::open(source)?, &mut archive)?;
+		let mut source_file =
+			File::open(source).map_err(|error| format!("{}: {error}", source.display()))?;
+		io::copy(&mut source_file, &mut archive)?;
 	}
 	archive.finish()?;
 	Ok(())
@@ -87,5 +104,19 @@ mod tests {
 			]
 		);
 		assert!(found.iter().all(|(name, _)| !name.contains('\\')));
+	}
+
+	#[test]
+	fn a_failed_write_leaves_the_previous_package_alone() {
+		let dir = tempfile::tempdir().unwrap();
+		let out = dir.path().join("foo_librespot-0.1.0.fb2k-component");
+		fs::write(&out, b"the good package").unwrap();
+		let missing = dir.path().join("foo_librespot.dll");
+		let error = write(&out, &[(missing.clone(), "x64/foo_librespot.dll")]).unwrap_err();
+		assert_eq!(fs::read(&out).unwrap(), b"the good package");
+		// No half-written archive is left next to it either.
+		assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+		// The error says which file it couldn't read.
+		assert!(error.to_string().contains(&missing.display().to_string()), "{error}");
 	}
 }
