@@ -2,15 +2,17 @@
 //! session that is replaced when it drops.
 
 use std::future::Future;
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use librespot_core::cache::Cache;
 use librespot_core::error::ErrorKind;
 use librespot_core::{Session, SessionConfig};
 
-use crate::profile::Profile;
+use crate::profile::{Profile, ProfileError};
 use crate::{CoreError, Credentials};
 
 /// How long to wait after connecting for Spotify to say which kind of account this is.
@@ -52,17 +54,38 @@ pub trait Connector: Send + Sync + 'static {
 	) -> impl Future<Output = Result<Connected<Self::Session>, CoreError>> + Send;
 }
 
+/// How long a connect may take before the caller gets a timeout. librespot itself has no limit
+/// on some of the steps, and the session lock is held meanwhile.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Keeps one live session and replaces it when it drops, using the stored login.
 pub struct SessionManager<C: Connector> {
 	connector: C,
 	profile: Arc<Profile>,
+	connect_timeout: Duration,
 	// Held for the whole connect, so callers that arrive together share one connection.
 	current: tokio::sync::Mutex<Option<C::Session>>,
+	// Bumped by every logout, so a connect that finishes afterwards is thrown away.
+	logouts: AtomicU64,
 }
 
 impl<C: Connector> SessionManager<C> {
 	pub fn new(connector: C, profile: Arc<Profile>) -> Self {
-		Self { connector, profile, current: tokio::sync::Mutex::new(None) }
+		Self::with_connect_timeout(connector, profile, CONNECT_TIMEOUT)
+	}
+
+	pub fn with_connect_timeout(
+		connector: C,
+		profile: Arc<Profile>,
+		connect_timeout: Duration,
+	) -> Self {
+		Self {
+			connector,
+			profile,
+			connect_timeout,
+			current: tokio::sync::Mutex::new(None),
+			logouts: AtomicU64::new(0),
+		}
 	}
 
 	/// A live session, connecting with the stored login when there is none.
@@ -72,15 +95,23 @@ impl<C: Connector> SessionManager<C> {
 			return Ok(session.clone());
 		}
 		*current = None;
+		let logouts = self.logouts.load(Ordering::SeqCst);
 		let credentials = match self.profile.load_credentials() {
 			Ok(Some(credentials)) => credentials,
 			Ok(None) => return Err(CoreError::NotLoggedIn),
-			Err(error) => {
-				log::warn!("{error}; log in again");
+			Err(ProfileError::Unreadable(reason)) => {
+				// It will never become readable; remove it so this is reported only once.
+				log::warn!("the stored Spotify login can't be read ({reason}); log in again");
+				self.profile.clear_credentials()?;
 				return Err(CoreError::NotLoggedIn);
 			}
+			Err(error) => return Err(error.into()),
 		};
-		match self.connector.connect(credentials).await {
+		match self.connect(credentials).await {
+			Ok(connected) if self.logouts.load(Ordering::SeqCst) != logouts => {
+				connected.session.shutdown();
+				Err(CoreError::NotLoggedIn)
+			}
 			Ok(connected) => {
 				self.save(&connected.credentials);
 				*current = Some(connected.session.clone());
@@ -99,8 +130,12 @@ impl<C: Connector> SessionManager<C> {
 	/// the session. Returns the Spotify username.
 	pub async fn login_with_token(&self, access_token: String) -> Result<String, CoreError> {
 		let mut current = self.current.lock().await;
-		let connected =
-			self.connector.connect(Credentials::with_access_token(access_token)).await?;
+		let logouts = self.logouts.load(Ordering::SeqCst);
+		let connected = self.connect(Credentials::with_access_token(access_token)).await?;
+		if self.logouts.load(Ordering::SeqCst) != logouts {
+			connected.session.shutdown();
+			return Err(CoreError::NotLoggedIn);
+		}
 		self.profile.save_credentials(&connected.credentials)?;
 		if let Some(previous) = current.replace(connected.session) {
 			previous.shutdown();
@@ -108,17 +143,36 @@ impl<C: Connector> SessionManager<C> {
 		Ok(connected.username)
 	}
 
-	pub async fn logout(&self) -> Result<(), CoreError> {
-		let mut current = self.current.lock().await;
-		if let Some(session) = current.take() {
+	/// Forgets the stored login and ends the session. Never waits for a connect in progress,
+	/// because it runs on foobar2000's UI thread; that connect is thrown away when it finishes.
+	pub fn logout(&self) -> Result<(), CoreError> {
+		self.logouts.fetch_add(1, Ordering::SeqCst);
+		self.profile.clear_credentials()?;
+		if let Ok(mut current) = self.current.try_lock()
+			&& let Some(session) = current.take()
+		{
 			session.shutdown();
 		}
-		self.profile.clear_credentials()?;
 		Ok(())
 	}
 
+	/// True when a stored login exists and can be read.
 	pub fn is_logged_in(&self) -> bool {
-		self.profile.has_credentials()
+		matches!(self.profile.load_credentials(), Ok(Some(_)))
+	}
+
+	async fn connect(&self, credentials: Credentials) -> Result<Connected<C::Session>, CoreError> {
+		tokio::time::timeout(self.connect_timeout, self.connector.connect(credentials))
+			.await
+			.map_err(|_| {
+				CoreError::Io(io::Error::new(
+					io::ErrorKind::TimedOut,
+					format!(
+						"Spotify didn't answer within {} seconds",
+						self.connect_timeout.as_secs()
+					),
+				))
+			})?
 	}
 
 	fn save(&self, credentials: &Credentials) {
@@ -378,9 +432,48 @@ mod tests {
 	async fn unreadable_stored_login_counts_as_not_logged_in() {
 		let setup = setup(connects(), false);
 		std::fs::write(setup.profile.dir().join("credentials.bin"), b"garbage").unwrap();
+		assert!(!setup.manager.is_logged_in());
 		let result = setup.manager.session().await;
 		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
 		assert_eq!(setup.connector.calls(), 0);
+		// Removed, so it is reported once instead of on every call.
+		assert!(!setup.profile.has_credentials());
+	}
+
+	#[tokio::test]
+	async fn logout_does_not_wait_for_a_connect_in_progress() {
+		let setup = setup_with(FakeConnector::with_delay(connects(), Duration::from_secs(1)), true);
+		let logout = async {
+			tokio::time::sleep(Duration::from_millis(50)).await;
+			let started = Instant::now();
+			setup.manager.logout().unwrap();
+			started.elapsed()
+		};
+		let (connected, waited) = tokio::join!(setup.manager.session(), logout);
+		assert!(waited < Duration::from_millis(500), "logout waited {waited:?}");
+		// The connect that finished after the logout is thrown away, not stored again.
+		assert!(matches!(connected, Err(CoreError::NotLoggedIn)), "{connected:?}");
+		assert!(!setup.profile.has_credentials());
+		assert!(setup.connector.last_session().shut_down.load(Ordering::SeqCst));
+	}
+
+	#[tokio::test]
+	async fn connect_that_never_finishes_times_out() {
+		let connector = FakeConnector::with_delay(connects(), Duration::from_secs(3600));
+		let dir = tempfile::tempdir().unwrap();
+		let profile = Arc::new(Profile::new(dir.path()));
+		profile.save_credentials(&stored()).unwrap();
+		let manager = SessionManager::with_connect_timeout(
+			connector,
+			Arc::clone(&profile),
+			Duration::from_millis(100),
+		);
+		let result = manager.session().await;
+		assert!(
+			matches!(&result, Err(CoreError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut),
+			"{result:?}"
+		);
+		assert!(profile.has_credentials());
 	}
 
 	#[tokio::test]
@@ -433,7 +526,7 @@ mod tests {
 	async fn logout_clears_credentials_and_shuts_down_the_session() {
 		let setup = setup(connects(), true);
 		setup.manager.session().await.unwrap();
-		setup.manager.logout().await.unwrap();
+		setup.manager.logout().unwrap();
 		assert!(!setup.profile.has_credentials());
 		assert!(!setup.manager.is_logged_in());
 		assert!(setup.connector.last_session().shut_down.load(Ordering::SeqCst));

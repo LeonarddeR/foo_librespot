@@ -69,7 +69,7 @@ impl Core {
 	}
 
 	pub fn logout(&self) -> Result<(), CoreError> {
-		self.runtime.block_on(self.sessions.logout(), &|| false)?
+		self.sessions.logout()
 	}
 
 	pub fn resolve(
