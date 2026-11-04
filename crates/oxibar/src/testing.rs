@@ -37,7 +37,10 @@ pub struct FakeApi {
 	classes: Mutex<Vec<(Guid, Vec<ServicePtr>)>>,
 	console: Arc<Mutex<Vec<String>>>,
 	profile_path: CString,
+	state: Arc<services::FakeState>,
 }
+
+mod services;
 
 static API_VTBL: ApiVtbl = ApiVtbl {
 	service_enum_find_class: find_class,
@@ -66,8 +69,10 @@ impl FakeApi {
 			classes: Mutex::new(Vec::new()),
 			console: console.clone(),
 			profile_path,
+			state: Arc::default(),
 		}));
 		api.add_service(console::IID, new_service(FakeConsole { lines: console }));
+		services::register(api, &api.state);
 		api
 	}
 

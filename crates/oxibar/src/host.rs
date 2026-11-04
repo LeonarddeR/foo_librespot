@@ -72,6 +72,22 @@ impl Host {
 		.unwrap_or_default()
 	}
 
+	/// The one service of a core API class such as `popup_message`, like `standard_api_create_t`.
+	pub fn core_service(&self, iid: &Guid) -> Option<ServicePtr> {
+		if !self.is_available() {
+			return None;
+		}
+		self.enumerate(iid).into_iter().next()
+	}
+
+	/// foobar2000's main window, or 0 when there is none.
+	pub fn main_window(&self) -> isize {
+		Self::api().map_or(0, |api| {
+			try_host(|| unsafe { ((*(*api).vtbl).get_main_window)(api) })
+				.map_or(0, |window| window as isize)
+		})
+	}
+
 	/// foobar2000's profile folder, as the URL-style path it reports.
 	pub fn profile_path(&self) -> String {
 		let Some(api) = Self::api() else { return String::new() };
