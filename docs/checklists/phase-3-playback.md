@@ -38,13 +38,18 @@ Checked by starting the portable foobar2000 from the command line and reading it
 - [ ] Seeking with the seek bar continues from there, without a crash.
 - [ ] Next and Previous move between Spotify tracks, and the next track starts without a long gap.
 - [ ] Stop during playback stops at once.
-- [ ] The Album Art viewer shows the album cover.
-- [ ] Properties of "In Christ Alone" shows a ReplayGain track gain of about -6.62 dB and album gain of about -8.51 dB, without the track having been played.
+- [x] foobar2000 shows the album cover: Properties > Artwork of "In Christ Alone" lists the front cover (the album picture, 636×640 JPEG, 119 KB), with back cover and artist "not present". (Checked from a window capture on 2026-11-04.)
+- [x] Properties > ReplayGain of "In Christ Alone" shows track gain -6.62 dB, track peak 1.012673, album gain -8.51 dB, album peak 1.072389, without the track having been played. (Checked from a window capture on 2026-11-04.)
 - [ ] With ReplayGain enabled in Playback preferences, Spotify tracks play at the same loudness as your own music.
 - [ ] Ctrl+V of an `open.spotify.com` link copied from the browser adds its tracks.
 - [ ] Dragging a link from the browser onto the playlist adds its tracks.
 - [ ] After closing and reopening foobar2000, the entries are still there and play.
 - [ ] Closing foobar2000 from the window gives no crash and no error dialog.
+
+## Found
+
+- With foo_youtube installed (as in the maintainer's own profile), an `open.spotify.com` album link becomes one dead `fy+https://open.spotify.com/…` entry: foo_youtube claims the link first and refuses it ("[DRM] The requested site is known to use DRM protection"). `spotify:` URIs are not affected. To fix before release.
+- The console shows `foo_librespot: loaded (OxiBar 0.1.0)` and `foo_librespot: added 35 tracks from Keith & Kristyn Getty - Give Us This Day Our Daily Hymns`.
 
 ## Result
 
