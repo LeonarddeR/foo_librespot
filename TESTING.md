@@ -69,6 +69,8 @@ pwsh tools/fb2k-portable.ps1 -Run /add oxitone://440
 
 Each milestone has a manual checklist in `docs/checklists/`, starting with [the phase 1 gate](docs/checklists/phase-1-foxide2k-gate.md).
 
+To try the package a release publishes, run `cargo xtask package`. It needs cargo-about (`cargo install --locked cargo-about --features cli`) and writes `target/package/foo_librespot-<version>.fb2k-component`, which foobar2000 installs from Preferences > Components.
+
 ## Testing `foo_librespot_core`
 
 The unit tests need no network and no Spotify account.

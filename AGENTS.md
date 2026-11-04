@@ -13,6 +13,10 @@ foo_librespot is a foobar2000 2.25+ x64 component, written entirely in Rust, tha
 | Lint workflows | `actionlint` |
 | Supply chain | `cargo deny check` |
 | All hooks | `prek run --all-files` |
+| Package | `cargo xtask package` (needs cargo-about) |
+| Release notes | `cargo xtask release-notes <version>` |
+| Release (dry run) | `cargo release` |
+| Release | `cargo release --execute` (maintainer only) |
 
 ## Conventions
 

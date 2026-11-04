@@ -9,18 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `foxide2k`: Rust bindings for writing foobar2000 components, including throwing and catching foobar2000's C++ exceptions from Rust.
-- `foo_oxitone`: a test-tone component that proves `foxide2k` in a real foobar2000.
-- `foo_librespot_core`: Spotify login through the browser, link parsing, album and playlist resolution, track metadata, album art, ReplayGain from Spotify's loudness metadata at import time, and sample-accurate decoding of Spotify audio.
-- `foo_librespot`: the foobar2000 component. Adds `open.spotify.com` links and `spotify:` URIs as playlist entries with their metadata and ReplayGain, plays and seeks Spotify tracks, and shows their album art.
-- `foxide2k`: filesystem, playlist loader, album art and `file_info` support.
-- `foo_librespot`: a Spotify preferences page under Tools to log in, log out and choose the bitrate. It is built for screen readers: each control is named by its label, and the status line is announced without moving focus.
-- `foo_librespot`: adding a Spotify link or playing a Spotify track while logged out opens a "Log in to Spotify" window. It closes by itself once the login is confirmed, and the tracks are then added or played. The browser opens only when you press Open browser.
-- `foo_librespot`: the status bar shows the codec and bitrate of the file that plays.
-- `foo_librespot`: tracks get TOTALTRACKS and TOTALDISCS from their album.
-- `foo_librespot`: tracks get GENRE from the genre tags Spotify gives them: the three it is surest of, capitalized.
-- `foo_librespot`: Spotify audio is only decoded for playback; the Converter, the ReplayGain scanner and similar tools get "Access denied".
-- `foo_librespot`: podcast episode and show links. A show adds all its episodes, playlists keep theirs, and an episode Spotify doesn't host is added as the podcast's own audio link.
-- `foo_librespot`: one popup per import lists the items that were skipped and why, and the console explains how to stop foo_youtube from taking Spotify links.
-- `foxide2k`: preferences pages, dialogs built from in-memory templates with live regions, popups, foobar2000's settings store and main-thread callbacks.
-- `foxide2k`: inputs report technical info that changes while a track plays, such as the bitrate, through foobar2000 2.25's live info. `foo_oxitone` uses it to show its bitrate.
+- Paste, drag or add a Spotify track, album, playlist, episode or show link, in the `open.spotify.com` or `spotify:` form. Its tracks are added to the playlist with their title, artists, album, track and disc numbers and totals, date, genre and album art.
+- Spotify tracks play and seek like any other track.
+- ReplayGain from Spotify's own loudness measurements, there as soon as a track is added, so foobar2000's ReplayGain settings work without scanning.
+- Podcasts. An episode link adds the episode, and a show link adds all its episodes, from the first one for shows meant to be heard in order. An episode Spotify doesn't host is added as the podcast's own audio link.
+- The first link or track that needs a login opens a "Log in to Spotify" window with a code to confirm on Spotify's page. It closes by itself once you confirm, and the login is remembered, encrypted for your Windows account.
+- A Spotify page under File > Preferences > Tools, to log in or out and to choose the bitrate: 96, 160 or 320 kbit/s. While a track plays, the status bar shows the codec and bitrate of the file Spotify sent.
+- The login window and the preferences page work with screen readers: each control is named by its label, and login progress is announced without moving focus.
+- After each import, one popup lists what couldn't be added and why. The console has the full list, and advice when foo_youtube takes Spotify links.
+- Spotify audio is decoded only for playback. The Converter, the ReplayGain scanner and similar tools get "Access denied", so Spotify audio never ends up in a file.
+- Released as a `.fb2k-component`, with the licence notices of everything it is built on.
+- For developers: `foxide2k`, Rust bindings for writing foobar2000 components, including foobar2000's C++ exceptions.
+- For developers: `foo_librespot_core`, the Spotify side, usable without foobar2000.
+- For developers: `foo_oxitone`, a test-tone component that proves `foxide2k` in a real foobar2000.

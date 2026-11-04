@@ -9,7 +9,7 @@ It uses [librespot](https://github.com/librespot-org/librespot) to talk to Spoti
 
 ## Status
 
-Early development. Nothing is released yet.
+Early development. Releases are pre-releases for now.
 
 - `crates/foxide2k`: the Rust layer that talks to foobar2000, named for foobar2000 and oxide, which is what rust is. It is proven in a real foobar2000 by the `foo_oxitone` test-tone component.
 - `crates/foo_librespot_core`: the Spotify side, built on librespot, with no foobar2000 knowledge. It logs in, turns links into track lists with metadata, and plays tracks as seekable PCM. Its `spotify_dev` example tries it against a real account.
@@ -19,6 +19,13 @@ Early development. Nothing is released yet.
 
 - foobar2000 2.25 or later, 64-bit.
 - A Spotify Premium account. librespot does not work with free accounts.
+
+## Install
+
+Download `foo_librespot-<version>.fb2k-component` from the [releases page](https://github.com/LeonarddeR/foo_librespot/releases).
+Open the file, or add it with File > Preferences > Components > Install.
+foobar2000 lists it in Components; press OK and let foobar2000 restart.
+The first releases are pre-releases: they work, but have had few users so far.
 
 ## Logging in
 
@@ -59,4 +66,5 @@ That's exactly why this component has librespot in its name: if librespot breaks
 ## Licence
 
 foo_librespot is released under the MIT licence; see [LICENSE](LICENSE).
+The component package also carries the licences of the Rust libraries it is built on, in `licenses.html` in the component's folder.
 The `foxide2k` crate contains interface definitions transcribed from the foobar2000 SDK, which stay under the SDK's licence; see [crates/foxide2k/sdk-license.txt](crates/foxide2k/sdk-license.txt).
