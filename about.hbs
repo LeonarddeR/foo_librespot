@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>foo_librespot: third-party licences</title>
+</head>
+<body>
+<main>
+<h1>foo_librespot: third-party licences</h1>
+<p>foo_librespot is built on <a href="https://github.com/librespot-org/librespot">librespot</a>, an unofficial Spotify client, and on the Rust libraries below.
+They are used unmodified.
+The ones under the Mozilla Public License 2.0, such as Symphonia, have their source code at the repositories linked here.</p>
+<p>foo_librespot's own licence is in LICENSE.txt, next to this file.</p>
+<p>Each heading below is a licence. Under it, each group of libraries shares one copy of its text.</p>
+{{#each overview}}
+<h2>{{name}}</h2>
+{{#each indices}}
+{{#with (lookup ../../licenses this)}}
+<h3>{{#each used_by}}{{#unless @first}}, {{/unless}}{{crate.name}}{{/each}}</h3>
+<ul>
+{{#each used_by}}
+<li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+{{/each}}
+</ul>
+<pre>{{text}}</pre>
+{{/with}}
+{{/each}}
+{{/each}}
+</main>
+</body>
+</html>
