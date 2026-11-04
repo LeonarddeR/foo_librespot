@@ -153,6 +153,11 @@ pub fn availability(
 	if !windows.is_empty() && !windows.iter().any(|window| *now >= window.start) {
 		return Err(NOT_RELEASED.to_owned());
 	}
+	// Spotify hasn't said yet which country the account is in. Let the track through: playing
+	// checks again, by then with the country, and a skip here would last until the next login.
+	if country.is_empty() {
+		return Ok(());
+	}
 	let not_here = || Err(format!("not available in your country ({country})"));
 	let applies = |restriction: &&librespot_metadata::restriction::Restriction| {
 		restriction.catalogue_strs.iter().any(|restricted| restricted == catalogue)
@@ -447,6 +452,15 @@ mod tests {
 		let track = parse(&restricted(None, Some("USCA"), "premium"));
 		assert_eq!(availability(&track, "NL", "premium", &now()), Ok(()));
 		assert!(availability(&track, "CA", "premium", &now()).is_err());
+	}
+
+	#[test]
+	fn unknown_country_rules_nothing_out_by_country() {
+		// Spotify sends the country in its own packet; until it arrives the country is empty.
+		let allowed = parse(&restricted(Some("NLBE"), None, "premium"));
+		assert_eq!(availability(&allowed, "", "premium", &now()), Ok(()));
+		let blocked = parse(&restricted(None, Some("USCA"), "premium"));
+		assert_eq!(availability(&blocked, "", "premium", &now()), Ok(()));
 	}
 
 	#[test]

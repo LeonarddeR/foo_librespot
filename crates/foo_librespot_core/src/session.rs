@@ -15,7 +15,8 @@ use librespot_core::{Session, SessionConfig};
 use crate::profile::{Profile, ProfileError};
 use crate::{CoreError, Credentials};
 
-/// How long to wait after connecting for Spotify to say which kind of account this is.
+/// How long to wait after connecting for Spotify to say which kind of account this is and which
+/// country it is in.
 pub const ACCOUNT_TYPE_TIMEOUT: Duration = Duration::from_secs(10);
 
 const ATTRIBUTE_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -337,10 +338,25 @@ impl Connector for LibrespotConnector {
 		let cache = Cache::new(None::<PathBuf>, None, None, None)?.with_memory_credentials();
 		let session = Session::new(self.config.clone(), Some(cache));
 		session.connect(credentials, true).await?;
-		let account_type =
-			wait_for_attribute(|| session.get_user_attribute("type"), ACCOUNT_TYPE_TIMEOUT).await;
+		// The account type and the country arrive in separate packets after the login; which
+		// tracks are available depends on the country.
+		let _ = wait_for_attribute(
+			|| {
+				(!session.country().is_empty())
+					.then(|| session.get_user_attribute("type"))
+					.flatten()
+			},
+			ACCOUNT_TYPE_TIMEOUT,
+		)
+		.await;
+		let account_type = session.get_user_attribute("type");
 		if account_type.is_none() {
 			log::warn!("Spotify didn't say which kind of account this is; trying anyway");
+		}
+		if session.country().is_empty() {
+			log::warn!(
+				"Spotify didn't say which country the account is in; tracks aren't ruled out by country"
+			);
 		}
 		if let Err(error) = check_account_type(account_type.as_deref()) {
 			session.shutdown();
