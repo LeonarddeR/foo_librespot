@@ -1,11 +1,13 @@
 //! Turning pasted, dragged or added Spotify links into playlist entries.
 //!
-//! Links reach the playlist loader two ways:
-//! - `spotify:` URIs and `sptf://` paths are claimed by our filesystem, whose stub file for an
-//!   album or playlist carries [`CONTENT_TYPE`];
-//! - `https://open.spotify.com/…` links are claimed by foobar2000's own HTTP filesystem, which
-//!   fetches the page and reports `text/html`, as it did for foo_spotify. Every other web page
-//!   the user adds arrives too, and is turned away before any Spotify call.
+//! Links reach the playlist loader two ways. foobar2000 asks services in an order that changes
+//! every time it starts, so either can come first:
+//! - our filesystem claims `sptf://` paths, `spotify:` URIs and `open.spotify.com` links. Its
+//!   stub file for an album or playlist carries [`CONTENT_TYPE`], which only our loader takes.
+//! - foobar2000's own HTTP filesystem fetches an `open.spotify.com` page and reports
+//!   `text/html`, as it did for foo_spotify. Our loader takes that too, and turns away every other
+//!   web page before any Spotify call. A loader asked first, such as `foo_youtube`'s, can take the
+//!   page instead.
 
 use std::fmt::Write as _;
 
@@ -42,12 +44,16 @@ fn canonical(link: &Link) -> String {
 	format!("{PATH_SCHEME}spotify:{kind}:{}", link.id.to_base62())
 }
 
-/// Claims `sptf://` paths and `spotify:` URIs.
+/// Claims `sptf://` paths, `spotify:` URIs and Spotify's web links.
 pub struct SpotifyFilesystem;
 
 impl Filesystem for SpotifyFilesystem {
 	fn is_our_path(path: &str) -> bool {
-		starts_with_ignore_case(path, PATH_SCHEME) || starts_with_ignore_case(path, "spotify:")
+		starts_with_ignore_case(path, PATH_SCHEME)
+			|| starts_with_ignore_case(path, "spotify:")
+			// Only links that name a track, album or playlist: every other web page stays with
+			// foobar2000's own HTTP filesystem.
+			|| (starts_with_ignore_case(path, "http") && parse_link(path).is_ok())
 	}
 
 	fn canonical_path(path: &str) -> Option<String> {
@@ -194,12 +200,26 @@ mod tests {
 	}
 
 	#[test]
-	fn filesystem_claims_sptf_and_spotify_uris_only() {
+	fn filesystem_claims_sptf_paths_spotify_uris_and_spotify_web_links() {
 		let filesystem = filesystem();
 		assert!(filesystem.is_our_path(&format!("sptf://spotify:track:{TRACK_ID}")));
 		assert!(filesystem.is_our_path(&format!("spotify:album:{ALBUM}")));
-		assert!(!filesystem.is_our_path(&format!("https://open.spotify.com/album/{ALBUM}")));
+		assert!(filesystem.is_our_path(&format!("https://open.spotify.com/album/{ALBUM}?si=x")));
+		assert!(
+			filesystem.is_our_path(&format!("https://open.spotify.com/intl-nl/track/{TRACK_ID}"))
+		);
+		assert!(!filesystem.is_our_path("https://open.spotify.com/artist/1hZbT7cOjvmLOdb5Ey5SHu"));
+		assert!(!filesystem.is_our_path("https://www.youtube.com/watch?v=abc"));
 		assert!(!filesystem.is_our_path("file://C:\\a.mp3"));
+	}
+
+	#[test]
+	fn web_links_open_as_the_stub_of_their_canonical_path() {
+		let filesystem = filesystem();
+		let album = filesystem
+			.open(&format!("https://open.spotify.com/album/{ALBUM}?si=x"), OPEN_MODE_READ)
+			.unwrap();
+		assert_eq!(album.content_type().as_deref(), Some(CONTENT_TYPE));
 	}
 
 	#[test]
