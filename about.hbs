@@ -47,6 +47,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.</pre>
 {{else}}
+{{!-- cargo xtask package reads this marker: a generic text of a licence that needs a copyright
+      line means a crate is missing its clarify entry in about.toml. --}}
+{{#unless source_path}}<!-- generic licence text: {{id}} for {{#each used_by}}{{crate.name}} {{/each}}-->{{/unless}}
 <pre>{{text}}</pre>
 {{/if}}
 {{/with}}

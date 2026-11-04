@@ -96,11 +96,8 @@ fn write_licenses(root: &Path, out: &Path) -> Result<()> {
 		);
 	}
 	run(&mut about_command(root, out), "cargo about generate")?;
-	if let Some(placeholder) = notices::placeholder(&fs::read_to_string(out)?) {
-		return Err(format!(
-			"licenses.html has the generic licence text's {placeholder} instead of a copyright line: give the crate a clarify entry in about.toml"
-		)
-		.into());
+	if let Some(missing) = notices::missing_copyright(&fs::read_to_string(out)?) {
+		return Err(missing.into());
 	}
 	Ok(())
 }
