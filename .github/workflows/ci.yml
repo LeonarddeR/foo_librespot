@@ -112,8 +112,10 @@ jobs:
           tool: cargo-about@0.9.3
       # The same package a release publishes, on every push, so a broken package or a dependency
       # whose licence can't be listed shows up long before a release.
+      # --expect-built: the package must hold the DLL uploaded above, so packaging fails if it had
+      # to build the DLL again.
       - name: cargo xtask package
-        run: cargo --locked xtask package
+        run: cargo --locked xtask package --expect-built
       - name: Upload the component package
         uses: actions/upload-artifact@v7
         with:

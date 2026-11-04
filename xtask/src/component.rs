@@ -16,9 +16,9 @@ pub fn file_name(version: &str) -> String {
 /// What goes in the package, as (source file, name in the archive). A 64-bit foobar2000 extracts
 /// the whole archive, then puts the files from `x64/` over the root ones, so the DLL goes under
 /// `x64/` and the notices at the root, where they end up next to it.
-pub fn entries(root: &Path, release_dir: &Path, licenses: &Path) -> Vec<(PathBuf, &'static str)> {
+pub fn entries(root: &Path, dll: &Path, licenses: &Path) -> Vec<(PathBuf, &'static str)> {
 	vec![
-		(release_dir.join("foo_librespot.dll"), "x64/foo_librespot.dll"),
+		(dll.to_path_buf(), "x64/foo_librespot.dll"),
 		(root.join("LICENSE"), "LICENSE.txt"),
 		(licenses.to_path_buf(), "licenses.html"),
 	]
@@ -52,16 +52,13 @@ mod tests {
 	#[test]
 	fn entries_put_the_dll_under_x64_and_the_notices_at_the_root() {
 		let root = Path::new("repo");
-		let release = Path::new("repo/target/release");
+		let dll = Path::new("repo/target/release/foo_librespot.dll");
 		let licenses = Path::new("repo/target/package/licenses.html");
-		let entries = entries(root, release, licenses);
+		let entries = entries(root, dll, licenses);
 		let names: Vec<_> = entries.iter().map(|(_, name)| *name).collect();
 		assert_eq!(names, ["x64/foo_librespot.dll", "LICENSE.txt", "licenses.html"]);
 		let sources: Vec<_> = entries.iter().map(|(source, _)| source.clone()).collect();
-		assert_eq!(
-			sources,
-			[release.join("foo_librespot.dll"), root.join("LICENSE"), licenses.to_path_buf()]
-		);
+		assert_eq!(sources, [dll.to_path_buf(), root.join("LICENSE"), licenses.to_path_buf()]);
 	}
 
 	#[test]

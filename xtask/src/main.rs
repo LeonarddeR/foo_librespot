@@ -13,13 +13,15 @@ use std::{env, fs};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const USAGE: &str = "usage: cargo xtask package | cargo xtask release-notes <version>";
+const USAGE: &str =
+	"usage: cargo xtask package [--expect-built] | cargo xtask release-notes <version>";
 
 fn main() -> ExitCode {
 	let args: Vec<String> = env::args().skip(1).collect();
 	let args: Vec<&str> = args.iter().map(String::as_str).collect();
 	let result = match args.as_slice() {
-		["package"] => package(),
+		["package"] => package(false),
+		["package", "--expect-built"] => package(true),
 		["release-notes", version] => print_release_notes(version),
 		_ => Err(USAGE.into()),
 	};
@@ -47,38 +49,82 @@ fn run(command: &mut Command, what: &str) -> Result<()> {
 	if command.status()?.success() { Ok(()) } else { Err(format!("{what} failed").into()) }
 }
 
-/// foo_librespot's version and the target folder, as `cargo metadata` resolves them.
-fn metadata(root: &Path) -> Result<(String, PathBuf)> {
-	let output = cargo(root).args(["metadata", "--format-version", "1", "--no-deps"]).output()?;
-	if !output.status.success() {
-		return Err("cargo metadata failed".into());
-	}
-	let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-	let version = metadata["packages"]
-		.as_array()
-		.and_then(|packages| packages.iter().find(|package| package["name"] == "foo_librespot"))
-		.and_then(|package| package["version"].as_str())
-		.ok_or("cargo metadata has no foo_librespot")?;
-	let target =
-		metadata["target_directory"].as_str().ok_or("cargo metadata has no target folder")?;
-	Ok((version.to_owned(), PathBuf::from(target)))
+/// The DLL `cargo build` made, as its JSON messages report it.
+#[derive(Debug)]
+struct Built {
+	dll: PathBuf,
+	pdb: PathBuf,
+	version: String,
+	/// Cargo found the DLL up to date and didn't build it again.
+	fresh: bool,
 }
 
-fn package() -> Result<()> {
+/// foo_librespot's DLL in the messages of `cargo build --message-format=json`. The paths are
+/// where cargo wrote the files, whatever the target folder and target.
+fn built_dll(messages: &str) -> Result<Built> {
+	let artifact = messages
+		.lines()
+		.filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+		.find(|message| {
+			message["reason"] == "compiler-artifact" && message["target"]["name"] == "foo_librespot"
+		})
+		.ok_or("cargo build reported no foo_librespot artifact")?;
+	let file = |extension: &str| {
+		artifact["filenames"]
+			.as_array()
+			.into_iter()
+			.flatten()
+			.filter_map(serde_json::Value::as_str)
+			.find(|name| name.ends_with(extension))
+			.map(PathBuf::from)
+			.ok_or_else(|| format!("cargo build made no foo_librespot {extension}"))
+	};
+	// "path+file:///…/foo_librespot#0.1.0", or "…#foo_librespot@0.1.0" when the folder's name
+	// differs from the crate's.
+	let id = artifact["package_id"].as_str().unwrap_or_default();
+	let version = id.rsplit_once('#').map(|(_, rest)| rest.rsplit('@').next().unwrap_or(rest));
+	Ok(Built {
+		dll: file(".dll")?,
+		pdb: file(".pdb")?,
+		version: version.filter(|version| !version.is_empty()).ok_or("no version")?.to_owned(),
+		fresh: artifact["fresh"].as_bool().unwrap_or(false),
+	})
+}
+
+/// Builds the release DLL. With `expect_built`, as in CI, the DLL must already be built: a
+/// rebuild here would mean the DLL CI uploaded differs from the one in the package.
+fn build_dll(root: &Path, expect_built: bool) -> Result<Built> {
+	let output = cargo(root)
+		.args(["build", "--release", "--locked", "-p", "foo_librespot"])
+		.arg("--message-format=json-render-diagnostics")
+		.stderr(std::process::Stdio::inherit())
+		.output()?;
+	if !output.status.success() {
+		return Err("cargo build failed".into());
+	}
+	let built = built_dll(&String::from_utf8_lossy(&output.stdout))?;
+	if expect_built && !built.fresh {
+		return Err("cargo build had to build foo_librespot.dll again, so it differs from the DLL built before: make that build select the same crates and features".into());
+	}
+	Ok(built)
+}
+
+fn package(expect_built: bool) -> Result<()> {
 	let root = root();
-	run(
-		cargo(&root).args(["build", "--release", "--locked", "-p", "foo_librespot"]),
-		"cargo build",
-	)?;
-	let (version, target) = metadata(&root)?;
-	let release_dir = target.join("release");
-	let out_dir = target.join("package");
+	let built = build_dll(&root, expect_built)?;
+	// target\release, or target\<target>\release; the package goes next to it.
+	let out_dir = built
+		.dll
+		.parent()
+		.and_then(Path::parent)
+		.ok_or("the DLL has no target folder")?
+		.join("package");
 	fs::create_dir_all(&out_dir)?;
 	let licenses = out_dir.join("licenses.html");
 	write_licenses(&root, &licenses)?;
-	let component = out_dir.join(component::file_name(&version));
-	component::write(&component, &component::entries(&root, &release_dir, &licenses))?;
-	fs::copy(release_dir.join("foo_librespot.pdb"), out_dir.join("foo_librespot.pdb"))?;
+	let component = out_dir.join(component::file_name(&built.version));
+	component::write(&component, &component::entries(&root, &built.dll, &licenses))?;
+	fs::copy(&built.pdb, out_dir.join("foo_librespot.pdb"))?;
 	println!("{}", component.display());
 	Ok(())
 }
@@ -126,9 +172,34 @@ fn print_release_notes(version: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-	use std::path::Path;
+	use std::path::{Path, PathBuf};
 
-	use super::about_command;
+	use super::{about_command, built_dll};
+
+	/// What `cargo build --message-format=json` prints for foo_librespot on Windows, trimmed.
+	const ARTIFACT: &str = r#"{"reason":"compiler-artifact","package_id":"path+file:///P:/r/crates/foo_librespot#0.2.0","target":{"kind":["cdylib","rlib"],"name":"foo_librespot"},"filenames":["P:\\r\\target\\release\\foo_librespot.dll","P:\\r\\target\\release\\foo_librespot.dll.lib","P:\\r\\target\\release\\foo_librespot.pdb","P:\\r\\target\\release\\libfoo_librespot.rlib"],"fresh":true}"#;
+
+	#[test]
+	fn the_dll_pdb_version_and_freshness_come_from_cargos_messages() {
+		let other = r#"{"reason":"compiler-artifact","package_id":"registry+x#tokio@1.0.0","target":{"name":"tokio"},"filenames":[],"fresh":true}"#;
+		let finished = r#"{"reason":"build-finished","success":true}"#;
+		let built = built_dll(&format!("{other}\n{ARTIFACT}\n{finished}\n")).unwrap();
+		assert_eq!(built.dll, PathBuf::from(r"P:\r\target\release\foo_librespot.dll"));
+		assert_eq!(built.pdb, PathBuf::from(r"P:\r\target\release\foo_librespot.pdb"));
+		assert_eq!(built.version, "0.2.0");
+		assert!(built.fresh);
+	}
+
+	#[test]
+	fn a_package_id_that_names_the_crate_still_gives_the_version() {
+		let messages = ARTIFACT.replace("foo_librespot#0.2.0", "foo#foo_librespot@0.3.1");
+		assert_eq!(built_dll(&messages).unwrap().version, "0.3.1");
+	}
+
+	#[test]
+	fn no_foo_librespot_artifact_is_an_error() {
+		assert!(built_dll(r#"{"reason":"build-finished","success":true}"#).is_err());
+	}
 
 	#[test]
 	fn cargo_about_fails_on_unlisted_licences_and_uses_the_lockfile() {
