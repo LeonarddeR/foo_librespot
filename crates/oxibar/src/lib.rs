@@ -26,6 +26,7 @@ pub mod guid;
 pub mod host;
 pub mod initquit;
 pub mod input;
+pub mod playlist_loader;
 pub mod service;
 pub mod strings;
 #[cfg(any(test, feature = "testing"))]

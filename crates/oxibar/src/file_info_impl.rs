@@ -386,7 +386,7 @@ unsafe fn copied(text: *const c_char) -> CString {
 }
 
 /// The metadata of any `file_info`, read through its vtable.
-unsafe fn read_meta(source: *const RawFileInfo) -> Result<Vec<(CString, Vec<CString>)>> {
+pub(crate) unsafe fn read_meta(source: *const RawFileInfo) -> Result<Vec<(CString, Vec<CString>)>> {
 	let vtbl = unsafe { &*(*source).vtbl };
 	let count = try_host(|| unsafe { (vtbl.meta_get_count)(source) })?;
 	let mut meta = Vec::with_capacity(count);
@@ -405,7 +405,7 @@ unsafe fn read_meta(source: *const RawFileInfo) -> Result<Vec<(CString, Vec<CStr
 }
 
 /// The technical info of any `file_info`, read through its vtable.
-unsafe fn read_info(source: *const RawFileInfo) -> Result<Vec<(CString, CString)>> {
+pub(crate) unsafe fn read_info(source: *const RawFileInfo) -> Result<Vec<(CString, CString)>> {
 	let vtbl = unsafe { &*(*source).vtbl };
 	let count = try_host(|| unsafe { (vtbl.info_get_count)(source) })?;
 	let mut info = Vec::with_capacity(count);

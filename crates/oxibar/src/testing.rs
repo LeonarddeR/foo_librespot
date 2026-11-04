@@ -11,9 +11,13 @@ use crate::abi::component::{Api, ApiVtbl, ServiceClassRef};
 use crate::abi::componentversion::ComponentVersionVtbl;
 use crate::abi::console::{self, ConsoleReceiverVtbl};
 use crate::abi::file::{FileStats, FileVtbl, StreamReaderVtbl, StreamWriterVtbl};
+use crate::abi::file_info::{FileInfo as RawFileInfo, ReplayGainInfo};
 use crate::abi::filesystem::{self, FilesystemVtbl};
 use crate::abi::initquit::InitQuitVtbl;
 use crate::abi::input::{DecoderVtbl, InputEntryVtbl};
+use crate::abi::playlist_loader::{
+	self, PlayableLocation, PlaylistLoaderCallbackVtbl, PlaylistLoaderVtbl,
+};
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 use crate::abi::string_base::{StringBase, StringBaseVtbl};
 use crate::cxx::{ExceptionKind, HostException, try_host};
@@ -961,6 +965,301 @@ impl FileHandle {
 		let (vtbl, this) = self.writer();
 		let abort = FakeAbort::new(false);
 		try_host(|| unsafe { (vtbl.write)(this, data.as_ptr().cast(), data.len(), abort.as_raw()) })
+	}
+}
+
+/// `metadb_handle` (`SDK\metadb_handle.h:39`).
+const METADB_HANDLE_IID: Guid = Guid::from_u128(0x160885c6_3aa3_4f60_8718_1240615e6414);
+
+/// One entry a playlist loader added, as [`FakeLoaderCallback`] saw it.
+#[derive(Debug)]
+pub struct LoaderEntry {
+	pub path: String,
+	pub entry_type: u32,
+	pub stats: FileStats,
+	pub fresh: bool,
+	pub meta: Vec<(String, Vec<String>)>,
+	pub info: Vec<(String, String)>,
+	pub length: f64,
+	pub replaygain: ReplayGainInfo,
+}
+
+impl LoaderEntry {
+	/// All values of the metadata field `name`.
+	pub fn meta(&self, name: &str) -> Vec<String> {
+		self.meta
+			.iter()
+			.find(|(field, _)| field.eq_ignore_ascii_case(name))
+			.map(|(_, values)| values.clone())
+			.unwrap_or_default()
+	}
+
+	/// The technical info field `name`.
+	pub fn info(&self, name: &str) -> Option<String> {
+		self.info
+			.iter()
+			.find(|(field, _)| field.eq_ignore_ascii_case(name))
+			.map(|(_, value)| value.clone())
+	}
+}
+
+/// What a playlist loader did with a [`FakeLoaderCallback`].
+#[derive(Debug, Default)]
+pub struct LoaderRecord {
+	pub progress: Vec<String>,
+	pub entries: Vec<LoaderEntry>,
+	pub handles_created: usize,
+	handles_released: Arc<AtomicUsize>,
+	/// True once the loader released its reference to the callback.
+	pub callback_dropped: bool,
+}
+
+impl LoaderRecord {
+	/// Handles created by `handle_create` that nobody has released yet.
+	pub fn live_handles(&self) -> usize {
+		self.handles_created - self.handles_released.load(Ordering::SeqCst)
+	}
+}
+
+/// A `playlist_loader_callback` that records what a loader adds.
+pub struct FakeLoaderCallback {
+	record: Arc<Mutex<LoaderRecord>>,
+}
+
+impl FakeLoaderCallback {
+	/// The callback to pass to a loader, and what it will record.
+	#[allow(clippy::new_ret_no_self)]
+	pub fn new() -> (ServicePtr, Arc<Mutex<LoaderRecord>>) {
+		let record = Arc::new(Mutex::new(LoaderRecord::default()));
+		(new_service(Self { record: Arc::clone(&record) }), record)
+	}
+}
+
+impl Drop for FakeLoaderCallback {
+	fn drop(&mut self) {
+		self.record.lock().unwrap_or_else(PoisonError::into_inner).callback_dropped = true;
+	}
+}
+
+unsafe impl ServiceImpl for FakeLoaderCallback {
+	type Vtbl = PlaylistLoaderCallbackVtbl;
+	const IIDS: &'static [Guid] = &[playlist_loader::CALLBACK_IID];
+	const VTBL: &'static PlaylistLoaderCallbackVtbl = &PlaylistLoaderCallbackVtbl {
+		base: ServiceBaseVtbl::new::<Self>(),
+		on_progress: loader_on_progress,
+		on_entry: loader_on_entry,
+		want_info: loader_want_info,
+		on_entry_info: loader_on_entry_info,
+		handle_create: loader_handle_create,
+		is_path_wanted: loader_is_path_wanted,
+		want_browse_info: loader_want_browse_info,
+		on_browse_info: loader_on_browse_info,
+	};
+}
+
+/// A `metadb_handle` that only knows its path.
+struct FakeHandle {
+	path: String,
+	released: Arc<AtomicUsize>,
+}
+
+impl Drop for FakeHandle {
+	fn drop(&mut self) {
+		self.released.fetch_add(1, Ordering::SeqCst);
+	}
+}
+
+unsafe impl ServiceImpl for FakeHandle {
+	type Vtbl = ServiceBaseVtbl;
+	const IIDS: &'static [Guid] = &[METADB_HANDLE_IID];
+	const VTBL: &'static ServiceBaseVtbl = &ServiceBaseVtbl::new::<Self>();
+}
+
+fn loader_record<'a>(this: *mut ServiceBase) -> std::sync::MutexGuard<'a, LoaderRecord> {
+	unsafe { ServiceObject::<FakeLoaderCallback>::value(this) }
+		.record
+		.lock()
+		.unwrap_or_else(PoisonError::into_inner)
+}
+
+unsafe fn handle_path(handle: *const *mut ServiceBase) -> String {
+	unsafe { ServiceObject::<FakeHandle>::value(*handle) }.path.clone()
+}
+
+unsafe extern "C-unwind" fn loader_on_progress(this: *mut ServiceBase, path: *const c_char) {
+	let path = String::from_utf8_lossy(unsafe { bytes_of(path, usize::MAX) }).into_owned();
+	loader_record(this).progress.push(path);
+}
+
+unsafe extern "C-unwind" fn loader_on_entry(
+	this: *mut ServiceBase,
+	handle: *const *mut ServiceBase,
+	entry_type: u32,
+	stats: *const FileStats,
+	fresh: bool,
+) {
+	let entry = LoaderEntry {
+		path: unsafe { handle_path(handle) },
+		entry_type,
+		stats: unsafe { *stats },
+		fresh,
+		meta: Vec::new(),
+		info: Vec::new(),
+		length: 0.0,
+		replaygain: crate::file_info_impl::REPLAYGAIN_UNSET,
+	};
+	loader_record(this).entries.push(entry);
+}
+
+unsafe extern "C-unwind" fn loader_want_info(
+	_this: *mut ServiceBase,
+	_handle: *const *mut ServiceBase,
+	_entry_type: u32,
+	_stats: *const FileStats,
+	_fresh: bool,
+) -> bool {
+	true
+}
+
+fn lossy(text: &CString) -> String {
+	text.to_string_lossy().into_owned()
+}
+
+unsafe extern "C-unwind" fn loader_on_entry_info(
+	this: *mut ServiceBase,
+	handle: *const *mut ServiceBase,
+	entry_type: u32,
+	stats: *const FileStats,
+	info: *const RawFileInfo,
+	fresh: bool,
+) {
+	let vtbl = unsafe { &*(*info).vtbl };
+	let meta = unsafe { crate::file_info_impl::read_meta(info) }.expect("reading meta threw");
+	let fields = unsafe { crate::file_info_impl::read_info(info) }.expect("reading info threw");
+	let mut replaygain = crate::file_info_impl::REPLAYGAIN_UNSET;
+	unsafe { (vtbl.get_replaygain)(info, &raw mut replaygain) };
+	let entry = LoaderEntry {
+		path: unsafe { handle_path(handle) },
+		entry_type,
+		stats: unsafe { *stats },
+		fresh,
+		meta: meta
+			.iter()
+			.map(|(name, values)| (lossy(name), values.iter().map(lossy).collect()))
+			.collect(),
+		info: fields.iter().map(|(name, value)| (lossy(name), lossy(value))).collect(),
+		length: unsafe { (vtbl.get_length)(info) },
+		replaygain,
+	};
+	loader_record(this).entries.push(entry);
+}
+
+unsafe extern "C-unwind" fn loader_handle_create(
+	this: *mut ServiceBase,
+	out: *mut *mut ServiceBase,
+	location: *const PlayableLocation,
+) {
+	let path = unsafe { ((*(*location).vtbl).get_path)(location) };
+	let path = String::from_utf8_lossy(unsafe { bytes_of(path, usize::MAX) }).into_owned();
+	let mut record = loader_record(this);
+	record.handles_created += 1;
+	let handle = new_service(FakeHandle { path, released: Arc::clone(&record.handles_released) });
+	drop(record);
+	unsafe {
+		if let Some(previous) = ServicePtr::from_raw_owned(*out) {
+			drop(previous);
+		}
+		*out = handle.into_raw();
+	}
+}
+
+unsafe extern "C-unwind" fn loader_is_path_wanted(
+	_this: *mut ServiceBase,
+	_path: *const c_char,
+	_entry_type: u32,
+) -> bool {
+	true
+}
+
+unsafe extern "C-unwind" fn loader_want_browse_info(
+	_this: *mut ServiceBase,
+	_handle: *const *mut ServiceBase,
+	_entry_type: u32,
+	_timestamp: u64,
+) -> bool {
+	false
+}
+
+unsafe extern "C-unwind" fn loader_on_browse_info(
+	_this: *mut ServiceBase,
+	_handle: *const *mut ServiceBase,
+	_entry_type: u32,
+	_info: *const RawFileInfo,
+	_timestamp: u64,
+) {
+}
+
+/// Calls a `playlist_loader` service through its vtable, as foobar2000 does.
+pub struct PlaylistLoaderHandle(ServicePtr);
+
+impl PlaylistLoaderHandle {
+	pub fn new(service: ServicePtr) -> Self {
+		Self(service)
+	}
+
+	fn vtbl(&self) -> &PlaylistLoaderVtbl {
+		unsafe { &*(*self.0.as_raw()).vtbl.cast::<PlaylistLoaderVtbl>() }
+	}
+
+	pub fn extension(&self) -> String {
+		let raw = self.0.as_raw();
+		let extension = try_host(|| unsafe { (self.vtbl().get_extension)(raw) }).expect("threw");
+		String::from_utf8_lossy(unsafe { bytes_of(extension, usize::MAX) }).into_owned()
+	}
+
+	pub fn is_our_content_type(&self, content_type: &str) -> bool {
+		let content_type = CString::new(content_type).unwrap();
+		let raw = self.0.as_raw();
+		try_host(|| unsafe { (self.vtbl().is_our_content_type)(raw, content_type.as_ptr()) })
+			.expect("is_our_content_type threw")
+	}
+
+	pub fn can_write(&self) -> bool {
+		let raw = self.0.as_raw();
+		try_host(|| unsafe { (self.vtbl().can_write)(raw) }).expect("can_write threw")
+	}
+
+	/// Calls `open` with no file hint, passing `callback` by value as foobar2000 does.
+	pub fn open(
+		&self,
+		path: &str,
+		callback: ServicePtr,
+		abort: &FakeAbort,
+	) -> Result<(), HostException> {
+		let path = CString::new(path).unwrap();
+		let raw = self.0.as_raw();
+		let file: *mut ServiceBase = std::ptr::null_mut();
+		let mut callback = callback.into_raw();
+		let callback_slot = &raw mut callback;
+		try_host(|| unsafe {
+			(self.vtbl().open)(raw, path.as_ptr(), &raw const file, callback_slot, abort.as_raw());
+		})
+	}
+
+	pub fn write(&self, path: &str) -> Result<(), HostException> {
+		let path = CString::new(path).unwrap();
+		let raw = self.0.as_raw();
+		let file: *mut ServiceBase = std::ptr::null_mut();
+		let abort = FakeAbort::new(false);
+		try_host(|| unsafe {
+			(self.vtbl().write)(
+				raw,
+				path.as_ptr(),
+				&raw const file,
+				std::ptr::null(),
+				abort.as_raw(),
+			);
+		})
 	}
 }
 
