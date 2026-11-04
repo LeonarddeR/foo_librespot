@@ -24,7 +24,9 @@ use protobuf::{EnumOrUnknown, Message};
 
 use crate::genre::parse_genres;
 use crate::link::{ItemId, Link, LinkKind};
-use crate::metadata::{AlbumTotals, TrackInfo, availability, episode_info, track_info};
+use crate::metadata::{
+	AlbumTotals, TrackInfo, availability, episode_availability, episode_info, track_info,
+};
 use crate::replaygain::parse_audio_files;
 use crate::{CoreError, SpotifyId, SpotifyUri};
 
@@ -391,7 +393,20 @@ impl LibrespotMetadata {
 			}
 			ItemId::Episode(_) => {
 				let message = EpisodeMessage::parse_from_bytes(bytes).map_err(parse_error)?;
-				Ok((episode_info(&Episode::try_from(&message)?)?, None))
+				let episode = Episode::try_from(&message)?;
+				let mut info = episode_info(&episode)?;
+				// One Spotify doesn't host plays from the podcast's own link, where Spotify's
+				// restrictions don't apply.
+				if info.external_url.is_none() {
+					info.unavailable = episode_availability(
+						&episode,
+						&viewer.country,
+						&viewer.catalogue,
+						&viewer.now,
+					)
+					.err();
+				}
+				Ok((info, None))
 			}
 		}
 	}

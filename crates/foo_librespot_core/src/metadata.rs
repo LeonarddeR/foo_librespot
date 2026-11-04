@@ -1,7 +1,9 @@
 //! Spotify track and episode metadata, reduced to the fields foobar2000 shows.
 
 use librespot_core::date::Date;
+use librespot_metadata::availability::Availabilities;
 use librespot_metadata::image::Images;
+use librespot_metadata::restriction::Restrictions;
 use librespot_metadata::{Album, Episode, Track};
 
 use crate::link::ItemId;
@@ -135,6 +137,8 @@ impl AlbumTotals {
 	}
 }
 
+const NOT_RELEASED: &str = "not released on Spotify yet";
+
 /// Whether Spotify plays `track` for an account in `country` with the given `catalogue`
 /// attribute (usually "premium"). The same rules as librespot-metadata's private
 /// `available_for_user` in `audio/item.rs`, so a playlist import can skip what would only fail
@@ -145,15 +149,34 @@ pub fn availability(
 	catalogue: &str,
 	now: &Date,
 ) -> Result<(), String> {
-	const NOT_RELEASED: &str = "not released on Spotify yet";
 	if *now < track.earliest_live_timestamp {
 		return Err(NOT_RELEASED.to_owned());
 	}
-	let windows = &track.availability.0;
-	if !windows.is_empty() && !windows.iter().any(|window| *now >= window.start) {
+	available_for_user(&track.availability, &track.restrictions, country, catalogue, now)
+}
+
+/// [`availability`] for a podcast episode Spotify hosts. librespot checks the same windows and
+/// restrictions when it plays one; episodes have no earliest release time.
+pub fn episode_availability(
+	episode: &Episode,
+	country: &str,
+	catalogue: &str,
+	now: &Date,
+) -> Result<(), String> {
+	available_for_user(&episode.availability, &episode.restrictions, country, catalogue, now)
+}
+
+fn available_for_user(
+	windows: &Availabilities,
+	restrictions: &Restrictions,
+	country: &str,
+	catalogue: &str,
+	now: &Date,
+) -> Result<(), String> {
+	if !windows.0.is_empty() && !windows.0.iter().any(|window| *now >= window.start) {
 		return Err(NOT_RELEASED.to_owned());
 	}
-	// Spotify hasn't said yet which country the account is in. Let the track through: playing
+	// Spotify hasn't said yet which country the account is in. Let the item through: playing
 	// checks again, by then with the country, and a skip here would last until the next login.
 	if country.is_empty() {
 		return Ok(());
@@ -163,7 +186,7 @@ pub fn availability(
 		restriction.catalogue_strs.iter().any(|restricted| restricted == catalogue)
 	};
 	// A restriction has either an allow list or a block list; the first one that applies decides.
-	for restriction in track.restrictions.0.iter().filter(applies) {
+	for restriction in restrictions.0.iter().filter(applies) {
 		if let Some(allowed) = &restriction.countries_allowed {
 			return if allowed.iter().any(|code| code == country) { Ok(()) } else { not_here() };
 		}
@@ -214,7 +237,8 @@ mod tests {
 	};
 
 	use super::{
-		AlbumTotals, Cover, availability, episode_info, format_date, largest_cover, track_info,
+		AlbumTotals, Cover, availability, episode_availability, episode_info, format_date,
+		largest_cover, track_info,
 	};
 	use crate::link::ItemId;
 	use crate::{FileId, SpotifyId};
@@ -414,6 +438,37 @@ mod tests {
 		alternative.set_gid(gid(0x11));
 		silent.alternative = vec![alternative];
 		assert!(track_info(&parse(&silent)).unwrap().has_audio);
+	}
+
+	fn restricted_episode(allowed: &str) -> Episode {
+		let mut restriction = RestrictionMessage::new();
+		restriction.catalogue_str = vec!["premium".to_owned()];
+		restriction.set_countries_allowed(allowed.to_owned());
+		let mut message = episode_message();
+		message.restriction = vec![restriction];
+		Episode::try_from(&message).unwrap()
+	}
+
+	#[test]
+	fn episode_availability_follows_its_restrictions() {
+		let episode = restricted_episode("US");
+		assert_eq!(episode_availability(&episode, "US", "premium", &now()), Ok(()));
+		let result = episode_availability(&episode, "NL", "premium", &now());
+		assert!(matches!(&result, Err(reason) if reason.contains("country")), "{result:?}");
+	}
+
+	#[test]
+	fn unreleased_episode_is_unavailable() {
+		let mut message = episode_message();
+		let mut start = DateMessage::new();
+		start.set_year(2999);
+		let mut window = AvailabilityMessage::new();
+		window.catalogue_str = vec!["premium".to_owned()];
+		window.start = MessageField::some(start);
+		message.availability = vec![window];
+		let episode = Episode::try_from(&message).unwrap();
+		let result = episode_availability(&episode, "NL", "premium", &now());
+		assert!(matches!(&result, Err(reason) if reason.contains("released")), "{result:?}");
 	}
 
 	fn restricted(allowed: Option<&str>, forbidden: Option<&str>, catalogue: &str) -> TrackMessage {
