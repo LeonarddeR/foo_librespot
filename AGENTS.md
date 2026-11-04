@@ -45,7 +45,7 @@ Do not re-litigate these without new evidence.
 - The browser never opens by itself (the maintainer's decision). Only the "Open browser" button opens Spotify's login page; a link that needs a login opens the login window, not the browser.
 - The preferences page and the login window are standard Win32 dialogs built from in-memory templates. Each label is created right before its control, creation order is tab order, and the status line is a polite live region.
 - librespot is pinned to the branch of PR #1855 until that fix is released, because stock librespot exits the process on a non-Premium login.
-- ReplayGain comes from Spotify's `AUDIO_FILES` extended metadata (integrated loudness and true peak), fetched in the same request as the track's other metadata, so tracks have it as soon as they are imported. The gains in the audio file's header, plus 1.5 dB, are only a fallback.
+- ReplayGain comes from Spotify's `AUDIO_FILES` extended metadata (integrated loudness and true peak), fetched in the same request as the track's other metadata, so tracks have it as soon as they are imported. A track whose metadata has no loudness gets no ReplayGain: the gains in the audio file's header are only read once playback has opened the file, after foobar2000 has taken the ReplayGain for that play.
 - `panic = "unwind"`, never `abort`: a panic must reach foobar2000 as a C++ exception.
 - The dynamic CRT, as foobar2000 itself uses. No `+crt-static`.
 - foobar2000 2.25 and later only (the maintainer's decision). Foxide2k uses the interfaces 2.25 introduced, such as `input_decoder_v5::poll_live_info`, and leaves the ones they replace, such as `get_dynamic_info`, unanswered.
