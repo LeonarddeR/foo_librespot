@@ -58,6 +58,18 @@ pub trait Connector: Send + Sync + 'static {
 /// on some of the steps, and the session lock is held meanwhile.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a failed connect answers for the callers after it. They are usually waiting for the
+/// same connect (foobar2000 reads the info of many tracks at once), and without this each would
+/// connect again in turn, up to [`CONNECT_TIMEOUT`] each.
+const FAILED_CONNECT_HOLD: Duration = Duration::from_secs(5);
+
+/// A connect that failed, and the logout count it was made under.
+struct Failure {
+	at: tokio::time::Instant,
+	logouts: u64,
+	error: CoreError,
+}
+
 /// Keeps one live session and replaces it when it drops, using the stored login.
 pub struct SessionManager<C: Connector> {
 	connector: C,
@@ -73,6 +85,8 @@ pub struct SessionManager<C: Connector> {
 	// stored login, so a logout can't fall between a connect's check and its save and have the
 	// login written back.
 	stored: std::sync::Mutex<()>,
+	// Only used while `current` is held.
+	failure: std::sync::Mutex<Option<Failure>>,
 }
 
 impl<C: Connector> SessionManager<C> {
@@ -92,11 +106,27 @@ impl<C: Connector> SessionManager<C> {
 			current: tokio::sync::Mutex::new(None),
 			logouts: AtomicU64::new(0),
 			stored: std::sync::Mutex::new(()),
+			failure: std::sync::Mutex::new(None),
 		}
 	}
 
 	fn lock_stored(&self) -> std::sync::MutexGuard<'_, ()> {
 		self.stored.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+	}
+
+	fn lock_failure(&self) -> std::sync::MutexGuard<'_, Option<Failure>> {
+		self.failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+	}
+
+	/// The error of a connect that failed less than [`FAILED_CONNECT_HOLD`] ago, with no logout
+	/// since.
+	fn recent_failure(&self, logouts: u64) -> Option<CoreError> {
+		self.lock_failure()
+			.as_ref()
+			.filter(|failure| {
+				failure.logouts == logouts && failure.at.elapsed() < FAILED_CONNECT_HOLD
+			})
+			.map(|failure| repeat(&failure.error))
 	}
 
 	/// A live session, connecting with the stored login when there is none.
@@ -128,6 +158,9 @@ impl<C: Connector> SessionManager<C> {
 			}
 			Err(error) => return Err(error.into()),
 		};
+		if let Some(error) = self.recent_failure(logouts) {
+			return Err(error);
+		}
 		match self.connect(credentials).await {
 			Ok(connected) => {
 				{
@@ -146,7 +179,14 @@ impl<C: Connector> SessionManager<C> {
 				self.profile.clear_credentials()?;
 				Err(CoreError::NotLoggedIn)
 			}
-			Err(error) => Err(error),
+			Err(error) => {
+				*self.lock_failure() = Some(Failure {
+					at: tokio::time::Instant::now(),
+					logouts,
+					error: repeat(&error),
+				});
+				Err(error)
+			}
 		}
 	}
 
@@ -164,6 +204,7 @@ impl<C: Connector> SessionManager<C> {
 			}
 			self.profile.save_credentials(&connected.credentials)?;
 		}
+		*self.lock_failure() = None;
 		if let Some((previous, _)) = current.replace((connected.session, logouts)) {
 			previous.shutdown();
 		}
@@ -218,6 +259,22 @@ impl<C: Connector> SessionManager<C> {
 		if let Err(error) = self.profile.save_credentials(credentials) {
 			log::warn!("couldn't store the refreshed Spotify login: {error}");
 		}
+	}
+}
+
+/// The same error again, for a caller that shares a failed connect. Errors from librespot and
+/// std can't be cloned, so they keep their kind and message.
+fn repeat(error: &CoreError) -> CoreError {
+	match error {
+		CoreError::NotPremium { account_type } => {
+			CoreError::NotPremium { account_type: account_type.clone() }
+		}
+		CoreError::Spotify(error) => CoreError::Spotify(librespot_core::Error {
+			kind: error.kind,
+			error: error.error.to_string().into(),
+		}),
+		CoreError::Io(error) => CoreError::Io(io::Error::new(error.kind(), error.to_string())),
+		other => CoreError::Unavailable(other.to_string()),
 	}
 }
 
@@ -605,6 +662,42 @@ mod tests {
 		assert!(!setup.profile.has_credentials());
 		assert!(!setup.manager.is_logged_in());
 		assert!(setup.connector.last_session().shut_down.load(Ordering::SeqCst));
+	}
+
+	fn unavailable() -> CoreError {
+		CoreError::Spotify(librespot_core::Error::unavailable("down"))
+	}
+
+	#[tokio::test]
+	async fn callers_waiting_together_share_a_failed_connect() {
+		let connector =
+			FakeConnector::with_delay(Outcome::Fail(unavailable), Duration::from_millis(50));
+		let setup = setup_with(connector, true);
+		let (first, second) = tokio::join!(setup.manager.session(), setup.manager.session());
+		assert!(matches!(first, Err(CoreError::Spotify(_))), "{first:?}");
+		assert!(
+			matches!(&second, Err(error) if error.to_string() == unavailable().to_string()),
+			"{second:?}"
+		);
+		assert_eq!(setup.connector.calls(), 1);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_failed_connect_is_tried_again_after_a_while() {
+		let setup = setup(Outcome::Fail(unavailable), true);
+		let _ = setup.manager.session().await;
+		tokio::time::advance(Duration::from_secs(6)).await;
+		let _ = setup.manager.session().await;
+		assert_eq!(setup.connector.calls(), 2);
+	}
+
+	#[tokio::test]
+	async fn a_logout_after_a_failed_connect_reports_not_logged_in() {
+		let setup = setup(Outcome::Fail(unavailable), true);
+		let _ = setup.manager.session().await;
+		setup.manager.logout().unwrap();
+		let result = setup.manager.session().await;
+		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
 	}
 
 	#[tokio::test]
