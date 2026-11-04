@@ -2,6 +2,8 @@
 
 use std::f64::consts::PI;
 
+use foxide2k::strings::strip_prefix_ignore_case;
+
 pub const SCHEME: &str = "oxitone://";
 pub const SAMPLE_RATE: u32 = 44_100;
 /// Stereo: every frame holds the same sample for left and right.
@@ -29,15 +31,12 @@ pub enum ToneSpec {
 
 /// Whether `path` uses the `oxitone://` scheme, case-insensitively, whatever follows it.
 pub fn has_scheme(path: &str) -> bool {
-	path.get(..SCHEME.len()).is_some_and(|scheme| scheme.eq_ignore_ascii_case(SCHEME))
+	strip_prefix_ignore_case(path, SCHEME).is_some()
 }
 
 /// Parses an `oxitone://` path. Only plain decimal frequencies from 1 to [`MAX_HZ`] are valid.
 pub fn parse(path: &str) -> Option<ToneSpec> {
-	if !has_scheme(path) {
-		return None;
-	}
-	let rest = &path[SCHEME.len()..];
+	let rest = strip_prefix_ignore_case(path, SCHEME)?;
 	if rest.eq_ignore_ascii_case("hostcheck") {
 		return Some(ToneSpec::HostCheck);
 	}

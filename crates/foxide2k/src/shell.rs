@@ -5,15 +5,12 @@ use windows_core::PCWSTR;
 use crate::bindings::Windows::Win32::{SW_SHOWNORMAL, ShellExecuteW};
 use crate::cxx::ExceptionKind;
 use crate::error::{Error, Result};
-use crate::strings::wide;
+use crate::strings::{strip_prefix_ignore_case, wide};
 
 /// Opens `url` in the default browser. Only `https://` URLs are opened, so a page address
 /// from the network can never start a program or open a file.
 pub fn open_url(url: &str) -> Result<()> {
-	let https = url.len() > "https://".len()
-		&& url
-			.get(.."https://".len())
-			.is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+	let https = strip_prefix_ignore_case(url, "https://").is_some_and(|rest| !rest.is_empty())
 		&& !url.contains(['"', '\0', ' ']);
 	if !https {
 		return Err(Error::new(

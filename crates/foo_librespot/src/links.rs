@@ -21,6 +21,7 @@ use foxide2k::file_info_impl::FileInfoImpl;
 use foxide2k::filesystem_service::Filesystem;
 use foxide2k::playlist_loader::{LoaderCallback, PlaylistLoader};
 use foxide2k::popup::{self, PopupIcon};
+use foxide2k::strings::strip_prefix_ignore_case;
 
 use crate::backend::backend;
 use crate::errors::host_error;
@@ -31,7 +32,7 @@ use crate::first_use::login_on_first_use;
 pub const CONTENT_TYPE: &str = "application/x-foo-librespot";
 
 fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
-	text.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+	strip_prefix_ignore_case(text, prefix).is_some()
 }
 
 /// The one path foobar2000 stores for `link`.

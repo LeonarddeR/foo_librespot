@@ -47,6 +47,13 @@ pub(crate) fn wide(text: &str) -> Vec<u16> {
 	text.encode_utf16().chain([0]).collect()
 }
 
+/// `text` without `prefix`, compared ignoring ASCII case, as foobar2000 compares URL schemes;
+/// `None` when `text` doesn't start with it.
+pub fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+	let head = text.get(..prefix.len())?;
+	head.eq_ignore_ascii_case(prefix).then(|| &text[prefix.len()..])
+}
+
 /// A NUL-terminated string foobar2000 passed in. Null, or text that isn't UTF-8, reads as empty.
 ///
 /// # Safety
@@ -174,9 +181,21 @@ pub unsafe fn get_string(string: *const StringBase) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-	use super::{OwnedString, get_string, set_string, str_of};
+	use super::{OwnedString, get_string, set_string, str_of, strip_prefix_ignore_case};
 	use crate::cxx::try_host;
 	use crate::testing::FakeString;
+
+	#[test]
+	fn strip_prefix_ignore_case_ignores_ascii_case_only() {
+		assert_eq!(
+			strip_prefix_ignore_case("SPTF://spotify:track:x", "sptf://"),
+			Some("spotify:track:x")
+		);
+		assert_eq!(strip_prefix_ignore_case("sptf:/", "sptf://"), None);
+		assert_eq!(strip_prefix_ignore_case("http://x", "https://"), None);
+		// A prefix that would end inside a multi-byte character doesn't match.
+		assert_eq!(strip_prefix_ignore_case("é", "e"), None);
+	}
 
 	#[test]
 	fn str_of_reads_foobar2000s_text_and_treats_null_and_bad_utf8_as_empty() {
