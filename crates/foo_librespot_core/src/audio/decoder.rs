@@ -38,6 +38,8 @@ pub struct PcmDecoder {
 	pending_start: usize,
 	samples: Option<SampleBuffer<f64>>,
 	ended: bool,
+	/// An error that came after some frames of a read; the next read returns it.
+	failed: Option<CoreError>,
 }
 
 impl PcmDecoder {
@@ -80,6 +82,7 @@ impl PcmDecoder {
 			pending_start: 0,
 			samples: None,
 			ended: false,
+			failed: None,
 		})
 	}
 
@@ -96,6 +99,9 @@ impl PcmDecoder {
 	/// it holds; 0 means the track has ended, and stays 0 until the next seek.
 	pub fn read(&mut self, out: &mut Vec<f64>, max_frames: usize) -> Result<usize, CoreError> {
 		out.clear();
+		if let Some(error) = self.failed.take() {
+			return Err(error);
+		}
 		let wanted = max_frames * CHANNELS;
 		while out.len() < wanted {
 			if self.pending_start < self.pending.len() {
@@ -103,9 +109,22 @@ impl PcmDecoder {
 				out.extend_from_slice(&self.pending[self.pending_start..self.pending_start + take]);
 				self.pending_start += take;
 				self.position += (take / CHANNELS) as u64;
-			} else if self.ended || !self.decode_next()? {
-				self.ended = true;
+			} else if self.ended {
 				break;
+			} else {
+				match self.decode_next() {
+					Ok(true) => {}
+					Ok(false) => {
+						self.ended = true;
+						break;
+					}
+					// The frames already in `out` count as read; the error comes with the next read.
+					Err(error) if !out.is_empty() => {
+						self.failed = Some(error);
+						break;
+					}
+					Err(error) => return Err(error),
+				}
 			}
 		}
 		Ok(out.len() / CHANNELS)
@@ -114,6 +133,7 @@ impl PcmDecoder {
 	/// Moves to `frame`, so the next read starts exactly there. At or past the end, the next read
 	/// returns 0.
 	pub fn seek(&mut self, frame: u64) -> Result<(), CoreError> {
+		self.failed = None;
 		self.pending.clear();
 		self.pending_start = 0;
 		self.position = frame;
@@ -334,6 +354,8 @@ mod tests {
 	struct StallingReader {
 		inner: Cursor<&'static [u8]>,
 		remaining: usize,
+		/// A seekable source makes the Ogg reader read the last page first, to learn the length.
+		seekable: bool,
 	}
 
 	impl Read for StallingReader {
@@ -356,23 +378,44 @@ mod tests {
 
 	impl MediaSource for StallingReader {
 		fn is_seekable(&self) -> bool {
-			true
+			self.seekable
 		}
 
 		fn byte_len(&self) -> Option<u64> {
-			Some(CHIRP.len() as u64)
+			self.seekable.then_some(CHIRP.len() as u64)
 		}
 	}
 
 	#[test]
 	fn read_error_surfaces_as_io_error() {
-		let source = StallingReader { inner: Cursor::new(CHIRP), remaining: 3000 };
+		let source = StallingReader { inner: Cursor::new(CHIRP), remaining: 3000, seekable: true };
 		let result =
 			PcmDecoder::new(Box::new(source), Some("audio/ogg")).and_then(|mut decoder| {
 				let mut buffer = Vec::new();
 				while decoder.read(&mut buffer, 4096)? > 0 {}
 				Ok(())
 			});
+		assert!(
+			matches!(&result, Err(CoreError::Io(error)) if error.kind() == io::ErrorKind::TimedOut),
+			"{result:?}"
+		);
+	}
+
+	#[test]
+	fn frames_decoded_before_a_read_error_are_returned_first() {
+		let source = StallingReader {
+			inner: Cursor::new(CHIRP),
+			remaining: CHIRP.len() * 9 / 10,
+			seekable: false,
+		};
+		let mut decoder = PcmDecoder::new(Box::new(source), Some("audio/ogg")).unwrap();
+		let mut buffer = Vec::new();
+		// Asks for far more than the reader gives before it stalls.
+		let frames = decoder.read(&mut buffer, 10_000_000).unwrap();
+		assert!(frames > 0);
+		assert_eq!(buffer.len(), frames * CHANNELS);
+		assert_eq!(decoder.position(), frames as u64);
+		let result = decoder.read(&mut buffer, 4096);
 		assert!(
 			matches!(&result, Err(CoreError::Io(error)) if error.kind() == io::ErrorKind::TimedOut),
 			"{result:?}"
