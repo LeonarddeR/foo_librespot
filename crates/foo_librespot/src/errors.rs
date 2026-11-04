@@ -43,7 +43,7 @@ pub fn host_error(error: CoreError) -> Error {
 /// `open.spotify.com` included, so foobar2000 never asks foo_librespot about them.
 pub fn youtube_hint(components: &[String]) -> Option<String> {
 	components.iter().any(|name| name.eq_ignore_ascii_case("foo_youtube")).then(|| {
-		"foo_youtube takes open.spotify.com links before foo_librespot sees them. Add the line \"deny spotify.com\" to foo_youtube's host filter in its preferences; spotify: links work either way.".to_owned()
+		"foo_youtube may take open.spotify.com links before foo_librespot sees them. Add the line \"deny spotify.com\" to foo_youtube's host filter in its preferences; spotify: links work either way.".to_owned()
 	})
 }
 
@@ -92,7 +92,7 @@ mod tests {
 		assert_eq!(
 			youtube_hint(&loaded(&["foo_youtube", "foo_librespot"])).as_deref(),
 			Some(
-				"foo_youtube takes open.spotify.com links before foo_librespot sees them. Add the line \"deny spotify.com\" to foo_youtube's host filter in its preferences; spotify: links work either way."
+				"foo_youtube may take open.spotify.com links before foo_librespot sees them. Add the line \"deny spotify.com\" to foo_youtube's host filter in its preferences; spotify: links work either way."
 			)
 		);
 	}

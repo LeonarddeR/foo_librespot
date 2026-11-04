@@ -37,7 +37,7 @@ While a track plays, the status bar shows the codec and bitrate of the file Spot
 
 ## Troubleshooting
 
-- **open.spotify.com links turn into entries that won't play, and the console mentions foo_youtube.** foo_youtube claims every web link by default, Spotify's included, before foo_librespot sees them. In foo_youtube's preferences, add the line `deny spotify.com` to its host filter. Links in the `spotify:album:…` form work either way. foo_librespot prints this advice to the console when foo_youtube is loaded.
+- **open.spotify.com links turn into entries that won't play, and the console mentions foo_youtube.** foo_youtube claims every web link by default, Spotify's included. foobar2000 asks its components in an order that changes each time it starts, so in some sessions foo_youtube sees Spotify links before foo_librespot does. In foo_youtube's preferences, add the line `deny spotify.com` to its host filter. Links in the `spotify:album:…` form work either way. foo_librespot prints this advice to the console when foo_youtube is loaded.
 - **"Not logged in to Spotify."** Log in from File > Preferences > Tools > foo_librespot.
 - **An album or playlist adds fewer tracks than it has.** Podcast episodes, local files and tracks Spotify doesn't offer in your country are skipped. A popup lists them after the import, and the console has the full list.
 

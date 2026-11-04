@@ -68,7 +68,7 @@ fn on_init_hints_at_foo_youtube_when_it_is_loaded() {
 		new_service(ComponentVersionService::new("foo_youtube", "1.0", "")),
 	);
 	on_init(&component.create_all(&INITQUIT).pop().expect("an initquit service"));
-	let hint = "foo_librespot: foo_youtube takes open.spotify.com links before foo_librespot sees them. \
+	let hint = "foo_librespot: foo_youtube may take open.spotify.com links before foo_librespot sees them. \
 		Add the line \"deny spotify.com\" to foo_youtube's host filter in its preferences; spotify: links work either way.";
 	assert!(api.console_lines().iter().any(|line| line == hint), "{:?}", api.console_lines());
 }

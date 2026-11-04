@@ -56,7 +56,7 @@ These were run with the stored login moved aside; it was restored byte-for-byte 
 
 ### The console
 
-- [x] At startup, with foo_youtube loaded: "foo_librespot: foo_youtube takes open.spotify.com links before foo_librespot sees them. Add the line "deny spotify.com" to foo_youtube's host filter in its preferences; spotify: links work either way."
+- [x] At startup, with foo_youtube loaded: "foo_librespot: foo_youtube may take open.spotify.com links before foo_librespot sees them. Add the line "deny spotify.com" to foo_youtube's host filter in its preferences; spotify: links work either way."
 - [x] Once per session while logged out: "foo_librespot: not logged in to Spotify; log in from File > Preferences > Tools > foo_librespot."
 
 ### Found
