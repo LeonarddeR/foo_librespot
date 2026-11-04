@@ -151,7 +151,7 @@ impl PlaylistLoader for SpotifyLoader {
 			plural(added, "track", "tracks")
 		));
 		if !resolved.skipped.is_empty() {
-			let message = skipped_message(resolved.tracks.len(), source, &resolved.skipped);
+			let message = skipped_message(added, source, &resolved.skipped);
 			if let Err(error) = popup::show("foo_librespot", &message, PopupIcon::Information) {
 				console::print(&format!("foo_librespot: {}", error.message));
 			}

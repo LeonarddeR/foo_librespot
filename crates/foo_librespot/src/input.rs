@@ -26,15 +26,10 @@ const NOT_FOR_PLAYBACK: &str = "Spotify audio can only be played: foo_librespot 
 /// A tenth of a second per `decode_run`, as foobar2000's own inputs deliver.
 const CHUNK_FRAMES: usize = 4410;
 
-/// The Spotify track or episode a path names: `sptf://spotify:track:<id>`, which foo_librespot
-/// and foo_spotify store, `sptf://spotify:episode:<id>`, or a bare `spotify:` URI of either.
-pub fn item_id(path: &str) -> Option<ItemId> {
-	parse_item(path)
-}
-
-/// [`item_id`], or the error foobar2000 expects for a path that isn't ours.
+/// The track or episode `path` names (see [`parse_item`]), or the error foobar2000 expects for a
+/// path that isn't ours.
 pub fn item_or_error(path: &str) -> Result<ItemId> {
-	item_id(path)
+	parse_item(path)
 		.ok_or_else(|| Error::unsupported_format(format!("not a Spotify track or episode: {path}")))
 }
 
@@ -58,7 +53,7 @@ impl Input for SpotifyInput {
 	const NAME: &'static CStr = c"Spotify (foo_librespot)";
 
 	fn is_our_path(path: &str) -> bool {
-		item_id(path).is_some()
+		parse_item(path).is_some()
 	}
 
 	fn open(path: &str, _reason: OpenReason, _abort: &Abort) -> Result<Self> {

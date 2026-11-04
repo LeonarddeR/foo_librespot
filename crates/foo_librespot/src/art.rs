@@ -1,5 +1,6 @@
 //! Album covers for Spotify tracks, and covers for episodes.
 
+use foo_librespot_core::link::parse_item;
 use foxide2k::abort::Abort;
 use foxide2k::album_art::{AlbumArt, ArtKind};
 use foxide2k::error::Result;
@@ -8,7 +9,7 @@ use foxide2k::input::Input;
 
 use crate::backend::backend;
 use crate::errors::host_error;
-use crate::input::{SpotifyInput, item_id, item_or_error};
+use crate::input::{SpotifyInput, item_or_error};
 
 /// The largest album cover Spotify has, as the front cover. Spotify has no other kinds.
 pub struct SpotifyArt;
@@ -17,7 +18,7 @@ impl AlbumArt for SpotifyArt {
 	const INPUT_GUID: Guid = SpotifyInput::GUID;
 
 	fn is_our_path(path: &str, _extension: &str) -> bool {
-		item_id(path).is_some()
+		parse_item(path).is_some()
 	}
 
 	fn query(path: &str, kind: ArtKind, abort: &Abort) -> Result<Option<Vec<u8>>> {
