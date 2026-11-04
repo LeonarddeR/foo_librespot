@@ -342,6 +342,19 @@ pub fn confirm_login_when_started(
 	})
 }
 
+/// Plays the user: once a login has started, cancels it, as Close in the login window does.
+pub fn cancel_login_when_started(fake: &FakeBackend) -> std::thread::JoinHandle<()> {
+	let fake = fake.clone();
+	std::thread::spawn(move || {
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+		while fake.logins_started() == 0 {
+			assert!(std::time::Instant::now() < deadline, "no login started");
+			std::thread::sleep(std::time::Duration::from_millis(5));
+		}
+		crate::login::controller().cancel();
+	})
+}
+
 /// Lets another thread press Stop on a `FakeAbort` the test keeps alive.
 struct StopLater(*const oxibar::testing::FakeAbort);
 

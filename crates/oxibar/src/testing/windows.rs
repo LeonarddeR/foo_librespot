@@ -2,9 +2,9 @@
 //! clicks and keys would send.
 
 use crate::bindings::Windows::Win32::{
-	COINIT_APARTMENTTHREADED, CoInitializeEx, CreateWindowExW, DispatchMessageW, HWND, LPARAM, MSG,
-	PM_REMOVE, PeekMessageW, SendMessageW, TranslateMessage, WM_CLOSE, WM_COMMAND, WPARAM,
-	WS_POPUP,
+	COINIT_APARTMENTTHREADED, CoInitializeEx, CreateWindowExW, DLGC_WANTALLKEYS, DispatchMessageW,
+	HWND, LPARAM, MSG, PM_REMOVE, PeekMessageW, SendMessageW, TranslateMessage, WM_CLOSE,
+	WM_COMMAND, WM_GETDLGCODE, WPARAM, WS_POPUP,
 };
 use crate::dialog::host::Dialog;
 
@@ -55,6 +55,16 @@ pub fn send_command(dialog: &Dialog, id: u16, notification: u16) {
 			LPARAM(control.0 as isize),
 		)
 	};
+}
+
+/// Whether control `id` takes Escape and Enter for itself, as a multi-line edit does. The
+/// dialog manager asks each control this before it turns those keys into Cancel and OK, so a
+/// control that wants all keys keeps Escape from closing the window it is in.
+pub fn wants_all_keys(dialog: &Dialog, id: u16) -> bool {
+	let code = unsafe {
+		SendMessageW(dialog.control(id), WM_GETDLGCODE.cast_unsigned(), WPARAM(0), LPARAM(0))
+	};
+	code.0 & DLGC_WANTALLKEYS as isize != 0
 }
 
 /// Sends `WM_CLOSE`, as the close box and Alt+F4 do. The dialog manager turns it into a

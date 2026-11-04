@@ -14,9 +14,9 @@ use oxibar::guid::Guid;
 use oxibar::input::{Input, OpenReason};
 
 use crate::backend::backend;
-use crate::errors::{PLAY_LOGGED_OUT, host_error};
+use crate::errors::host_error;
 use crate::fields::fill_info;
-use crate::first_use::prompt_login;
+use crate::first_use::login_to_play;
 use crate::worker::AbortableTrack;
 
 /// A tenth of a second per `decode_run`, as foobar2000's own inputs deliver.
@@ -79,14 +79,15 @@ impl Input for SpotifyInput {
 	}
 
 	fn decode_initialize(&mut self, _flags: u32, abort: &Abort) -> Result<()> {
-		let track = backend().open_track(self.id, &|| abort.is_aborting()).map_err(|error| {
-			if matches!(error, CoreError::NotLoggedIn) {
-				// The user pressed Play; info reads in the background never ask.
-				prompt_login();
-				return Error::new(ExceptionKind::Io, PLAY_LOGGED_OUT);
-			}
-			host_error(error)
-		})?;
+		let is_aborting = || abort.is_aborting();
+		let track = match backend().open_track(self.id, &is_aborting) {
+			// The user pressed Play while logged out: log in, then try once more. Info reads in
+			// the background never ask.
+			Err(CoreError::NotLoggedIn) => login_to_play(&is_aborting)
+				.and_then(|()| backend().open_track(self.id, &is_aborting)),
+			opened => opened,
+		}
+		.map_err(host_error)?;
 		self.track = Some(AbortableTrack::new(track).map_err(host_error)?);
 		Ok(())
 	}
@@ -152,7 +153,10 @@ mod tests {
 
 	use super::SpotifyInput;
 	use crate::backend;
-	use crate::testing::{FakeBackend, TRACK_ID, fixture_samples, installed_prompt, stop_after};
+	use crate::testing::{
+		FakeBackend, TRACK_ID, cancel_login_when_started, confirm_login_when_started,
+		fixture_samples, installed_prompt, stop_after,
+	};
 
 	fn path() -> String {
 		format!("sptf://spotify:track:{TRACK_ID}")
@@ -256,20 +260,67 @@ mod tests {
 	}
 
 	#[test]
-	fn decoding_while_logged_out_prompts_and_fails_with_advice() {
+	fn playing_while_logged_out_waits_for_the_login_then_plays() {
 		let fake = installed();
 		let prompt = installed_prompt();
-		fake.fail_with(|| CoreError::NotLoggedIn);
+		fake.require_login();
+		let user = confirm_login_when_started(&fake, 1);
+		let abort = FakeAbort::new(false);
+		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
+		decoder.initialize(0, 0, &abort).unwrap();
+		user.join().unwrap();
+		assert!(decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap());
+		assert_eq!(prompt.shown(), 1);
+		assert_eq!(fake.logins_started(), 1);
+	}
+
+	#[test]
+	fn a_cancelled_login_fails_the_play_with_advice() {
+		let fake = installed();
+		let _prompt = installed_prompt();
+		fake.require_login();
+		let user = cancel_login_when_started(&fake);
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
 		let error = decoder.initialize(0, 0, &abort).unwrap_err();
+		user.join().unwrap();
 		assert_eq!(error.kind, ExceptionKind::Io);
 		assert_eq!(
 			error.message,
-			"Not logged in to Spotify. Confirm the login in the window that just opened, then play again."
+			"Not logged in to Spotify. Log in from File > Preferences > Tools > foo_librespot."
 		);
+	}
+
+	#[test]
+	fn after_a_cancelled_login_playing_fails_without_asking_again() {
+		let fake = installed();
+		let prompt = installed_prompt();
+		fake.require_login();
+		let user = cancel_login_when_started(&fake);
+		let abort = FakeAbort::new(false);
+		let first = entry().open_for_decoding(&path(), &abort).unwrap();
+		assert!(first.initialize(0, 0, &abort).is_err());
+		user.join().unwrap();
+		let second = entry().open_for_decoding(&path(), &abort).unwrap();
+		let error = second.initialize(0, 0, &abort).unwrap_err();
+		assert_eq!(error.kind, ExceptionKind::Io);
 		assert_eq!(prompt.shown(), 1);
 		assert_eq!(fake.logins_started(), 1);
+	}
+
+	#[test]
+	fn stop_while_waiting_for_the_login_returns_promptly() {
+		let fake = installed();
+		let _prompt = installed_prompt();
+		fake.require_login();
+		let abort = FakeAbort::new(false);
+		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
+		let stopper = stop_after(&abort, Duration::from_millis(100));
+		let started = Instant::now();
+		let error = decoder.initialize(0, 0, &abort).unwrap_err();
+		stopper.join().unwrap();
+		assert_eq!(error.kind, ExceptionKind::Aborted);
+		assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
 	}
 
 	#[test]

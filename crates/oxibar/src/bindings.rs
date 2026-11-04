@@ -839,6 +839,7 @@ pub mod Windows {
 			pub ControlPcIsUnwound: bool,
 			pub NonVolatileRegisters: PBYTE,
 		}
+		pub const DLGC_WANTALLKEYS: i32 = 4;
 		pub type DLGPROC = Option<
 			unsafe extern "system" fn(
 				param0: HWND,
@@ -863,6 +864,7 @@ pub mod Windows {
 		pub const DS_MODALFRAME: i32 = 128;
 		pub const DS_SETFONT: i32 = 64;
 		pub const DWLP_MSGRESULT: i32 = 0;
+		pub const ES_AUTOHSCROLL: i32 = 128;
 		pub const ES_AUTOVSCROLL: i32 = 64;
 		pub const ES_MULTILINE: i32 = 4;
 		pub const ES_READONLY: i32 = 2048;
@@ -908,6 +910,7 @@ pub mod Windows {
 				unsafe { core::mem::zeroed() }
 			}
 		}
+		pub const GWL_STYLE: i32 = -16;
 		#[repr(transparent)]
 		#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 		pub struct HINSTANCE(pub *mut core::ffi::c_void);
@@ -2031,7 +2034,9 @@ pub mod Windows {
 		pub const SEM_FAILCRITICALERRORS: i32 = 1;
 		pub const SEM_NOGPFAULTERRORBOX: i32 = 2;
 		pub const SS_NOPREFIX: i32 = 128;
+		pub const SW_HIDE: i32 = 0;
 		pub const SW_SHOW: i32 = 5;
+		pub const SW_SHOWNA: i32 = 8;
 		pub const SW_SHOWNORMAL: i32 = 1;
 		#[repr(C)]
 		#[cfg(any(target_arch = "aarch64", target_arch = "arm64ec", target_arch = "x86_64"))]
@@ -2182,6 +2187,7 @@ pub mod Windows {
 		pub const WM_APP: i32 = 32768;
 		pub const WM_CLOSE: i32 = 16;
 		pub const WM_COMMAND: i32 = 273;
+		pub const WM_GETDLGCODE: i32 = 135;
 		pub const WM_INITDIALOG: i32 = 272;
 		pub const WM_NCDESTROY: i32 = 130;
 		pub const WM_NEXTDLGCTL: i32 = 40;

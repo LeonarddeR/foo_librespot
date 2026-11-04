@@ -3,11 +3,15 @@
 //!
 //! It opens with the login already started and focus on the code field, so the account button
 //! (which then reads "Cancel login") can't be pressed by accident. It has no default button:
-//! Enter in the code field does nothing. Close and Escape cancel a login still waiting.
+//! Enter in the code field does nothing. Close and Escape cancel a login still waiting, and the
+//! window closes by itself once the login succeeds: the import or play that opened it then
+//! goes on.
 
 use std::cell::Cell;
 
-use oxibar::dialog::host::{Dialog, DialogHandler, create_modeless_dialog, destroy};
+use oxibar::dialog::host::{
+	Dialog, DialogHandler, create_modeless_dialog, destroy, refresh_poster,
+};
 use oxibar::dialog::notify::IDCANCEL;
 use oxibar::dialog::style::{
 	DS_CENTER, DS_MODALFRAME, WS_CAPTION, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
@@ -16,8 +20,8 @@ use oxibar::dialog::template::{ControlClass, DialogTemplate};
 use oxibar::error::Result;
 use oxibar::main_thread::{add_modeless, remove_modeless};
 
-use crate::account::{self, AccountPanel, CODE, item};
-use crate::login::controller;
+use crate::account::{self, AccountPanel, CODE, LoginControls, item};
+use crate::login::{LoginState, controller};
 
 pub fn window_template() -> DialogTemplate {
 	let mut items = account::items(7, 7, 246);
@@ -71,7 +75,11 @@ struct LoginWindow {
 impl DialogHandler for LoginWindow {
 	fn init(&mut self, dialog: &Dialog) -> Option<u16> {
 		self.dialog = Some(*dialog);
-		self.panel = Some(AccountPanel::init(*dialog));
+		self.panel = Some(AccountPanel::init(*dialog, LoginControls::Always));
+		if logged_in() {
+			// Closed from the refresh: a window can't be destroyed while it is being created.
+			refresh_poster(dialog).post();
+		}
 		Some(CODE)
 	}
 
@@ -87,10 +95,16 @@ impl DialogHandler for LoginWindow {
 	}
 
 	fn refresh(&mut self, dialog: &Dialog) {
-		if let Some(panel) = &mut self.panel {
+		if logged_in() {
+			destroy(*dialog);
+		} else if let Some(panel) = &mut self.panel {
 			panel.refresh(*dialog);
 		}
 	}
+}
+
+fn logged_in() -> bool {
+	matches!(controller().state(), LoginState::LoggedIn(_))
 }
 
 impl Drop for LoginWindow {
@@ -111,8 +125,11 @@ mod tests {
 	use oxibar::dialog::notify::IDCANCEL;
 	use oxibar::testing::{hidden_window, pump_messages, send_close};
 
+	use foo_librespot_core::CoreError;
+	use foo_librespot_core::login::LoginError;
+
 	use super::{current, open};
-	use crate::account::{ACCOUNT, BROWSER, CODE};
+	use crate::account::{ACCOUNT, BROWSER, CODE, PAGE};
 	use crate::backend;
 	use crate::login::{LoginState, controller};
 	use crate::testing::{FakeBackend, device_code};
@@ -129,10 +146,56 @@ mod tests {
 		controller().start();
 		fake.send_code(device_code());
 		let dialog = open(hidden_window()).unwrap();
-		assert_eq!(dialog.tab_order(), [ACCOUNT, CODE, BROWSER, IDCANCEL]);
+		assert_eq!(dialog.tab_order(), [ACCOUNT, CODE, PAGE, BROWSER, IDCANCEL]);
 		assert_eq!(dialog.focused(), Some(CODE));
 		assert_eq!(dialog.text(IDCANCEL), "Close");
 		destroy(dialog);
+	}
+
+	#[test]
+	fn login_window_shows_the_code_field_before_the_code_arrives() {
+		let _fake = installed();
+		controller().start();
+		let dialog = open(hidden_window()).unwrap();
+		assert!(dialog.is_visible(CODE));
+		assert_eq!(dialog.text(CODE), "Waiting for Spotify's code…");
+		assert_eq!(dialog.focused(), Some(CODE));
+		destroy(dialog);
+	}
+
+	#[test]
+	fn the_window_closes_itself_once_the_login_succeeds() {
+		let fake = installed();
+		controller().start();
+		let dialog = open(hidden_window()).unwrap();
+		fake.send_code(device_code());
+		fake.finish_login(Ok("Keith Getty".to_owned()));
+		pump_messages();
+		assert!(!dialog.is_alive());
+		assert!(current().is_none());
+		assert_eq!(controller().state(), LoginState::LoggedIn(Some("Keith Getty".to_owned())));
+	}
+
+	#[test]
+	fn a_failed_login_keeps_the_window_open_to_try_again() {
+		let fake = installed();
+		controller().start();
+		let dialog = open(hidden_window()).unwrap();
+		fake.send_code(device_code());
+		fake.finish_login(Err(CoreError::Login(LoginError::Failed("declined".to_owned()))));
+		pump_messages();
+		assert!(dialog.is_alive());
+		assert_eq!(dialog.text(ACCOUNT), "&Log in");
+		destroy(dialog);
+	}
+
+	#[test]
+	fn opening_once_logged_in_closes_at_once() {
+		let fake = installed();
+		fake.set_username(Some("Keith Getty"));
+		let dialog = open(hidden_window()).unwrap();
+		pump_messages();
+		assert!(!dialog.is_alive());
 	}
 
 	#[test]
@@ -146,21 +209,6 @@ mod tests {
 		assert!(fake.last_login_cancelled());
 		assert!(!dialog.is_alive());
 		assert!(current().is_none());
-	}
-
-	#[test]
-	fn closing_after_login_keeps_the_login() {
-		let fake = installed();
-		controller().start();
-		let dialog = open(hidden_window()).unwrap();
-		fake.send_code(device_code());
-		fake.finish_login(Ok("Keith Getty".to_owned()));
-		pump_messages();
-		assert_eq!(dialog.text(ACCOUNT), "Log &out");
-		send_close(&dialog);
-		pump_messages();
-		assert_eq!(controller().state(), LoginState::LoggedIn(Some("Keith Getty".to_owned())));
-		assert!(!dialog.is_alive());
 	}
 
 	#[test]

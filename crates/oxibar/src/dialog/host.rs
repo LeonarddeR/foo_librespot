@@ -11,11 +11,11 @@ use windows_core::PCWSTR;
 use super::template::DialogTemplate;
 use crate::bindings::Windows::Win32::{
 	CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CreateDialogIndirectParamW, DWLP_MSGRESULT,
-	DestroyWindow, EnableWindow, GetDlgCtrlID, GetDlgItem, GetFocus, GetNextDlgTabItem,
+	DestroyWindow, EnableWindow, GWL_STYLE, GetDlgCtrlID, GetDlgItem, GetFocus, GetNextDlgTabItem,
 	GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HWND, IsWindow, IsWindowEnabled,
-	LPARAM, PostMessageW, SW_SHOW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
-	SetWindowTextW, ShowWindow, WM_APP, WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY, WM_NEXTDLGCTL,
-	WPARAM,
+	LPARAM, PostMessageW, SW_HIDE, SW_SHOW, SW_SHOWNA, SendMessageW, SetForegroundWindow,
+	SetWindowLongPtrW, SetWindowTextW, ShowWindow, WM_APP, WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY,
+	WM_NEXTDLGCTL, WPARAM, WS_VISIBLE,
 };
 use crate::console;
 use crate::cxx::ExceptionKind;
@@ -100,6 +100,19 @@ impl Dialog {
 
 	pub fn is_enabled(&self, id: u16) -> bool {
 		unsafe { IsWindowEnabled(self.control(id)) }.as_bool()
+	}
+
+	/// Shows or hides a control, without activating anything. Tab skips hidden controls.
+	pub fn set_visible(&self, id: u16, visible: bool) {
+		unsafe {
+			let _ = ShowWindow(self.control(id), if visible { SW_SHOWNA } else { SW_HIDE });
+		}
+	}
+
+	/// Whether the control itself is shown, even while its dialog is hidden.
+	pub fn is_visible(&self, id: u16) -> bool {
+		let style = unsafe { GetWindowLongPtrW(self.control(id), GWL_STYLE) };
+		style & WS_VISIBLE as isize != 0
 	}
 
 	pub fn combo_add(&self, id: u16, text: &str) {
@@ -367,11 +380,12 @@ pub(crate) mod tests {
 
 	use super::{Dialog, DialogHandler, create_child_dialog, create_modeless_dialog, destroy};
 	use crate::bindings::Windows::Win32::{
-		BN_CLICKED, CBS_DROPDOWNLIST, DS_CONTROL, DS_MODALFRAME, ES_READONLY, GetWindowTextW, HWND,
-		LPARAM, SendMessageW, WM_CLOSE, WM_COMMAND, WPARAM, WS_CAPTION, WS_CHILD, WS_POPUP,
-		WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
+		BN_CLICKED, CBS_DROPDOWNLIST, DS_CONTROL, DS_MODALFRAME, ES_MULTILINE, ES_READONLY,
+		GetWindowTextW, HWND, LPARAM, SendMessageW, WM_CLOSE, WM_COMMAND, WPARAM, WS_CAPTION,
+		WS_CHILD, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
 	};
 	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate};
+	use crate::testing::wants_all_keys;
 
 	/// A hidden top-level window to own the dialogs under test. Also initialises COM for the
 	/// live-region tests, as foobar2000's main thread has it.
@@ -561,6 +575,37 @@ pub(crate) mod tests {
 		assert_eq!(dialog.tab_order(), [102, 104, 107, 2]);
 		dialog.enable(104, false);
 		assert_eq!(dialog.tab_order(), [102, 107, 2]);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn hidden_controls_leave_the_tab_order_until_shown_again() {
+		let (dialog, _record) = child(Recorder::default());
+		assert!(dialog.is_visible(104));
+		dialog.set_visible(104, false);
+		assert!(!dialog.is_visible(104));
+		assert_eq!(dialog.tab_order(), [102, 107, 2]);
+		dialog.set_visible(104, true);
+		assert!(dialog.is_visible(104));
+		assert_eq!(dialog.tab_order(), [102, 104, 107, 2]);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn only_multiline_edits_keep_escape_and_enter_from_the_dialog() {
+		let mut with_multiline = child_template();
+		with_multiline.items.push(item(
+			105,
+			ControlClass::Edit,
+			"",
+			WS_TABSTOP | ES_READONLY | ES_MULTILINE,
+		));
+		let dialog =
+			create_child_dialog(hidden_parent(), &with_multiline, Box::new(Recorder::default()))
+				.unwrap();
+		assert!(!wants_all_keys(&dialog, 102));
+		assert!(!wants_all_keys(&dialog, 104));
+		assert!(wants_all_keys(&dialog, 105));
 		destroy(dialog);
 	}
 

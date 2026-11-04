@@ -14,10 +14,6 @@ const NOT_LOGGED_IN: &str =
 /// Whether the console was told about the missing login yet; once per session is enough.
 static TOLD_NOT_LOGGED_IN: AtomicBool = AtomicBool::new(false);
 
-/// What the user reads when they play a track while logged out; the login window has opened.
-pub const PLAY_LOGGED_OUT: &str =
-	"Not logged in to Spotify. Confirm the login in the window that just opened, then play again.";
-
 /// The foobar2000 exception for `error`, with a message the user can act on.
 #[allow(clippy::needless_pass_by_value, reason = "made for map_err")]
 pub fn host_error(error: CoreError) -> Error {

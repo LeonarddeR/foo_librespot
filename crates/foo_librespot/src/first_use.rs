@@ -68,3 +68,13 @@ pub fn login_on_first_use(is_aborting: &dyn Fn() -> bool) -> Result<(), CoreErro
 	}
 	controller().wait_for_login(is_aborting).map(drop)
 }
+
+/// [`login_on_first_use`] for a play that found the user logged out. Once the user has
+/// cancelled a login, playing fails without asking again, so a playlist doesn't reopen the
+/// window for each of its tracks; adding a link or pressing Log in asks again.
+pub fn login_to_play(is_aborting: &dyn Fn() -> bool) -> Result<(), CoreError> {
+	if controller().declined() {
+		return Err(CoreError::NotLoggedIn);
+	}
+	login_on_first_use(is_aborting)
+}

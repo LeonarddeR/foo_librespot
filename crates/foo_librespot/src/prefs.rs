@@ -15,7 +15,7 @@ use oxibar::error::Result;
 use oxibar::guid::Guid;
 use oxibar::preferences::{PageChanged, PageInstance, PreferencesPage};
 
-use crate::account::{self, AccountPanel, item};
+use crate::account::{self, AccountPanel, LoginControls, item};
 use crate::settings::{self, bitrate_at, bitrate_index};
 
 const ACCOUNT_GROUP: u16 = 100;
@@ -75,7 +75,7 @@ struct PageHandler {
 
 impl DialogHandler for PageHandler {
 	fn init(&mut self, dialog: &Dialog) -> Option<u16> {
-		self.panel = Some(AccountPanel::init(*dialog));
+		self.panel = Some(AccountPanel::init(*dialog, LoginControls::WhileConfirming));
 		for text in BITRATES {
 			dialog.combo_add(BITRATE, text);
 		}
@@ -148,11 +148,11 @@ mod tests {
 	use oxibar::preferences::preferences_page_service;
 	use oxibar::testing::{
 		FakeApi, FakePageCallback, PageInstanceHandle, PreferencesHandle, hidden_window,
-		pump_messages, send_command,
+		pump_messages, send_command, wants_all_keys,
 	};
 
 	use super::{SpotifyPage, page_template};
-	use crate::account::{ACCOUNT, BROWSER, CODE, CODE_LABEL, STATUS};
+	use crate::account::{ACCOUNT, BROWSER, CODE, CODE_LABEL, PAGE, PAGE_LABEL, STATUS};
 	use crate::backend;
 	use crate::login::{LoginController, install_controller};
 	use crate::settings::BITRATE_KEY;
@@ -202,27 +202,58 @@ mod tests {
 		pump_messages();
 	}
 
+	/// The controls that only matter while a code waits for the user.
+	const LOGIN_CONTROLS: [u16; 5] = [CODE_LABEL, CODE, PAGE_LABEL, PAGE, BROWSER];
+
+	fn shown(setup: &Setup) -> Vec<u16> {
+		LOGIN_CONTROLS.into_iter().filter(|&id| setup.dialog.is_visible(id)).collect()
+	}
+
 	#[test]
 	fn page_shows_the_logged_out_state() {
 		let setup = open_page();
 		assert_eq!(setup.dialog.text(STATUS), "Not logged in to Spotify.");
 		assert_eq!(setup.dialog.text(ACCOUNT), "&Log in");
-		assert_eq!(setup.dialog.text(CODE), "No login in progress.");
-		assert_eq!(setup.dialog.text(CODE_LABEL), "Co&de and page:");
+		assert_eq!(setup.dialog.text(CODE_LABEL), "Co&de:");
+		assert_eq!(setup.dialog.text(PAGE_LABEL), "Pa&ge:");
 		assert_eq!(setup.dialog.text(BITRATE_LABEL), "&Preferred bitrate:");
 		assert_eq!(setup.dialog.combo_selection(BITRATE), Some(2));
 	}
 
 	#[test]
+	fn code_and_page_appear_only_while_a_code_waits() {
+		let setup = open_page();
+		assert_eq!(shown(&setup), Vec::<u16>::new());
+		send_command(&setup.dialog, ACCOUNT, BN_CLICKED);
+		pump_messages();
+		assert_eq!(shown(&setup), Vec::<u16>::new());
+		setup.fake.send_code(code());
+		pump_messages();
+		assert_eq!(shown(&setup), LOGIN_CONTROLS);
+		setup.fake.finish_login(Ok("Keith Getty".to_owned()));
+		pump_messages();
+		assert_eq!(shown(&setup), Vec::<u16>::new());
+	}
+
+	#[test]
 	fn labels_precede_their_controls_in_tab_order() {
 		let setup = open_page();
-		assert_eq!(setup.dialog.tab_order(), [ACCOUNT, CODE, BITRATE]);
+		assert_eq!(setup.dialog.tab_order(), [ACCOUNT, BITRATE]);
 		confirming(&setup);
-		assert_eq!(setup.dialog.tab_order(), [ACCOUNT, CODE, BROWSER, BITRATE]);
+		assert_eq!(setup.dialog.tab_order(), [ACCOUNT, CODE, PAGE, BROWSER, BITRATE]);
 		let ids: Vec<u16> = page_template().items.iter().map(|item| item.id).collect();
 		let at = |id| ids.iter().position(|&each| each == id).unwrap();
 		assert_eq!(at(CODE_LABEL) + 1, at(CODE));
+		assert_eq!(at(PAGE_LABEL) + 1, at(PAGE));
 		assert_eq!(at(BITRATE_LABEL) + 1, at(BITRATE));
+	}
+
+	#[test]
+	fn escape_and_enter_in_the_code_fields_reach_preferences() {
+		let setup = open_page();
+		confirming(&setup);
+		assert!(!wants_all_keys(&setup.dialog, CODE));
+		assert!(!wants_all_keys(&setup.dialog, PAGE));
 	}
 
 	#[test]
@@ -249,10 +280,8 @@ mod tests {
 		assert_eq!(setup.dialog.text(ACCOUNT), "&Cancel login");
 		setup.fake.send_code(code());
 		pump_messages();
-		assert_eq!(
-			setup.dialog.text(CODE),
-			"Code: KKGT-2024\r\nPage: https://spotify.com/pair?code=KKGT-2024"
-		);
+		assert_eq!(setup.dialog.text(CODE), "KKGT-2024");
+		assert_eq!(setup.dialog.text(PAGE), "https://spotify.com/pair?code=KKGT-2024");
 		setup.fake.finish_login(Ok("Keith Getty".to_owned()));
 		pump_messages();
 		assert_eq!(setup.dialog.text(STATUS), "Logged in to Spotify as Keith Getty.");
@@ -260,13 +289,24 @@ mod tests {
 	}
 
 	#[test]
-	fn focus_leaves_open_browser_for_the_account_button_when_it_is_disabled() {
+	fn focus_leaves_open_browser_for_the_account_button_when_the_login_ends() {
 		let setup = open_page();
 		confirming(&setup);
 		setup.dialog.focus(BROWSER);
 		setup.fake.finish_login(Ok("Keith Getty".to_owned()));
 		pump_messages();
-		assert!(!setup.dialog.is_enabled(BROWSER));
+		assert!(!setup.dialog.is_visible(BROWSER));
+		assert_eq!(setup.dialog.focused(), Some(ACCOUNT));
+	}
+
+	#[test]
+	fn focus_leaves_a_code_field_for_the_account_button_when_the_login_is_cancelled() {
+		let setup = open_page();
+		confirming(&setup);
+		setup.dialog.focus(PAGE);
+		send_command(&setup.dialog, ACCOUNT, BN_CLICKED);
+		pump_messages();
+		assert!(!setup.dialog.is_visible(PAGE));
 		assert_eq!(setup.dialog.focused(), Some(ACCOUNT));
 	}
 

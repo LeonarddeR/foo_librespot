@@ -41,27 +41,36 @@ impl LoginState {
 pub struct LoginView {
 	pub button: &'static str,
 	pub status: String,
+	/// The code to confirm, or why there is none.
 	pub code: String,
-	pub browser_enabled: bool,
+	/// The page to confirm the code on.
+	pub page: String,
+	/// Whether a code waits for the user: the code, the page and "Open browser" are for that.
+	pub confirming: bool,
 }
 
 const NO_LOGIN: &str = "No login in progress.";
 
 pub fn view(state: &LoginState) -> LoginView {
+	if let LoginState::Confirming(code) = state {
+		return LoginView {
+			button: "&Cancel login",
+			status:
+				"Press Open browser, or open the page below yourself, and confirm the code there."
+					.to_owned(),
+			code: code.user_code.clone(),
+			page: code.url.clone(),
+			confirming: true,
+		};
+	}
 	let (button, status, code) = match state {
 		LoginState::LoggedOut => {
 			("&Log in", "Not logged in to Spotify.".to_owned(), NO_LOGIN.to_owned())
 		}
-		LoginState::Asking => (
+		LoginState::Asking | LoginState::Confirming(_) => (
 			"&Cancel login",
 			"Asking Spotify for a login code…".to_owned(),
 			"Waiting for Spotify's code…".to_owned(),
-		),
-		LoginState::Confirming(code) => (
-			"&Cancel login",
-			"Press Open browser, or open the page below yourself, and confirm the code there."
-				.to_owned(),
-			format!("Code: {}\r\nPage: {}", code.user_code, code.url),
 		),
 		LoginState::LoggedIn(Some(name)) => {
 			("Log &out", format!("Logged in to Spotify as {name}."), NO_LOGIN.to_owned())
@@ -73,7 +82,7 @@ pub fn view(state: &LoginState) -> LoginView {
 			("&Log in", format!("Login failed: {message}."), NO_LOGIN.to_owned())
 		}
 	};
-	LoginView { button, status, code, browser_enabled: matches!(state, LoginState::Confirming(_)) }
+	LoginView { button, status, code, page: String::new(), confirming: false }
 }
 
 type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -86,6 +95,8 @@ struct Inner {
 	generation: u64,
 	subscribers: Vec<(u64, Notify)>,
 	next_subscriber: u64,
+	/// Set when the user cancels a login, until another starts.
+	declined: bool,
 }
 
 struct Shared {
@@ -129,6 +140,7 @@ impl LoginController {
 				generation: 0,
 				subscribers: Vec::new(),
 				next_subscriber: 0,
+				declined: false,
 			}),
 			ended: Condvar::new(),
 			open_url,
@@ -180,6 +192,7 @@ impl LoginController {
 				return;
 			}
 			inner.generation += 1;
+			inner.declined = false;
 			let generation = inner.generation;
 			self.0.set(inner, LoginState::Asking);
 			generation
@@ -233,6 +246,7 @@ impl LoginController {
 			return;
 		}
 		inner.generation += 1;
+		inner.declined = true;
 		let task = inner.task.take();
 		self.0.set(inner, LoginState::LoggedOut);
 		if let Some(task) = task {
@@ -247,6 +261,12 @@ impl LoginController {
 		};
 		let inner = self.0.lock();
 		self.0.set(inner, state);
+	}
+
+	/// Whether the user cancelled the last login, so playing shouldn't ask again; adding a
+	/// link or pressing Log in starts a new one.
+	pub fn declined(&self) -> bool {
+		self.0.lock().declined
 	}
 
 	/// Opens Spotify's page for the code being confirmed. Does nothing in any other state.
@@ -373,13 +393,15 @@ mod tests {
 		assert_eq!(logged_out.button, "&Log in");
 		assert_eq!(logged_out.status, "Not logged in to Spotify.");
 		assert_eq!(logged_out.code, "No login in progress.");
-		assert!(!logged_out.browser_enabled);
+		assert_eq!(logged_out.page, "");
+		assert!(!logged_out.confirming);
 
 		let asking = view(&LoginState::Asking);
 		assert_eq!(asking.button, "&Cancel login");
 		assert_eq!(asking.status, "Asking Spotify for a login code…");
 		assert_eq!(asking.code, "Waiting for Spotify's code…");
-		assert!(!asking.browser_enabled);
+		assert_eq!(asking.page, "");
+		assert!(!asking.confirming);
 
 		let confirming = view(&LoginState::Confirming(code()));
 		assert_eq!(confirming.button, "&Cancel login");
@@ -387,11 +409,9 @@ mod tests {
 			confirming.status,
 			"Press Open browser, or open the page below yourself, and confirm the code there."
 		);
-		assert_eq!(
-			confirming.code,
-			"Code: KKGT-2024\r\nPage: https://spotify.com/pair?code=KKGT-2024"
-		);
-		assert!(confirming.browser_enabled);
+		assert_eq!(confirming.code, "KKGT-2024");
+		assert_eq!(confirming.page, "https://spotify.com/pair?code=KKGT-2024");
+		assert!(confirming.confirming);
 
 		let named = view(&LoginState::LoggedIn(Some("Keith Getty".to_owned())));
 		assert_eq!(named.button, "Log &out");
@@ -402,7 +422,7 @@ mod tests {
 		let failed = view(&LoginState::Failed("the login was declined in the browser".to_owned()));
 		assert_eq!(failed.button, "&Log in");
 		assert_eq!(failed.status, "Login failed: the login was declined in the browser.");
-		assert!(!failed.browser_enabled);
+		assert!(!failed.confirming);
 	}
 
 	#[test]
@@ -421,7 +441,7 @@ mod tests {
 		controller.press();
 		fake.send_code(code());
 		assert_eq!(controller.state(), LoginState::Confirming(code()));
-		assert!(view(&controller.state()).browser_enabled);
+		assert!(view(&controller.state()).confirming);
 		assert!(opened(&opened_pages).is_empty(), "the browser opened by itself");
 	}
 
@@ -473,6 +493,18 @@ mod tests {
 		controller.press();
 		assert!(fake.last_login_cancelled());
 		assert_eq!(controller.state(), LoginState::LoggedOut);
+	}
+
+	#[test]
+	fn a_cancel_is_remembered_until_the_next_login_starts() {
+		let _fake = installed();
+		let (controller, _opened) = controller();
+		assert!(!controller.declined());
+		controller.press();
+		controller.cancel();
+		assert!(controller.declined());
+		controller.start();
+		assert!(!controller.declined());
 	}
 
 	#[test]

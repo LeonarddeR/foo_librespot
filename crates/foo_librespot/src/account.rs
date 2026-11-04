@@ -1,14 +1,12 @@
 //! The account controls the preferences page and the login window share: the status line, the
-//! account button, the code field and "Open browser". They show the login controller's state
-//! and follow it as it changes.
+//! account button, the code and page fields and "Open browser". They show the login
+//! controller's state and follow it as it changes.
 
 use oxibar::console;
 use oxibar::dialog::accessibility::{announce, make_live_region};
 use oxibar::dialog::host::{Dialog, refresh_poster};
 use oxibar::dialog::notify::BN_CLICKED;
-use oxibar::dialog::style::{
-	ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, SS_NOPREFIX, WS_BORDER, WS_TABSTOP,
-};
+use oxibar::dialog::style::{ES_AUTOHSCROLL, ES_READONLY, SS_NOPREFIX, WS_BORDER, WS_TABSTOP};
 use oxibar::dialog::template::{ControlClass, DialogItem};
 
 use crate::login::{controller, view};
@@ -18,10 +16,29 @@ pub const STATUS: u16 = 101;
 /// "Log in", "Cancel login" or "Log out".
 pub const ACCOUNT: u16 = 102;
 pub const CODE_LABEL: u16 = 103;
-/// The code and the page to confirm it on, read-only so it can be read and copied.
+/// The code to confirm, read-only so it can be read and copied.
 pub const CODE: u16 = 104;
 /// "Open browser": the only way Spotify's page opens.
 pub const BROWSER: u16 = 108;
+pub const PAGE_LABEL: u16 = 109;
+/// The page to confirm the code on, read-only like the code.
+pub const PAGE: u16 = 110;
+
+/// The controls that are only for confirming a code.
+const LOGIN_CONTROLS: [u16; 5] = [CODE_LABEL, CODE, PAGE_LABEL, PAGE, BROWSER];
+
+/// A read-only field on one line: a multi-line edit would keep Escape and Enter from the
+/// dialog it is in.
+const FIELD: u32 = ES_READONLY | ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP;
+
+/// When the code, the page and "Open browser" are shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginControls {
+	/// Only while a code waits for the user, as on the preferences page.
+	WhileConfirming,
+	/// Always, as in the login window, which is open only to log in.
+	Always,
+}
 
 /// One control of a dialog template, placed at (x, y) with size (cx, cy) in dialog units.
 pub fn item(
@@ -41,15 +58,11 @@ pub fn items(x: i16, y: i16, width: i16) -> Vec<DialogItem> {
 	vec![
 		item(STATUS, ControlClass::Static, "", SS_NOPREFIX, (x, y, width, 18)),
 		item(ACCOUNT, ControlClass::Button, "&Log in", WS_TABSTOP, (x, y + 21, 84, 14)),
-		item(CODE_LABEL, ControlClass::Static, "Co&de and page:", 0, (x, y + 41, width, 8)),
-		item(
-			CODE,
-			ControlClass::Edit,
-			"",
-			ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_BORDER | WS_TABSTOP,
-			(x, y + 51, width, 22),
-		),
-		item(BROWSER, ControlClass::Button, "Open &browser", WS_TABSTOP, (x, y + 77, 84, 14)),
+		item(CODE_LABEL, ControlClass::Static, "Co&de:", 0, (x, y + 43, 30, 8)),
+		item(CODE, ControlClass::Edit, "", FIELD, (x + 32, y + 41, width - 32, 12)),
+		item(PAGE_LABEL, ControlClass::Static, "Pa&ge:", 0, (x, y + 59, 30, 8)),
+		item(PAGE, ControlClass::Edit, "", FIELD, (x + 32, y + 57, width - 32, 12)),
+		item(BROWSER, ControlClass::Button, "Open &browser", WS_TABSTOP, (x, y + 75, 84, 14)),
 	]
 }
 
@@ -57,17 +70,18 @@ pub fn items(x: i16, y: i16, width: i16) -> Vec<DialogItem> {
 pub struct AccountPanel {
 	subscription: u64,
 	status: String,
+	controls: LoginControls,
 }
 
 impl AccountPanel {
 	/// Subscribes to the login and shows where it is. Call from the dialog's `init`.
-	pub fn init(dialog: Dialog) -> Self {
+	pub fn init(dialog: Dialog, controls: LoginControls) -> Self {
 		let poster = refresh_poster(&dialog);
 		let subscription = controller().subscribe(Box::new(move || poster.post()));
 		if let Err(error) = make_live_region(&dialog, STATUS) {
 			console::print(&format!("foo_librespot: {}", error.message));
 		}
-		let mut panel = Self { subscription, status: String::new() };
+		let mut panel = Self { subscription, status: String::new(), controls };
 		controller().refresh();
 		panel.render(dialog);
 		panel
@@ -78,7 +92,7 @@ impl AccountPanel {
 		match (id, notification) {
 			(ACCOUNT, BN_CLICKED) => controller().press(),
 			(BROWSER, BN_CLICKED) => controller().open_browser(),
-			(STATUS | ACCOUNT | CODE_LABEL | CODE | BROWSER, _) => {}
+			(STATUS | ACCOUNT | CODE_LABEL | CODE | PAGE_LABEL | PAGE | BROWSER, _) => {}
 			_ => return false,
 		}
 		true
@@ -95,14 +109,25 @@ impl AccountPanel {
 
 	fn render(&mut self, dialog: Dialog) {
 		let shown = view(&controller().state());
-		// A disabled control can't keep focus; the account button replaced what was pressed.
-		if !shown.browser_enabled && dialog.focused() == Some(BROWSER) {
+		let visible = self.controls == LoginControls::Always || shown.confirming;
+		// A hidden or disabled control can't keep focus; the account button replaced what was
+		// pressed.
+		let loses_focus = |id| match id {
+			CODE | PAGE => !visible,
+			BROWSER => !shown.confirming,
+			_ => false,
+		};
+		if dialog.focused().is_some_and(loses_focus) {
 			dialog.focus(ACCOUNT);
 		}
 		dialog.set_text(STATUS, &shown.status);
 		dialog.set_text(ACCOUNT, shown.button);
 		dialog.set_text(CODE, &shown.code);
-		dialog.enable(BROWSER, shown.browser_enabled);
+		dialog.set_text(PAGE, &shown.page);
+		dialog.enable(BROWSER, shown.confirming);
+		for id in LOGIN_CONTROLS {
+			dialog.set_visible(id, visible);
+		}
 		self.status = shown.status;
 	}
 }

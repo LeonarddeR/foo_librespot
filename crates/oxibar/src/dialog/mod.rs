@@ -23,6 +23,7 @@ pub mod style {
 	pub const ES_MULTILINE: u32 = win::ES_MULTILINE.cast_unsigned();
 	pub const ES_READONLY: u32 = win::ES_READONLY.cast_unsigned();
 	pub const ES_AUTOVSCROLL: u32 = win::ES_AUTOVSCROLL.cast_unsigned();
+	pub const ES_AUTOHSCROLL: u32 = win::ES_AUTOHSCROLL.cast_unsigned();
 	pub const SS_NOPREFIX: u32 = win::SS_NOPREFIX.cast_unsigned();
 	pub const CBS_DROPDOWNLIST: u32 = win::CBS_DROPDOWNLIST.cast_unsigned();
 }
@@ -48,6 +49,7 @@ mod tests {
 		assert_eq!(style::WS_POPUP, 0x8000_0000);
 		assert_eq!(style::BS_GROUPBOX, 7);
 		assert_eq!(style::ES_READONLY, 0x0800);
+		assert_eq!(style::ES_AUTOHSCROLL, 0x0080);
 		assert_eq!(style::CBS_DROPDOWNLIST, 3);
 		assert_eq!(style::DS_CENTER, 0x0800);
 		assert_eq!((notify::BN_CLICKED, notify::CBN_SELCHANGE, notify::IDCANCEL), (0, 1, 2));

@@ -31,12 +31,14 @@
     CreateWindowExW
     DestroyWindow
     DispatchMessageW
+    DLGC_WANTALLKEYS
     DS_CENTER
     DS_CONTROL
     DS_MODALFRAME
     DS_SETFONT
     DWLP_MSGRESULT
     EnableWindow
+    ES_AUTOHSCROLL
     ES_AUTOVSCROLL
     ES_MULTILINE
     ES_READONLY
@@ -46,6 +48,7 @@
     GetFocus
     GetNextDlgTabItem
     GetWindowLongPtrW
+    GWL_STYLE
     GetWindowTextLengthW
     GetWindowTextW
     IAccPropServices
@@ -66,7 +69,9 @@
     ShellExecuteW
     ShowWindow
     SS_NOPREFIX
+    SW_HIDE
     SW_SHOW
+    SW_SHOWNA
     SW_SHOWNORMAL
     TranslateMessage
     VARIANT
@@ -74,6 +79,7 @@
     WM_APP
     WM_CLOSE
     WM_COMMAND
+    WM_GETDLGCODE
     WM_INITDIALOG
     WM_NCDESTROY
     WM_NEXTDLGCTL
