@@ -10,3 +10,12 @@ path = "junit.xml"
 report-name = "foo_librespot"
 store-success-output = false
 store-failure-output = true
+
+# Tests that create windows run one at a time. A window of another test process that takes the
+# foreground takes keyboard focus from theirs, and some of them check where focus is.
+[test-groups]
+windows = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = '(package(foo_librespot) & test(/^(prefs|login_window)::/)) | (package(oxibar) & test(/^(dialog|preferences)::/))'
+test-group = 'windows'

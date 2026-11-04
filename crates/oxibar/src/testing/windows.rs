@@ -2,33 +2,44 @@
 //! clicks and keys would send.
 
 use crate::bindings::Windows::Win32::{
-	COINIT_APARTMENTTHREADED, CoInitializeEx, CreateWindowExW, DLGC_WANTALLKEYS, DispatchMessageW,
-	HWND, LPARAM, MSG, PM_REMOVE, PeekMessageW, SendMessageW, TranslateMessage, WM_CLOSE,
-	WM_COMMAND, WM_GETDLGCODE, WPARAM, WS_POPUP,
+	COINIT_APARTMENTTHREADED, CoInitializeEx, DLGC_WANTALLKEYS, DispatchMessageW, HWND, LPARAM,
+	MSG, PM_REMOVE, PeekMessageW, SendMessageW, TranslateMessage, WM_CLOSE, WM_COMMAND,
+	WM_GETDLGCODE, WPARAM,
 };
-use crate::dialog::host::Dialog;
+use crate::dialog::host::{Dialog, DialogHandler, create_modeless_dialog};
+use crate::dialog::style::WS_POPUP;
+use crate::dialog::template::DialogTemplate;
 
-/// A hidden top-level window to own the dialogs under test. Also initialises COM on this
-/// thread, as foobar2000's main thread has it, for live regions.
+/// The owner's handler, which does nothing.
+struct Owner;
+
+impl DialogHandler for Owner {
+	fn init(&mut self, _dialog: &Dialog) -> Option<u16> {
+		None
+	}
+
+	fn command(&mut self, _dialog: &Dialog, _id: u16, _notification: u16) {}
+
+	fn refresh(&mut self, _dialog: &Dialog) {}
+}
+
+/// A hidden dialog to own the dialogs under test, as foobar2000's Preferences window owns its
+/// pages. It is a dialog like that window: when Windows activates it, a dialog gives focus back
+/// to the control that had it, where a plain window takes focus itself. Also initialises COM on
+/// this thread, as foobar2000's main thread has it, for live regions.
 pub fn hidden_window() -> isize {
 	unsafe {
 		let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED as u32);
-		CreateWindowExW(
-			0,
-			windows_core::w!("STATIC"),
-			windows_core::w!(""),
-			WS_POPUP,
-			0,
-			0,
-			100,
-			100,
-			None,
-			None,
-			None,
-			None,
-		)
-		.0 as isize
 	}
+	let template = DialogTemplate {
+		style: WS_POPUP,
+		title: String::new(),
+		cx: 100,
+		cy: 100,
+		font: (8, "MS Shell Dlg".to_owned()),
+		items: Vec::new(),
+	};
+	create_modeless_dialog(0, &template, Box::new(Owner)).expect("a hidden owner dialog").hwnd()
 }
 
 /// Handles every message waiting for this thread, such as posted refreshes.

@@ -51,6 +51,12 @@ cargo nextest run --workspace --all-features
 
 Set `FOO_OXITONE_DLL_PATH` to test a DLL from somewhere else, such as a CI artifact.
 
+## Tests that create windows
+
+Dialog tests create real, hidden windows, owned by `oxibar::testing::hidden_window()`, and some check which control has keyboard focus.
+They run one at a time, in the `windows` test group in `.config/nextest.toml`: a window of another test process that takes the foreground takes focus from theirs.
+Add a new module with window tests to that group's filter.
+
 ## Testing in a real foobar2000
 
 `tools/fb2k-portable.ps1` keeps a portable foobar2000 in `.fb2k-portable`, so your normal profile is never touched:
