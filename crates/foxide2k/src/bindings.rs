@@ -863,6 +863,7 @@ pub mod Windows {
 		}
 		pub const DS_CENTER: i32 = 2048;
 		pub const DS_CONTROL: i32 = 1024;
+		pub const DS_FIXEDSYS: i32 = 8;
 		pub const DS_MODALFRAME: i32 = 128;
 		pub const DS_SETFONT: i32 = 64;
 		pub const DWLP_MSGRESULT: i32 = 0;

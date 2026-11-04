@@ -1,7 +1,7 @@
 //! Dialog templates built in Rust, in the `DLGTEMPLATEEX` layout `CreateDialogIndirectParamW`
 //! reads, so no resource compiler is needed.
 
-use crate::bindings::Windows::Win32::{DS_SETFONT, WS_CHILD, WS_VISIBLE};
+use crate::bindings::Windows::Win32::{DS_FIXEDSYS, DS_SETFONT, WS_CHILD, WS_VISIBLE};
 
 /// The predefined window classes a template item can name by atom.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,7 +42,8 @@ pub fn shell_font() -> (u16, String) {
 	(8, "MS Shell Dlg".to_owned())
 }
 
-/// A whole dialog. `DS_SETFONT` is always added to `style`; `font` is the point size and face.
+/// A whole dialog. `DS_SHELLFONT` is always added to `style`, so a face of "MS Shell Dlg" gives
+/// the shell dialog font Windows' own dialogs use; `font` is the point size and face.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DialogTemplate {
 	pub style: u32,
@@ -73,7 +74,7 @@ impl DialogTemplate {
 		let mut words = vec![1, 0xFFFF];
 		push_dword(&mut words, 0); // helpID
 		push_dword(&mut words, 0); // exStyle
-		push_dword(&mut words, self.style | DS_SETFONT as u32);
+		push_dword(&mut words, self.style | (DS_SETFONT | DS_FIXEDSYS) as u32);
 		let count = u16::try_from(self.items.len()).expect("a dialog has fewer than 65536 items");
 		words.extend([count, 0, 0, word(self.cx), word(self.cy)]);
 		words.extend([0, 0]); // no menu, the default dialog class
@@ -102,7 +103,9 @@ impl DialogTemplate {
 #[cfg(test)]
 mod tests {
 	use super::{ControlClass, DialogItem, DialogTemplate, shell_font};
-	use crate::bindings::Windows::Win32::{DS_SETFONT, WS_CHILD, WS_TABSTOP, WS_VISIBLE};
+	use crate::bindings::Windows::Win32::{
+		DS_FIXEDSYS, DS_SETFONT, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
+	};
 
 	fn item(id: u16, class: ControlClass, text: &str) -> DialogItem {
 		DialogItem { id, class, text: text.to_owned(), style: 0, x: 1, y: 2, cx: 30, cy: 14 }
@@ -157,7 +160,9 @@ mod tests {
 		])
 		.to_bytes();
 		assert_eq!(words[..2], [1, 0xFFFF]);
-		assert_eq!(dword(&words, 6) & DS_SETFONT as u32, DS_SETFONT as u32);
+		// DS_SHELLFONT: the shell dialog font Windows' own dialogs use, not Microsoft Sans Serif.
+		let shell_font = (DS_SETFONT | DS_FIXEDSYS) as u32;
+		assert_eq!(dword(&words, 6) & shell_font, shell_font);
 		assert_eq!(words[8], 2);
 		assert_eq!(words[9..13], [0, 0, 260, 130]);
 	}
