@@ -1,0 +1,23 @@
+[package]
+name = "foo_librespot"
+description = "A foobar2000 component that plays Spotify links through librespot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+foo_librespot_core = { path = "../foo_librespot_core" }
+log = { workspace = true }
+oxibar = { path = "../oxibar" }
+
+[dev-dependencies]
+oxibar = { path = "../oxibar", features = ["testing"] }
+
+[lints]
+workspace = true
