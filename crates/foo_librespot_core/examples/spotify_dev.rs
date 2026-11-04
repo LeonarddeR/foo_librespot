@@ -90,6 +90,12 @@ fn resolve(core: &Core, link: &str) -> Result<(), CoreError> {
 			track.album,
 			track.id.uri().to_uri()
 		);
+		if track.total_tracks > 0 {
+			println!(
+				"   track {}/{}, disc {}/{}",
+				track.track_number, track.total_tracks, track.disc_number, track.total_discs
+			);
+		}
 		if let Some(url) = &track.external_url {
 			println!("   hosted elsewhere: {url}");
 		}

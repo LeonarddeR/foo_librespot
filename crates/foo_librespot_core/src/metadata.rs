@@ -2,7 +2,7 @@
 
 use librespot_core::date::Date;
 use librespot_metadata::image::Images;
-use librespot_metadata::{Episode, Track};
+use librespot_metadata::{Album, Episode, Track};
 
 use crate::link::ItemId;
 use crate::replaygain::ReplayGain;
@@ -26,6 +26,10 @@ pub struct TrackInfo {
 	pub album_artists: Vec<String>,
 	pub track_number: u32,
 	pub disc_number: u32,
+	/// How many tracks the track's disc has; 0 until its album is read, and for episodes.
+	pub total_tracks: u32,
+	/// How many discs the track's album has; 0 until its album is read, and for episodes.
+	pub total_discs: u32,
 	/// `YYYY-MM-DD`, or `YYYY` when Spotify only knows the year.
 	pub date: Option<String>,
 	pub duration_ms: u32,
@@ -56,6 +60,8 @@ pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
 		album_artists: album.artists.iter().map(|artist| artist.name.clone()).collect(),
 		track_number: u32::try_from(track.number).unwrap_or(0),
 		disc_number: u32::try_from(track.disc_number).unwrap_or(0),
+		total_tracks: 0,
+		total_discs: 0,
 		date: format_date(album.date.year(), u8::from(album.date.month()), album.date.day()),
 		duration_ms: u32::try_from(track.duration).unwrap_or(0),
 		covers: sorted_covers(covers),
@@ -82,6 +88,8 @@ pub fn episode_info(episode: &Episode) -> Result<TrackInfo, CoreError> {
 		album_artists: show,
 		track_number: u32::try_from(episode.number).unwrap_or(0),
 		disc_number: 0,
+		total_tracks: 0,
+		total_discs: 0,
 		date: format_date(date.year(), u8::from(date.month()), date.day()),
 		duration_ms: u32::try_from(episode.duration).unwrap_or(0),
 		covers: sorted_covers(&episode.covers),
@@ -92,6 +100,34 @@ pub fn episode_info(episode: &Episode) -> Result<TrackInfo, CoreError> {
 		external_url: Some(episode.external_url.clone())
 			.filter(|url| !has_audio && !url.is_empty()),
 	})
+}
+
+/// How an album is split into discs, for the totals of its tracks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AlbumTotals {
+	/// Each disc's number and how many tracks it has.
+	discs: Vec<(i32, u32)>,
+}
+
+impl AlbumTotals {
+	pub fn of(album: &Album) -> Self {
+		let discs = album
+			.discs
+			.iter()
+			.map(|disc| (disc.number, u32::try_from(disc.tracks.len()).unwrap_or(u32::MAX)))
+			.collect();
+		Self { discs }
+	}
+
+	/// Sets `info`'s totals: the tracks on its disc and the discs on its album.
+	pub fn apply(&self, info: &mut TrackInfo) {
+		info.total_discs = u32::try_from(self.discs.len()).unwrap_or(u32::MAX);
+		info.total_tracks = self
+			.discs
+			.iter()
+			.find(|(number, _)| i64::from(*number) == i64::from(info.disc_number))
+			.map_or(0, |(_, tracks)| *tracks);
+	}
 }
 
 /// Whether Spotify plays `track` for an account in `country` with the given `catalogue`
@@ -157,8 +193,8 @@ mod tests {
 	use librespot_protocol::metadata::audio_file::Format;
 	use librespot_protocol::metadata::{
 		Album as AlbumMessage, Artist as ArtistMessage, AudioFile as AudioFileMessage,
-		Date as DateMessage, Episode as EpisodeMessage, Image as ImageMessage, ImageGroup,
-		Show as ShowMessage, Track as TrackMessage,
+		Date as DateMessage, Disc as DiscMessage, Episode as EpisodeMessage, Image as ImageMessage,
+		ImageGroup, Show as ShowMessage, Track as TrackMessage,
 	};
 	use protobuf::MessageField;
 
@@ -167,7 +203,9 @@ mod tests {
 		Availability as AvailabilityMessage, Restriction as RestrictionMessage,
 	};
 
-	use super::{Cover, availability, episode_info, format_date, largest_cover, track_info};
+	use super::{
+		AlbumTotals, Cover, availability, episode_info, format_date, largest_cover, track_info,
+	};
 	use crate::link::ItemId;
 	use crate::{FileId, SpotifyId};
 
@@ -243,6 +281,39 @@ mod tests {
 		image.set_width(width);
 		image.set_height(width);
 		image
+	}
+
+	fn disc(number: i32, tracks: u8) -> DiscMessage {
+		let mut disc = DiscMessage::new();
+		disc.set_number(number);
+		disc.track = (0..tracks)
+			.map(|index| {
+				let mut track = TrackMessage::new();
+				track.set_gid(gid(0x40 + index));
+				track
+			})
+			.collect();
+		disc
+	}
+
+	#[test]
+	fn album_totals_count_the_tracks_on_each_disc() {
+		let mut message = album();
+		message.disc = vec![disc(1, 3), disc(2, 2)];
+		let totals = AlbumTotals::of(&librespot_metadata::Album::try_from(&message).unwrap());
+		let mut info = track_info(&parse(&track())).unwrap();
+		info.disc_number = 2;
+		totals.apply(&mut info);
+		assert_eq!((info.total_tracks, info.total_discs), (2, 2));
+		info.disc_number = 1;
+		totals.apply(&mut info);
+		assert_eq!((info.total_tracks, info.total_discs), (3, 2));
+	}
+
+	#[test]
+	fn a_track_knows_no_totals_until_its_album_is_read() {
+		let info = track_info(&parse(&track())).unwrap();
+		assert_eq!((info.total_tracks, info.total_discs), (0, 0));
 	}
 
 	fn album() -> AlbumMessage {

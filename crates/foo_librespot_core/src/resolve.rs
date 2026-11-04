@@ -17,11 +17,13 @@ use librespot_protocol::extended_metadata::{
 	BatchedEntityRequest, BatchedExtensionResponse, EntityRequest, ExtensionQuery,
 };
 use librespot_protocol::extension_kind::ExtensionKind;
-use librespot_protocol::metadata::{Episode as EpisodeMessage, Track as TrackMessage};
+use librespot_protocol::metadata::{
+	Album as AlbumMessage, Episode as EpisodeMessage, Track as TrackMessage,
+};
 use protobuf::{EnumOrUnknown, Message};
 
 use crate::link::{ItemId, Link, LinkKind};
-use crate::metadata::{TrackInfo, availability, episode_info, track_info};
+use crate::metadata::{AlbumTotals, TrackInfo, availability, episode_info, track_info};
 use crate::replaygain::parse_audio_files;
 use crate::{CoreError, SpotifyId, SpotifyUri};
 
@@ -362,11 +364,12 @@ impl LibrespotMetadata {
 		}
 	}
 
+	/// An item's info, with the URI of a track's album, whose totals come in a later request.
 	fn info(
 		item: ItemId,
 		values: Option<&ExtensionValues>,
 		viewer: &Viewer,
-	) -> Result<Arc<TrackInfo>, CoreError> {
+	) -> Result<(TrackInfo, Option<String>), CoreError> {
 		let values = values.ok_or_else(|| missing(item))?;
 		let bytes = values.metadata.as_deref().ok_or_else(|| missing(item))?;
 		let parse_error = librespot_core::Error::from;
@@ -378,13 +381,52 @@ impl LibrespotMetadata {
 				info.unavailable =
 					availability(&track, &viewer.country, &viewer.catalogue, &viewer.now).err();
 				info.replay_gain = values.audio_files.as_deref().and_then(parse_audio_files);
-				Ok(Arc::new(info))
+				Ok((info, Some(track.album.id.to_uri())))
 			}
 			ItemId::Episode(_) => {
 				let message = EpisodeMessage::parse_from_bytes(bytes).map_err(parse_error)?;
-				Ok(Arc::new(episode_info(&Episode::try_from(&message)?)?))
+				Ok((episode_info(&Episode::try_from(&message)?)?, None))
 			}
 		}
+	}
+
+	/// How each of `albums` is split into discs, in one request. The totals are a nicety: when
+	/// the request fails, tracks are added without them.
+	async fn album_totals(&self, albums: Vec<String>) -> HashMap<String, AlbumTotals> {
+		if albums.is_empty() {
+			return HashMap::new();
+		}
+		let request = BatchedEntityRequest {
+			entity_request: albums
+				.into_iter()
+				.map(|uri| EntityRequest {
+					entity_uri: uri,
+					query: vec![ExtensionQuery {
+						extension_kind: EnumOrUnknown::new(ExtensionKind::ALBUM_V4),
+						..Default::default()
+					}],
+					..Default::default()
+				})
+				.collect(),
+			..Default::default()
+		};
+		let response =
+			retry_rate_limited(|| self.session.spclient().get_extended_metadata(request.clone()))
+				.await;
+		let response = match response {
+			Ok(response) => response,
+			Err(error) => {
+				log::debug!("no album totals: {error}");
+				return HashMap::new();
+			}
+		};
+		extension_values(response)
+			.into_iter()
+			.filter_map(|(uri, values)| {
+				let message = AlbumMessage::parse_from_bytes(values.metadata.as_deref()?).ok()?;
+				Some((uri, AlbumTotals::of(&Album::try_from(&message).ok()?)))
+			})
+			.collect()
 	}
 }
 
@@ -431,10 +473,25 @@ impl MetadataSource for LibrespotMetadata {
 			country: user.country,
 			now: Date::now_utc(),
 		};
-		items
+		let infos: Vec<_> = items
 			.iter()
 			.zip(&request.entity_request)
 			.map(|(item, asked)| Self::info(*item, values.get(&asked.entity_uri), &viewer))
+			.collect();
+		let mut albums: Vec<String> =
+			infos.iter().filter_map(|info| info.as_ref().ok()?.1.clone()).collect();
+		albums.sort_unstable();
+		albums.dedup();
+		let totals = self.album_totals(albums).await;
+		infos
+			.into_iter()
+			.map(|info| {
+				let (mut info, album) = info?;
+				if let Some(totals) = album.and_then(|album| totals.get(&album)) {
+					totals.apply(&mut info);
+				}
+				Ok(Arc::new(info))
+			})
 			.collect()
 	}
 
@@ -462,8 +519,8 @@ impl MetadataSource for LibrespotMetadata {
 /// The raw values of the extensions Spotify sent for one item.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ExtensionValues {
-	/// A `TRACK_V4` or `EPISODE_V4` value, as the item's URI says: a serialized
-	/// `metadata.Track` or `metadata.Episode`.
+	/// A `TRACK_V4`, `EPISODE_V4` or `ALBUM_V4` value, as the URI says: a serialized
+	/// `metadata.Track`, `metadata.Episode` or `metadata.Album`.
 	pub metadata: Option<Vec<u8>>,
 	/// An `AUDIO_FILES` value: a serialized `AudioFilesExtensionResponse`.
 	pub audio_files: Option<Vec<u8>>,
@@ -475,7 +532,9 @@ pub fn extension_values(response: BatchedExtensionResponse) -> HashMap<String, E
 	let mut values: HashMap<String, ExtensionValues> = HashMap::new();
 	for array in response.extended_metadata {
 		let audio_files = match array.extension_kind.enum_value() {
-			Ok(ExtensionKind::TRACK_V4 | ExtensionKind::EPISODE_V4) => false,
+			Ok(ExtensionKind::TRACK_V4 | ExtensionKind::EPISODE_V4 | ExtensionKind::ALBUM_V4) => {
+				false
+			}
 			Ok(ExtensionKind::AUDIO_FILES) => true,
 			_ => continue,
 		};
@@ -536,6 +595,8 @@ mod tests {
 			album_artists: vec!["Artist".to_owned()],
 			track_number: u32::from(byte),
 			disc_number: 1,
+			total_tracks: 0,
+			total_discs: 0,
 			date: None,
 			duration_ms: 1000,
 			covers: Vec::new(),
@@ -556,6 +617,8 @@ mod tests {
 			album_artists: vec!["The Show".to_owned()],
 			track_number: 0,
 			disc_number: 0,
+			total_tracks: 0,
+			total_discs: 0,
 			date: Some("2026-10-01".to_owned()),
 			duration_ms: 1000,
 			covers: Vec::new(),
@@ -871,6 +934,19 @@ mod tests {
 		let values = &extension_values(response)[TRACK_URI];
 		assert_eq!(values.metadata.as_deref(), Some(&b"track"[..]));
 		assert_eq!(values.audio_files, None);
+	}
+
+	#[test]
+	fn album_values_are_kept_by_album() {
+		let mut albums = extension(ExtensionKind::ALBUM_V4, 200, b"album");
+		albums.extension_data[0].entity_uri = "spotify:album:4wPtS24asgBAG4VOmYYB9O".to_owned();
+		let response =
+			BatchedExtensionResponse { extended_metadata: vec![albums], ..Default::default() };
+		let values = extension_values(response);
+		assert_eq!(
+			values["spotify:album:4wPtS24asgBAG4VOmYYB9O"].metadata.as_deref(),
+			Some(&b"album"[..])
+		);
 	}
 
 	#[test]

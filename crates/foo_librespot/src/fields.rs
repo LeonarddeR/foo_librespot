@@ -22,6 +22,12 @@ pub fn fill_info(info: &mut FileInfo<'_>, track: &TrackInfo) -> Result<()> {
 	if track.disc_number > 0 {
 		info.meta_set("DISCNUMBER", &track.disc_number.to_string())?;
 	}
+	if track.total_tracks > 0 {
+		info.meta_set("TOTALTRACKS", &track.total_tracks.to_string())?;
+	}
+	if track.total_discs > 0 {
+		info.meta_set("TOTALDISCS", &track.total_discs.to_string())?;
+	}
 	if let Some(date) = &track.date {
 		info.meta_set("DATE", date)?;
 	}
@@ -80,6 +86,8 @@ mod tests {
 		assert_eq!(info.meta("ALBUM ARTIST"), ["Keith & Kristyn Getty"]);
 		assert_eq!(info.meta("TRACKNUMBER"), ["4"]);
 		assert_eq!(info.meta("DISCNUMBER"), ["1"]);
+		assert_eq!(info.meta("TOTALTRACKS"), ["11"]);
+		assert_eq!(info.meta("TOTALDISCS"), ["1"]);
 		assert_eq!(info.meta("DATE"), ["2007-01-02"]);
 		assert!((info.length() - 279.0).abs() < 1e-9);
 		assert_eq!(info.info("codec").as_deref(), Some("Vorbis"));
@@ -112,12 +120,16 @@ mod tests {
 		let mut track = track_info(track_id(), "In Christ Alone");
 		track.track_number = 0;
 		track.disc_number = 0;
+		track.total_tracks = 0;
+		track.total_discs = 0;
 		track.date = None;
 		track.replay_gain = None;
 		let mut info = FileInfoImpl::new();
 		fill_info(&mut info.file_info(), &track).unwrap();
 		assert!(info.meta("TRACKNUMBER").is_empty());
 		assert!(info.meta("DISCNUMBER").is_empty());
+		assert!(info.meta("TOTALTRACKS").is_empty());
+		assert!(info.meta("TOTALDISCS").is_empty());
 		assert!(info.meta("DATE").is_empty());
 		assert_eq!(info.replaygain(), foxide2k::file_info_impl::REPLAYGAIN_UNSET);
 	}
