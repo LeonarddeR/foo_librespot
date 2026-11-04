@@ -3,8 +3,7 @@
 //! Links reach the playlist loader two ways. foobar2000 asks services in an order that changes
 //! every time it starts, so either can come first:
 //! - our filesystem claims `sptf://` paths, `spotify:` URIs and `open.spotify.com` links. Its
-//!   stub file for an album, playlist, show or episode carries [`CONTENT_TYPE`], which only our
-//!   loader takes.
+//!   stub file for every link carries [`CONTENT_TYPE`], which only our loader takes.
 //! - foobar2000's own HTTP filesystem fetches an `open.spotify.com` page and reports
 //!   `text/html`, as it did for foo_spotify. Our loader takes that too, and turns away every other
 //!   web page before any Spotify call. A loader asked first, such as `foo_youtube`'s, can take the
@@ -13,7 +12,7 @@
 use std::fmt::Write as _;
 
 use foo_librespot_core::CoreError;
-use foo_librespot_core::link::{Link, LinkKind, PATH_SCHEME, item_path, parse_link};
+use foo_librespot_core::link::{Link, PATH_SCHEME, item_path, parse_link};
 use foo_librespot_core::resolve::Skipped;
 use foxide2k::abort::Abort;
 use foxide2k::console;
@@ -28,7 +27,7 @@ use crate::errors::host_error;
 use crate::fields::fill_info;
 use crate::first_use::login_on_first_use;
 
-/// The content type of the stub file for a Spotify album or playlist path.
+/// The content type of the stub file for a Spotify link.
 pub const CONTENT_TYPE: &str = "application/x-foo-librespot";
 
 fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
@@ -60,15 +59,12 @@ impl Filesystem for SpotifyFilesystem {
 		Self::canonical_path(path).map(|canonical| canonical[PATH_SCHEME.len()..].to_owned())
 	}
 
-	/// Tracks go straight to the input. Episodes go through the loader like collections: one
-	/// Spotify doesn't host becomes the podcast's own audio link, which only the loader can add.
+	/// Every link goes through the loader. It asks for a login when the user is logged out, which
+	/// the input never does while adding, and it adds the entry with its info filled in. An
+	/// episode Spotify doesn't host becomes the podcast's own audio link, which only the loader can
+	/// add.
 	fn content_type(path: &str) -> Option<String> {
-		match parse_link(path).ok()?.kind {
-			LinkKind::Track => None,
-			LinkKind::Album | LinkKind::Playlist | LinkKind::Show | LinkKind::Episode => {
-				Some(CONTENT_TYPE.to_owned())
-			}
-		}
+		parse_link(path).ok().map(|_| CONTENT_TYPE.to_owned())
 	}
 }
 
@@ -166,7 +162,7 @@ mod tests {
 	use crate::backend;
 	use crate::testing::{
 		EPISODE_ID, FakeBackend, TRACK_ID, cancel_login_when_started, confirm_login_when_started,
-		episode_info, installed_prompt, stop_after, track_info,
+		episode_info, installed_prompt, stop_after, track_id, track_info,
 	};
 
 	const ALBUM: &str = "4wPtS24asgBAG4VOmYYB9O";
@@ -260,14 +256,15 @@ mod tests {
 	}
 
 	#[test]
-	fn collections_and_episodes_have_the_private_content_type_and_tracks_none() {
+	fn every_link_kind_has_the_private_content_type() {
 		let filesystem = filesystem();
 		let album =
 			filesystem.open(&format!("sptf://spotify:album:{ALBUM}"), OPEN_MODE_READ).unwrap();
 		assert_eq!(album.content_type().as_deref(), Some(CONTENT_TYPE));
+		// Through the loader, so adding a track link asks for a login like any other link.
 		let track =
 			filesystem.open(&format!("sptf://spotify:track:{TRACK_ID}"), OPEN_MODE_READ).unwrap();
-		assert_eq!(track.content_type(), None);
+		assert_eq!(track.content_type().as_deref(), Some(CONTENT_TYPE));
 		let show =
 			filesystem.open("sptf://spotify:show:5CfCWKI5pZ28U0uOzXkDHe", OPEN_MODE_READ).unwrap();
 		assert_eq!(show.content_type().as_deref(), Some(CONTENT_TYPE));
@@ -380,6 +377,22 @@ mod tests {
 		assert_eq!(record.entries[1].meta("TITLE"), ["Across The Lands"]);
 		assert!((record.entries[0].replaygain.track_gain - -6.62).abs() < 1e-4);
 		assert_eq!(record.live_handles(), 0);
+	}
+
+	#[test]
+	fn track_link_adds_one_entry_with_info() {
+		let fake = installed();
+		fake.resolve_to(Resolved {
+			name: None,
+			tracks: vec![Arc::new(track_info(track_id(), "In Christ Alone"))],
+			skipped: Vec::new(),
+		});
+		let (callback, record) = FakeLoaderCallback::new();
+		let path = format!("https://open.spotify.com/track/{TRACK_ID}");
+		loader().open(&path, callback, &FakeAbort::new(false)).unwrap();
+		let record = record.lock().unwrap();
+		assert_eq!(record.paths(), [format!("sptf://spotify:track:{TRACK_ID}")]);
+		assert_eq!(record.entries[0].meta("TITLE"), ["In Christ Alone"]);
 	}
 
 	#[test]
