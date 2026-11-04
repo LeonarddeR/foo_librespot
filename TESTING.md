@@ -87,10 +87,12 @@ The phase 2 checklist is in [docs/checklists/phase-2-core.md](docs/checklists/ph
 
 The component's services run against a fake `Backend` in the unit tests, and its DLL tests load the built `foo_librespot.dll` into OxiBar's fake foobar2000; neither needs Spotify.
 
-To try it in the portable foobar2000, install it and log in into the portable profile, as [the phase 3 checklist](docs/checklists/phase-3-playback.md) describes:
+To try it in the portable foobar2000, install it, start it, and log in from File > Preferences > Tools > foo_librespot, or add a link and use the login window that opens:
 
 ```
 pwsh tools/fb2k-portable.ps1 -Install foo_librespot
-cargo run -q -p foo_librespot_core --example spotify_dev -- --profile .fb2k-portable\profile\foo_librespot login
-pwsh tools/fb2k-portable.ps1 -Run /add https://open.spotify.com/album/4wPtS24asgBAG4VOmYYB9O
+pwsh tools/fb2k-portable.ps1 -Run /add spotify:album:4wPtS24asgBAG4VOmYYB9O
 ```
+
+The dialogs can be checked without a keyboard through UI Automation, for example with `winapp ui list-windows -a foobar2000`, `winapp ui inspect -w <hwnd>` and `winapp ui screenshot -w <hwnd>`. Reading and capturing work while the Windows session is locked; sending keys does not.
+The phase 4 checklist is in [docs/checklists/phase-4-preferences.md](docs/checklists/phase-4-preferences.md).

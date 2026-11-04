@@ -36,6 +36,8 @@ Do not re-litigate these without new evidence.
 - The component is written entirely in Rust, including the assembly-level C++ exception catcher. A C fallback needs the maintainer's approval.
 - Spotify tracks are stored as `sptf://spotify:track:<id>`, the form foo_spotify used, so old playlists keep working.
 - Login uses librespot's OAuth device flow with librespot's built-in client ID. No Spotify Web API.
+- The browser never opens by itself (the maintainer's decision). Only the "Open browser" button opens Spotify's login page; a link that needs a login opens the login window, not the browser.
+- The preferences page and the login window are standard Win32 dialogs built from in-memory templates. Each label is created right before its control, creation order is tab order, and the status line is a polite live region.
 - librespot is pinned to the branch of PR #1855 until that fix is released, because stock librespot exits the process on a non-Premium login.
 - ReplayGain comes from Spotify's `AUDIO_FILES` extended metadata (integrated loudness and true peak), fetched in the same request as the track's other metadata, so tracks have it as soon as they are imported. The gains in the audio file's header, plus 1.5 dB, are only a fallback.
 - `panic = "unwind"`, never `abort`: a panic must reach foobar2000 as a C++ exception.
