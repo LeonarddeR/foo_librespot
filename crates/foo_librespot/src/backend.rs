@@ -25,7 +25,6 @@ pub trait Backend: Send + Sync {
 		id: SpotifyId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Box<dyn PcmTrack>, CoreError>;
-	#[allow(dead_code, reason = "the album art uses it from the commit after next")]
 	fn cover(
 		&self,
 		id: SpotifyId,

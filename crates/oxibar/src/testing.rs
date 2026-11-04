@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::abi::abort_callback::{AbortCallback, AbortCallbackVtbl};
+use crate::abi::album_art::{AlbumArtExtractorInstanceVtbl, AlbumArtExtractorVtbl, MemBlockVtbl};
 use crate::abi::audio_chunk::{AudioChunk as RawAudioChunk, AudioChunkVtbl};
 use crate::abi::component::{Api, ApiVtbl, ServiceClassRef};
 use crate::abi::componentversion::ComponentVersionVtbl;
@@ -1260,6 +1261,80 @@ impl PlaylistLoaderHandle {
 				abort.as_raw(),
 			);
 		})
+	}
+}
+
+/// Calls an `album_art_extractor` service through its vtable, as foobar2000 does.
+pub struct AlbumArtHandle(ServicePtr);
+
+impl AlbumArtHandle {
+	pub fn new(service: ServicePtr) -> Self {
+		Self(service)
+	}
+
+	pub fn service(&self) -> &ServicePtr {
+		&self.0
+	}
+
+	fn vtbl(&self) -> &AlbumArtExtractorVtbl {
+		unsafe { &*(*self.0.as_raw()).vtbl.cast::<AlbumArtExtractorVtbl>() }
+	}
+
+	pub fn is_our_path(&self, path: &str, extension: &str) -> bool {
+		let (path, extension) = (CString::new(path).unwrap(), CString::new(extension).unwrap());
+		let raw = self.0.as_raw();
+		try_host(|| unsafe { (self.vtbl().is_our_path)(raw, path.as_ptr(), extension.as_ptr()) })
+			.expect("is_our_path threw")
+	}
+
+	/// `album_art_extractor_v2::get_guid`, through its hidden return slot.
+	pub fn guid(&self) -> Guid {
+		let raw = self.0.as_raw();
+		let mut guid = Guid::NULL;
+		let slot = &raw mut guid;
+		try_host(|| unsafe { (self.vtbl().get_guid)(raw, slot) }).expect("get_guid threw");
+		guid
+	}
+
+	/// Opens `path`, passing `hint` by value as foobar2000 does.
+	pub fn open(
+		&self,
+		path: &str,
+		hint: Option<ServicePtr>,
+	) -> Result<AlbumArtInstanceHandle, HostException> {
+		let path = CString::new(path).unwrap();
+		let raw = self.0.as_raw();
+		let abort = FakeAbort::new(false);
+		let mut hint = hint.map_or(std::ptr::null_mut(), ServicePtr::into_raw);
+		let hint_slot = &raw mut hint;
+		let mut out: *mut ServiceBase = std::ptr::null_mut();
+		let out_slot = &raw mut out;
+		try_host(|| unsafe {
+			(self.vtbl().open)(raw, out_slot, hint_slot, path.as_ptr(), abort.as_raw());
+		})?;
+		Ok(AlbumArtInstanceHandle(
+			unsafe { ServicePtr::from_raw_owned(out) }.expect("open gave no instance"),
+		))
+	}
+}
+
+/// An `album_art_extractor_instance`, called through its vtable.
+pub struct AlbumArtInstanceHandle(ServicePtr);
+
+impl AlbumArtInstanceHandle {
+	/// The picture bytes of kind `what`, copied out of the returned `album_art_data`.
+	pub fn query(&self, what: &Guid) -> Result<Vec<u8>, HostException> {
+		let raw = self.0.as_raw();
+		let vtbl = unsafe { &*(*raw).vtbl.cast::<AlbumArtExtractorInstanceVtbl>() };
+		let abort = FakeAbort::new(false);
+		let mut out: *mut ServiceBase = std::ptr::null_mut();
+		let out_slot = &raw mut out;
+		try_host(|| unsafe { (vtbl.query)(raw, out_slot, what, abort.as_raw()) })?;
+		let data = unsafe { ServicePtr::from_raw_owned(out) }.expect("query gave no data");
+		let data_vtbl = unsafe { &*(*data.as_raw()).vtbl.cast::<MemBlockVtbl>() };
+		let (pointer, size) =
+			unsafe { ((data_vtbl.data)(data.as_raw()), (data_vtbl.size)(data.as_raw())) };
+		Ok(unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), size) }.to_vec())
 	}
 }
 

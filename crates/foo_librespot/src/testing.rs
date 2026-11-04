@@ -46,7 +46,6 @@ pub fn track_info(id: SpotifyId, title: &str) -> TrackInfo {
 	}
 }
 
-#[allow(dead_code, reason = "the loader and album art tests use them from the next commits")]
 #[derive(Default)]
 struct State {
 	calls: AtomicUsize,
@@ -60,7 +59,6 @@ struct State {
 #[derive(Clone, Default)]
 pub struct FakeBackend(Arc<State>);
 
-#[allow(dead_code, reason = "the loader and album art tests use them from the next commits")]
 impl FakeBackend {
 	/// Every call fails with `error()` from now on.
 	pub fn fail_with(&self, error: fn() -> CoreError) {

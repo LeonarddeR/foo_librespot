@@ -2,6 +2,7 @@
 
 pub mod abi;
 pub mod abort;
+pub mod album_art;
 pub mod audio_chunk;
 #[allow(
 	non_snake_case,

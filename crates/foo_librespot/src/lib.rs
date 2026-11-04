@@ -1,5 +1,6 @@
 //! foo_librespot: a foobar2000 component that plays Spotify links through librespot.
 
+mod art;
 mod backend;
 mod errors;
 mod fields;
@@ -9,6 +10,7 @@ mod logging;
 #[cfg(test)]
 mod testing;
 
+use oxibar::album_art::album_art_factory;
 use oxibar::component::Factory;
 use oxibar::filesystem_service::filesystem_factory;
 use oxibar::initquit::{InitQuit, InitQuitService};
@@ -46,5 +48,6 @@ oxibar::component! {
 		input_factory::<input::SpotifyInput>(),
 		filesystem_factory::<links::SpotifyFilesystem>(),
 		playlist_loader_factory::<links::SpotifyLoader>(),
+		album_art_factory::<art::SpotifyArt>(),
 	],
 }

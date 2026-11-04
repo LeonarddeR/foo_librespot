@@ -35,6 +35,7 @@ fn on_init_prints_loaded_line() {
 
 #[test]
 fn component_registers_all_services() {
+	use oxibar::abi::album_art::EXTRACTOR_IID as ALBUM_ART;
 	use oxibar::abi::filesystem::IID as FILESYSTEM;
 	use oxibar::abi::input::INPUT_ENTRY;
 	use oxibar::abi::playlist_loader::IID as PLAYLIST_LOADER;
@@ -47,8 +48,9 @@ fn component_registers_all_services() {
 		(INPUT_ENTRY, "input_entry"),
 		(FILESYSTEM, "filesystem"),
 		(PLAYLIST_LOADER, "playlist_loader"),
+		(ALBUM_ART, "album_art_extractor"),
 	] {
 		assert_eq!(factories.iter().filter(|guid| **guid == iid).count(), 1, "{name}");
 	}
-	assert_eq!(factories.len(), 5);
+	assert_eq!(factories.len(), 6);
 }
