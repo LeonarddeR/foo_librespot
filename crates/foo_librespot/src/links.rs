@@ -177,10 +177,10 @@ mod tests {
 	};
 
 	use super::{CONTENT_TYPE, SpotifyFilesystem, SpotifyLoader};
-	use crate::backend;
+
 	use crate::testing::{
-		EPISODE_ID, FakeBackend, TRACK_ID, cancel_login_when_started, confirm_login_when_started,
-		episode_info, installed_prompt, stop_after, track_id, track_info,
+		EPISODE_ID, TRACK_ID, cancel_login_when_started, confirm_login_when_started, episode_info,
+		installed_backend, installed_prompt, stop_after, track_id, track_info,
 	};
 
 	const ALBUM: &str = "4wPtS24asgBAG4VOmYYB9O";
@@ -191,12 +191,6 @@ mod tests {
 
 	fn loader() -> PlaylistLoaderHandle {
 		PlaylistLoaderHandle::new(playlist_loader_service::<SpotifyLoader>())
-	}
-
-	fn installed() -> FakeBackend {
-		let fake = FakeBackend::default();
-		backend::install(Box::new(fake.clone()));
-		fake
 	}
 
 	fn id(byte: u8) -> SpotifyId {
@@ -297,7 +291,7 @@ mod tests {
 	fn one_added_item_is_one_track_on_the_console() {
 		let api = FakeApi::new();
 		api.install();
-		let fake = installed();
+		let fake = installed_backend();
 		fake.resolve_to(Resolved {
 			name: None,
 			tracks: vec![Arc::new(episode_info(id(1), "Our Ransom (Part 1)"))],
@@ -315,7 +309,7 @@ mod tests {
 
 	#[test]
 	fn an_episode_link_hosted_elsewhere_adds_the_podcasts_own_link() {
-		let fake = installed();
+		let fake = installed_backend();
 		let mut elsewhere = episode_info(id(2), "Hosted elsewhere");
 		elsewhere.has_audio = false;
 		elsewhere.external_url = Some("https://podcasts.example/12.mp3".to_owned());
@@ -334,7 +328,7 @@ mod tests {
 
 	#[test]
 	fn show_adds_spotify_episodes_as_paths_and_others_under_their_own_link() {
-		let fake = installed();
+		let fake = installed_backend();
 		let mut elsewhere = episode_info(id(2), "Hosted elsewhere");
 		elsewhere.has_audio = false;
 		elsewhere.external_url = Some("https://podcasts.example/12.mp3".to_owned());
@@ -371,7 +365,7 @@ mod tests {
 
 	#[test]
 	fn loader_rejects_non_spotify_pages_without_the_backend() {
-		let fake = installed();
+		let fake = installed_backend();
 		for path in ["https://example.com/", "https://www.youtube.com/watch?v=abc"] {
 			let (callback, record) = FakeLoaderCallback::new();
 			let error = loader().open(path, callback, &FakeAbort::new(false)).unwrap_err();
@@ -383,7 +377,7 @@ mod tests {
 
 	#[test]
 	fn album_link_adds_its_tracks_in_order_with_info() {
-		let fake = installed();
+		let fake = installed_backend();
 		fake.resolve_to(album());
 		let (callback, record) = FakeLoaderCallback::new();
 		let path = format!("https://open.spotify.com/album/{ALBUM}");
@@ -403,7 +397,7 @@ mod tests {
 		let path = "https://open.spotify.com/artist/2UV3Ygbhy1gXAbbrQ9BHdQ";
 		let stub = filesystem().open(path, OPEN_MODE_READ).unwrap();
 		assert_eq!(stub.content_type().as_deref(), Some(CONTENT_TYPE));
-		let fake = installed();
+		let fake = installed_backend();
 		fake.resolve_to(Resolved {
 			name: Some("Keith & Kristyn Getty".to_owned()),
 			tracks: vec![
@@ -421,7 +415,7 @@ mod tests {
 
 	#[test]
 	fn track_link_adds_one_entry_with_info() {
-		let fake = installed();
+		let fake = installed_backend();
 		fake.resolve_to(Resolved {
 			name: None,
 			tracks: vec![Arc::new(track_info(track_id(), "In Christ Alone"))],
@@ -439,7 +433,7 @@ mod tests {
 	fn skipped_items_are_reported_to_the_console() {
 		let api = FakeApi::new();
 		api.install();
-		let fake = installed();
+		let fake = installed_backend();
 		let mut resolved = album();
 		resolved.skipped.push(Skipped {
 			uri: "spotify:local:a:b:c:1".to_owned(),
@@ -476,7 +470,7 @@ mod tests {
 	fn says_why_it_cant_play(path: &str) {
 		let api = FakeApi::new();
 		api.install();
-		let fake = installed();
+		let fake = installed_backend();
 		// Our filesystem claims spotify: URIs it can't parse, so the loader gets them too.
 		let stub = filesystem().open("spotify:local:a:b:c:180", OPEN_MODE_READ).unwrap();
 		assert_eq!(stub.content_type().as_deref(), Some(CONTENT_TYPE));
@@ -509,7 +503,7 @@ mod tests {
 	fn a_page_that_isnt_spotify_is_turned_away_silently() {
 		let api = FakeApi::new();
 		api.install();
-		let _fake = installed();
+		let _fake = installed_backend();
 		let (callback, _record) = FakeLoaderCallback::new();
 		loader().open("https://example.com/", callback, &FakeAbort::new(false)).unwrap_err();
 		assert!(api.popups().is_empty(), "{:?}", api.popups());
@@ -519,7 +513,7 @@ mod tests {
 	fn import_with_skipped_items_shows_one_popup() {
 		let api = FakeApi::new();
 		api.install();
-		let fake = installed();
+		let fake = installed_backend();
 		fake.resolve_to(with_skipped(2));
 		let (callback, _record) = FakeLoaderCallback::new();
 		loader()
@@ -542,7 +536,7 @@ mod tests {
 	fn import_without_skips_shows_no_popup() {
 		let api = FakeApi::new();
 		api.install();
-		let fake = installed();
+		let fake = installed_backend();
 		fake.resolve_to(album());
 		let (callback, _record) = FakeLoaderCallback::new();
 		loader().open(&format!("spotify:album:{ALBUM}"), callback, &FakeAbort::new(false)).unwrap();
@@ -553,7 +547,7 @@ mod tests {
 	fn one_popup_lists_at_most_20_skipped_items() {
 		let api = FakeApi::new();
 		api.install();
-		let fake = installed();
+		let fake = installed_backend();
 		fake.resolve_to(with_skipped(25));
 		let (callback, _record) = FakeLoaderCallback::new();
 		loader()
@@ -573,7 +567,7 @@ mod tests {
 
 	#[test]
 	fn aborted_import_throws_aborted() {
-		let fake = installed();
+		let fake = installed_backend();
 		fake.fail_with(|| CoreError::Aborted);
 		let (callback, _record) = FakeLoaderCallback::new();
 		let error = loader()
@@ -590,7 +584,7 @@ mod tests {
 
 	#[test]
 	fn loader_logged_out_prompts_waits_and_adds_the_tracks() {
-		let fake = installed();
+		let fake = installed_backend();
 		let prompt = installed_prompt();
 		fake.require_login();
 		fake.resolve_to(album());
@@ -603,7 +597,7 @@ mod tests {
 
 	#[test]
 	fn loader_tries_again_only_once() {
-		let fake = installed();
+		let fake = installed_backend();
 		let _prompt = installed_prompt();
 		fake.fail_with(|| CoreError::NotLoggedIn);
 		let user = confirm_login_when_started(&fake, 1);
@@ -616,7 +610,7 @@ mod tests {
 
 	#[test]
 	fn loader_stops_waiting_when_aborted() {
-		let fake = installed();
+		let fake = installed_backend();
 		let _prompt = installed_prompt();
 		fake.require_login();
 		let abort = FakeAbort::new(false);
@@ -630,7 +624,7 @@ mod tests {
 
 	#[test]
 	fn loader_reports_a_cancelled_login() {
-		let fake = installed();
+		let fake = installed_backend();
 		let _prompt = installed_prompt();
 		fake.require_login();
 		let user = cancel_login_when_started(&fake);
@@ -642,7 +636,7 @@ mod tests {
 
 	#[test]
 	fn two_loaders_share_one_window() {
-		let fake = installed();
+		let fake = installed_backend();
 		let _prompt = installed_prompt();
 		fake.require_login();
 		fake.resolve_to(album());
@@ -660,7 +654,7 @@ mod tests {
 	fn loader_on_the_main_thread_prompts_but_does_not_wait() {
 		// The fake host answers that every thread is its main thread.
 		FakeApi::new().install();
-		let fake = installed();
+		let fake = installed_backend();
 		let prompt = installed_prompt();
 		fake.require_login();
 		let started = Instant::now();

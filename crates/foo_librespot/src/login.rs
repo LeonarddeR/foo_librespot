@@ -360,17 +360,11 @@ mod tests {
 	use std::time::{Duration, Instant};
 
 	use foo_librespot_core::CoreError;
-	use foo_librespot_core::login::{DeviceCode, LoginError};
+	use foo_librespot_core::login::LoginError;
 
 	use super::{LoginController, LoginState, view};
-	use crate::backend;
-	use crate::testing::FakeBackend;
 
-	fn installed() -> FakeBackend {
-		let fake = FakeBackend::default();
-		backend::install(Box::new(fake.clone()));
-		fake
-	}
+	use crate::testing::{device_code, installed_backend};
 
 	/// A controller whose browser only records the pages it was asked to open.
 	fn controller() -> (Arc<LoginController>, Arc<Mutex<Vec<String>>>) {
@@ -380,14 +374,6 @@ mod tests {
 			record.lock().unwrap_or_else(PoisonError::into_inner).push(url.to_owned());
 		}));
 		(Arc::new(controller), opened)
-	}
-
-	fn code() -> DeviceCode {
-		DeviceCode {
-			user_code: "KKGT-2024".to_owned(),
-			verification_uri: "https://spotify.com/pair".to_owned(),
-			url: "https://spotify.com/pair?code=KKGT-2024".to_owned(),
-		}
 	}
 
 	fn opened(record: &Mutex<Vec<String>>) -> Vec<String> {
@@ -419,7 +405,7 @@ mod tests {
 		assert_eq!(asking.page, "");
 		assert!(!asking.confirming);
 
-		let confirming = view(&LoginState::Confirming(code()));
+		let confirming = view(&LoginState::Confirming(device_code()));
 		assert_eq!(confirming.button, "&Cancel login");
 		assert_eq!(
 			confirming.status,
@@ -442,7 +428,7 @@ mod tests {
 
 	#[test]
 	fn press_when_logged_out_starts_and_asks() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		controller.press();
 		assert_eq!(fake.logins_started(), 1);
@@ -451,34 +437,34 @@ mod tests {
 
 	#[test]
 	fn code_arrival_shows_the_code_but_opens_nothing() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, opened_pages) = controller();
 		controller.press();
-		fake.send_code(code());
-		assert_eq!(controller.state(), LoginState::Confirming(code()));
+		fake.send_code(device_code());
+		assert_eq!(controller.state(), LoginState::Confirming(device_code()));
 		assert!(view(&controller.state()).confirming);
 		assert!(opened(&opened_pages).is_empty(), "the browser opened by itself");
 	}
 
 	#[test]
 	fn open_browser_opens_the_page_only_while_confirming() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, opened_pages) = controller();
 		controller.open_browser();
 		controller.press();
 		controller.open_browser();
 		assert!(opened(&opened_pages).is_empty());
-		fake.send_code(code());
+		fake.send_code(device_code());
 		controller.open_browser();
 		assert_eq!(opened(&opened_pages), ["https://spotify.com/pair?code=KKGT-2024"]);
 	}
 
 	#[test]
 	fn success_shows_the_username() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		controller.press();
-		fake.send_code(code());
+		fake.send_code(device_code());
 		fake.finish_login(Ok("Keith Getty".to_owned()));
 		assert_eq!(controller.state(), LoginState::LoggedIn("Keith Getty".to_owned()));
 		assert_eq!(view(&controller.state()).status, "Logged in to Spotify as Keith Getty.");
@@ -486,7 +472,7 @@ mod tests {
 
 	#[test]
 	fn failed_login_explains_and_offers_log_in_again() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		controller.press();
 		fake.finish_login(Err(CoreError::NotPremium { account_type: "free".to_owned() }));
@@ -502,7 +488,7 @@ mod tests {
 
 	#[test]
 	fn press_while_waiting_cancels() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		controller.press();
 		controller.press();
@@ -512,7 +498,7 @@ mod tests {
 
 	#[test]
 	fn a_cancelled_login_looks_logged_out_and_is_remembered_until_the_next_one() {
-		let _fake = installed();
+		let _fake = installed_backend();
 		let (controller, _opened) = controller();
 		controller.press();
 		controller.cancel();
@@ -526,12 +512,12 @@ mod tests {
 
 	#[test]
 	fn a_login_that_ends_while_the_stored_login_is_read_is_kept() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		let (racer, user) = (Arc::clone(&controller), fake.clone());
 		fake.during_username_read(move || {
 			racer.press();
-			user.send_code(code());
+			user.send_code(device_code());
 			user.finish_login(Ok("Keith Getty".to_owned()));
 		});
 		controller.refresh();
@@ -540,18 +526,18 @@ mod tests {
 
 	#[test]
 	fn late_answers_from_a_cancelled_login_are_ignored() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		controller.press();
 		controller.cancel();
-		fake.send_code(code());
+		fake.send_code(device_code());
 		fake.finish_login(Ok("Keith Getty".to_owned()));
 		assert_eq!(controller.state(), LoginState::Cancelled);
 	}
 
 	#[test]
 	fn press_when_logged_in_logs_out() {
-		let fake = installed();
+		let fake = installed_backend();
 		fake.set_username(Some("Keith Getty"));
 		let (controller, _opened) = controller();
 		controller.refresh();
@@ -562,7 +548,7 @@ mod tests {
 
 	#[test]
 	fn refresh_reads_the_stored_username() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		controller.refresh();
 		assert_eq!(controller.state(), LoginState::LoggedOut);
@@ -573,7 +559,7 @@ mod tests {
 
 	#[test]
 	fn a_cancel_after_the_login_was_stored_shows_the_login() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		controller.start();
 		fake.store_login_before_answering("Keith Getty");
@@ -583,7 +569,7 @@ mod tests {
 
 	#[test]
 	fn refresh_says_why_the_stored_login_cant_be_read() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		fake.fail_start(|| {
 			CoreError::Io(std::io::Error::other("can't use the foo_librespot profile folder"))
@@ -598,7 +584,7 @@ mod tests {
 
 	#[test]
 	fn start_does_nothing_while_a_login_runs_or_when_logged_in() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		controller.start();
 		controller.start();
@@ -611,7 +597,7 @@ mod tests {
 
 	#[test]
 	fn a_login_cancelled_before_its_wait_began_ends_the_wait_without_another_login() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		let login = controller.start();
 		controller.cancel();
@@ -623,14 +609,14 @@ mod tests {
 
 	#[test]
 	fn start_then_wait_gives_one_login_and_the_username() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		let waiter = {
 			let controller = Arc::clone(&controller);
 			std::thread::spawn(move || controller.wait(controller.start(), &|| false))
 		};
 		eventually(|| fake.logins_started() == 1);
-		fake.send_code(code());
+		fake.send_code(device_code());
 		fake.finish_login(Ok("Keith Getty".to_owned()));
 		assert_eq!(waiter.join().unwrap().unwrap(), "Keith Getty");
 		assert_eq!(fake.logins_started(), 1);
@@ -638,7 +624,7 @@ mod tests {
 
 	#[test]
 	fn two_waiters_share_one_login() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		let waiters: Vec<_> = (0..2)
 			.map(|_| {
@@ -657,7 +643,7 @@ mod tests {
 
 	#[test]
 	fn wait_stops_when_aborted_and_leaves_the_login_running() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		let aborting = Arc::new(AtomicBool::new(false));
 		let waiter = {
@@ -679,7 +665,7 @@ mod tests {
 
 	#[test]
 	fn wait_reports_a_failed_or_cancelled_login() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		let wait = || {
 			let controller = Arc::clone(&controller);
@@ -711,18 +697,18 @@ mod tests {
 
 	#[test]
 	fn subscriber_hears_every_change() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		let (_id, count) = counting(&controller);
 		controller.press();
-		fake.send_code(code());
+		fake.send_code(device_code());
 		fake.finish_login(Ok("Keith Getty".to_owned()));
 		assert_eq!(count.load(Ordering::SeqCst), 3);
 	}
 
 	#[test]
 	fn two_subscribers_both_hear_and_leave_separately() {
-		let _fake = installed();
+		let _fake = installed_backend();
 		let (controller, _opened) = controller();
 		let (first, first_count) = counting(&controller);
 		let (_second, second_count) = counting(&controller);
@@ -735,19 +721,19 @@ mod tests {
 
 	#[test]
 	fn login_continues_without_a_page() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		let (id, _count) = counting(&controller);
 		controller.press();
 		controller.unsubscribe(id);
-		fake.send_code(code());
+		fake.send_code(device_code());
 		fake.finish_login(Ok("Keith Getty".to_owned()));
 		assert_eq!(controller.state(), LoginState::LoggedIn("Keith Getty".to_owned()));
 	}
 
 	#[test]
 	fn refresh_after_unsubscribe_reaches_nobody() {
-		let fake = installed();
+		let fake = installed_backend();
 		let (controller, _opened) = controller();
 		let (id, count) = counting(&controller);
 		controller.unsubscribe(id);

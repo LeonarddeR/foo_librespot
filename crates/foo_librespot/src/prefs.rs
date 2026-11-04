@@ -141,7 +141,6 @@ impl PageInstance for OpenPage {
 mod tests {
 	use std::sync::{Arc, Mutex, PoisonError};
 
-	use foo_librespot_core::login::DeviceCode;
 	use foxide2k::abi::preferences::{GUID_TOOLS, STATE_CHANGED, STATE_RESETTABLE};
 	use foxide2k::dialog::host::Dialog;
 	use foxide2k::dialog::notify::{BN_CLICKED, CBN_SELCHANGE};
@@ -156,7 +155,7 @@ mod tests {
 	use crate::backend;
 	use crate::login::{LoginController, install_controller};
 	use crate::settings::BITRATE_KEY;
-	use crate::testing::FakeBackend;
+	use crate::testing::{FakeBackend, device_code};
 
 	const BITRATE: u16 = super::BITRATE;
 	const BITRATE_LABEL: u16 = super::BITRATE_LABEL;
@@ -187,18 +186,10 @@ mod tests {
 		Setup { api, fake, opened, callback, instance, dialog }
 	}
 
-	fn code() -> DeviceCode {
-		DeviceCode {
-			user_code: "KKGT-2024".to_owned(),
-			verification_uri: "https://spotify.com/pair".to_owned(),
-			url: "https://spotify.com/pair?code=KKGT-2024".to_owned(),
-		}
-	}
-
 	/// Presses the account button and lets Spotify send a code.
 	fn confirming(setup: &Setup) {
 		send_command(&setup.dialog, ACCOUNT, BN_CLICKED);
-		setup.fake.send_code(code());
+		setup.fake.send_code(device_code());
 		pump_messages();
 	}
 
@@ -227,7 +218,7 @@ mod tests {
 		send_command(&setup.dialog, ACCOUNT, BN_CLICKED);
 		pump_messages();
 		assert_eq!(shown(&setup), Vec::<u16>::new());
-		setup.fake.send_code(code());
+		setup.fake.send_code(device_code());
 		pump_messages();
 		assert_eq!(shown(&setup), LOGIN_CONTROLS);
 		setup.fake.finish_login(Ok("Keith Getty".to_owned()));
@@ -263,7 +254,7 @@ mod tests {
 		send_command(&setup.dialog, ACCOUNT, BN_CLICKED);
 		pump_messages();
 		assert!(!setup.dialog.is_visible(BROWSER));
-		setup.fake.send_code(code());
+		setup.fake.send_code(device_code());
 		pump_messages();
 		assert!(setup.dialog.is_visible(BROWSER));
 		assert!(setup.opened.lock().unwrap().is_empty(), "the browser opened by itself");
@@ -278,7 +269,7 @@ mod tests {
 		pump_messages();
 		assert_eq!(setup.dialog.text(STATUS), "Asking Spotify for a login code…");
 		assert_eq!(setup.dialog.text(ACCOUNT), "&Cancel login");
-		setup.fake.send_code(code());
+		setup.fake.send_code(device_code());
 		pump_messages();
 		assert_eq!(setup.dialog.text(CODE), "KKGT-2024");
 		assert_eq!(setup.dialog.text(PAGE), "https://spotify.com/pair?code=KKGT-2024");

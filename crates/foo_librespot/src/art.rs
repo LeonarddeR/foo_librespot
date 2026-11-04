@@ -37,9 +37,9 @@ mod tests {
 	use foxide2k::testing::AlbumArtHandle;
 
 	use super::SpotifyArt;
-	use crate::backend;
+
 	use crate::input::SpotifyInput;
-	use crate::testing::{EPISODE_ID, FakeBackend, TRACK_ID};
+	use crate::testing::{EPISODE_ID, TRACK_ID, installed_backend};
 
 	fn path() -> String {
 		format!("sptf://spotify:track:{TRACK_ID}")
@@ -49,12 +49,6 @@ mod tests {
 		AlbumArtHandle::new(album_art_service::<SpotifyArt>())
 	}
 
-	fn installed() -> FakeBackend {
-		let fake = FakeBackend::default();
-		backend::install(Box::new(fake.clone()));
-		fake
-	}
-
 	#[test]
 	fn art_is_paired_with_the_input() {
 		assert_eq!(extractor().guid(), SpotifyInput::GUID);
@@ -62,7 +56,7 @@ mod tests {
 
 	#[test]
 	fn front_cover_comes_from_the_backend() {
-		let fake = installed();
+		let fake = installed_backend();
 		fake.set_cover(b"\xff\xd8 jpeg".to_vec());
 		let instance = extractor().open(&path(), None).unwrap();
 		assert_eq!(instance.query(&COVER_FRONT).unwrap(), b"\xff\xd8 jpeg");
@@ -70,7 +64,7 @@ mod tests {
 
 	#[test]
 	fn other_kinds_are_not_found_without_asking_spotify() {
-		let fake = installed();
+		let fake = installed_backend();
 		fake.set_cover(b"\xff\xd8 jpeg".to_vec());
 		let instance = extractor().open(&path(), None).unwrap();
 		for kind in [COVER_BACK, ARTIST] {
@@ -81,7 +75,7 @@ mod tests {
 
 	#[test]
 	fn a_track_without_a_cover_is_not_found() {
-		installed();
+		installed_backend();
 		let instance = extractor().open(&path(), None).unwrap();
 		assert_eq!(instance.query(&COVER_FRONT).unwrap_err().kind, ExceptionKind::AlbumArtNotFound);
 	}

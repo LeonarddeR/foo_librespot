@@ -130,19 +130,13 @@ mod tests {
 
 	use super::{current, open};
 	use crate::account::{ACCOUNT, BROWSER, CODE, PAGE};
-	use crate::backend;
-	use crate::login::{LoginState, controller};
-	use crate::testing::{FakeBackend, device_code};
 
-	fn installed() -> FakeBackend {
-		let fake = FakeBackend::default();
-		backend::install(Box::new(fake.clone()));
-		fake
-	}
+	use crate::login::{LoginState, controller};
+	use crate::testing::{device_code, installed_backend};
 
 	#[test]
 	fn login_window_tab_order_and_first_focus() {
-		let fake = installed();
+		let fake = installed_backend();
 		controller().start();
 		fake.send_code(device_code());
 		let dialog = open(hidden_window()).unwrap();
@@ -154,7 +148,7 @@ mod tests {
 
 	#[test]
 	fn login_window_shows_the_code_field_before_the_code_arrives() {
-		let _fake = installed();
+		let _fake = installed_backend();
 		controller().start();
 		let dialog = open(hidden_window()).unwrap();
 		assert!(dialog.is_visible(CODE));
@@ -166,7 +160,7 @@ mod tests {
 
 	#[test]
 	fn the_window_closes_itself_once_the_login_succeeds() {
-		let fake = installed();
+		let fake = installed_backend();
 		controller().start();
 		let dialog = open(hidden_window()).unwrap();
 		fake.send_code(device_code());
@@ -179,7 +173,7 @@ mod tests {
 
 	#[test]
 	fn a_failed_login_keeps_the_window_open_to_try_again() {
-		let fake = installed();
+		let fake = installed_backend();
 		controller().start();
 		let dialog = open(hidden_window()).unwrap();
 		fake.send_code(device_code());
@@ -192,7 +186,7 @@ mod tests {
 
 	#[test]
 	fn opening_once_logged_in_closes_at_once() {
-		let fake = installed();
+		let fake = installed_backend();
 		fake.set_username(Some("Keith Getty"));
 		let dialog = open(hidden_window()).unwrap();
 		pump_messages();
@@ -201,7 +195,7 @@ mod tests {
 
 	#[test]
 	fn closing_the_login_window_cancels_a_waiting_login() {
-		let fake = installed();
+		let fake = installed_backend();
 		controller().start();
 		let dialog = open(hidden_window()).unwrap();
 		send_close(&dialog);
@@ -214,7 +208,7 @@ mod tests {
 
 	#[test]
 	fn showing_twice_keeps_one_window() {
-		let _fake = installed();
+		let _fake = installed_backend();
 		let owner = hidden_window();
 		let first = open(owner).unwrap();
 		let second = open(owner).unwrap();

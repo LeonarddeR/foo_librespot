@@ -389,6 +389,13 @@ impl crate::first_use::LoginPrompt for FakePrompt {
 }
 
 /// Installs a [`FakePrompt`] for this test process.
+/// A [`FakeBackend`], installed as the backend of this test process.
+pub fn installed_backend() -> FakeBackend {
+	let fake = FakeBackend::default();
+	crate::backend::install(Box::new(fake.clone()));
+	fake
+}
+
 pub fn installed_prompt() -> FakePrompt {
 	let prompt = FakePrompt::default();
 	crate::first_use::install_prompt(Box::new(prompt.clone()));

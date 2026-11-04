@@ -153,10 +153,10 @@ mod tests {
 	use foxide2k::testing::{DecoderHandle, FakeAbort, FakeAudioChunk, InputEntryHandle};
 
 	use super::SpotifyInput;
-	use crate::backend;
+
 	use crate::testing::{
-		EPISODE_ID, FakeBackend, TRACK_ID, cancel_login_when_started, confirm_login_when_started,
-		fail_login_when_started, fixture_samples, installed_prompt, stop_after,
+		EPISODE_ID, TRACK_ID, cancel_login_when_started, confirm_login_when_started,
+		fail_login_when_started, fixture_samples, installed_backend, installed_prompt, stop_after,
 	};
 
 	fn path() -> String {
@@ -165,12 +165,6 @@ mod tests {
 
 	fn entry() -> InputEntryHandle {
 		InputEntryHandle::new(entry_service::<SpotifyInput>())
-	}
-
-	fn installed() -> FakeBackend {
-		let fake = FakeBackend::default();
-		backend::install(Box::new(fake.clone()));
-		fake
 	}
 
 	#[test]
@@ -188,7 +182,7 @@ mod tests {
 
 	#[test]
 	fn info_read_fills_file_info_without_decoding() {
-		let fake = installed();
+		let fake = installed_backend();
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_v3(&INFO_READER, &path(), None, None, &abort).unwrap();
 		let mut info = FileInfoImpl::new();
@@ -215,7 +209,7 @@ mod tests {
 
 	#[test]
 	fn decoding_delivers_the_fixture_then_ends() {
-		installed();
+		installed_backend();
 		let mut frames = Vec::new();
 		let samples = decode_all(&mut frames);
 		assert_eq!(samples, fixture_samples());
@@ -224,7 +218,7 @@ mod tests {
 
 	#[test]
 	fn seek_lands_on_the_frame() {
-		installed();
+		installed_backend();
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
 		decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap();
@@ -249,7 +243,7 @@ mod tests {
 
 	#[test]
 	fn playing_reports_the_codec_and_bitrate_of_the_file_spotify_sent_once() {
-		installed();
+		installed_backend();
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
 		decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap();
@@ -261,7 +255,7 @@ mod tests {
 
 	#[test]
 	fn seeking_reports_the_codec_and_bitrate_again() {
-		installed();
+		installed_backend();
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
 		decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap();
@@ -274,7 +268,7 @@ mod tests {
 
 	#[test]
 	fn decoding_for_anything_but_playback_is_denied() {
-		let fake = installed();
+		let fake = installed_backend();
 		let abort = FakeAbort::new(false);
 		for flags in [0, INPUT_FLAG_SIMPLEDECODE, INPUT_FLAG_TESTING_INTEGRITY] {
 			let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
@@ -290,7 +284,7 @@ mod tests {
 
 	#[test]
 	fn not_logged_in_reaches_the_host_as_an_io_error_with_advice() {
-		let fake = installed();
+		let fake = installed_backend();
 		fake.fail_with(|| CoreError::NotLoggedIn);
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_v3(&INFO_READER, &path(), None, None, &abort).unwrap();
@@ -301,7 +295,7 @@ mod tests {
 
 	#[test]
 	fn playing_while_logged_out_waits_for_the_login_then_plays() {
-		let fake = installed();
+		let fake = installed_backend();
 		let prompt = installed_prompt();
 		fake.require_login();
 		let user = confirm_login_when_started(&fake, 1);
@@ -316,7 +310,7 @@ mod tests {
 
 	#[test]
 	fn a_cancelled_login_fails_the_play_with_advice() {
-		let fake = installed();
+		let fake = installed_backend();
 		let _prompt = installed_prompt();
 		fake.require_login();
 		let user = cancel_login_when_started(&fake);
@@ -333,7 +327,7 @@ mod tests {
 
 	#[test]
 	fn after_a_cancelled_login_playing_fails_without_asking_again() {
-		let fake = installed();
+		let fake = installed_backend();
 		let prompt = installed_prompt();
 		fake.require_login();
 		let user = cancel_login_when_started(&fake);
@@ -350,7 +344,7 @@ mod tests {
 
 	#[test]
 	fn after_a_failed_login_playing_fails_without_asking_again() {
-		let fake = installed();
+		let fake = installed_backend();
 		let prompt = installed_prompt();
 		fake.require_login();
 		let spotify = fail_login_when_started(&fake);
@@ -366,7 +360,7 @@ mod tests {
 
 	#[test]
 	fn stop_while_waiting_for_the_login_returns_promptly() {
-		let fake = installed();
+		let fake = installed_backend();
 		let _prompt = installed_prompt();
 		fake.require_login();
 		let abort = FakeAbort::new(false);
@@ -381,7 +375,7 @@ mod tests {
 
 	#[test]
 	fn info_reads_while_logged_out_never_prompt() {
-		let fake = installed();
+		let fake = installed_backend();
 		let prompt = installed_prompt();
 		fake.fail_with(|| CoreError::NotLoggedIn);
 		let abort = FakeAbort::new(false);
@@ -393,7 +387,7 @@ mod tests {
 
 	#[test]
 	fn aborted_open_throws_aborted() {
-		let fake = installed();
+		let fake = installed_backend();
 		fake.fail_with(|| CoreError::Aborted);
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
@@ -403,7 +397,7 @@ mod tests {
 
 	#[test]
 	fn stop_during_a_stalled_read_returns_promptly() {
-		let fake = installed();
+		let fake = installed_backend();
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
 		decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap();
@@ -419,7 +413,7 @@ mod tests {
 
 	#[test]
 	fn stop_during_a_stalled_seek_returns_promptly() {
-		let fake = installed();
+		let fake = installed_backend();
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
 		decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap();
@@ -435,7 +429,7 @@ mod tests {
 
 	#[test]
 	fn two_decoders_on_two_threads_play_independently() {
-		installed();
+		installed_backend();
 		let expected = fixture_samples();
 		let threads: Vec<_> =
 			(0..2).map(|_| std::thread::spawn(|| decode_all(&mut Vec::new()))).collect();
