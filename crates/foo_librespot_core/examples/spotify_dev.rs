@@ -81,13 +81,14 @@ fn resolve(core: &Core, link: &str) -> Result<(), CoreError> {
 	for (index, track) in resolved.tracks.iter().enumerate() {
 		let seconds = track.duration_ms / 1000;
 		println!(
-			"{}. {} – {} ({}:{:02}) [{}]",
+			"{}. {} – {} ({}:{:02}) [{}] spotify:track:{}",
 			index + 1,
 			track.artists.join(", "),
 			track.title,
 			seconds / 60,
 			seconds % 60,
-			track.album
+			track.album,
+			track.id.to_base62()
 		);
 	}
 	for skipped in &resolved.skipped {
