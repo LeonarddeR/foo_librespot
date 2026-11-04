@@ -63,10 +63,16 @@ pub struct SessionManager<C: Connector> {
 	connector: C,
 	profile: Arc<Profile>,
 	connect_timeout: Duration,
-	// Held for the whole connect, so callers that arrive together share one connection.
-	current: tokio::sync::Mutex<Option<C::Session>>,
+	// Held for the whole connect, so callers that arrive together share one connection. The
+	// session is kept with the logout count it was made under: a logout that can't take this lock
+	// leaves it here, and the next call ends it.
+	current: tokio::sync::Mutex<Option<(C::Session, u64)>>,
 	// Bumped by every logout, so a connect that finishes afterwards is thrown away.
 	logouts: AtomicU64,
+	// Held while the logout count is read or bumped together with reading, saving or deleting the
+	// stored login, so a logout can't fall between a connect's check and its save and have the
+	// login written back.
+	stored: std::sync::Mutex<()>,
 }
 
 impl<C: Connector> SessionManager<C> {
@@ -85,18 +91,33 @@ impl<C: Connector> SessionManager<C> {
 			connect_timeout,
 			current: tokio::sync::Mutex::new(None),
 			logouts: AtomicU64::new(0),
+			stored: std::sync::Mutex::new(()),
 		}
+	}
+
+	fn lock_stored(&self) -> std::sync::MutexGuard<'_, ()> {
+		self.stored.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 	}
 
 	/// A live session, connecting with the stored login when there is none.
 	pub async fn session(&self) -> Result<C::Session, CoreError> {
 		let mut current = self.current.lock().await;
-		if let Some(session) = current.as_ref().filter(|session| !session.is_invalid()) {
-			return Ok(session.clone());
+		match current.take() {
+			Some((session, made_under))
+				if !session.is_invalid() && made_under == self.logouts.load(Ordering::SeqCst) =>
+			{
+				*current = Some((session.clone(), made_under));
+				return Ok(session);
+			}
+			// Ended by a logout that couldn't take the lock.
+			Some((session, _)) if !session.is_invalid() => session.shutdown(),
+			_ => {}
 		}
-		*current = None;
-		let logouts = self.logouts.load(Ordering::SeqCst);
-		let credentials = match self.profile.load_credentials() {
+		let (logouts, loaded) = {
+			let _stored = self.lock_stored();
+			(self.logouts.load(Ordering::SeqCst), self.profile.load_credentials())
+		};
+		let credentials = match loaded {
 			Ok(Some(credentials)) => credentials,
 			Ok(None) => return Err(CoreError::NotLoggedIn),
 			Err(ProfileError::Unreadable(reason)) => {
@@ -108,13 +129,16 @@ impl<C: Connector> SessionManager<C> {
 			Err(error) => return Err(error.into()),
 		};
 		match self.connect(credentials).await {
-			Ok(connected) if self.logouts.load(Ordering::SeqCst) != logouts => {
-				connected.session.shutdown();
-				Err(CoreError::NotLoggedIn)
-			}
 			Ok(connected) => {
-				self.save(&connected.credentials);
-				*current = Some(connected.session.clone());
+				{
+					let _stored = self.lock_stored();
+					if self.logouts.load(Ordering::SeqCst) != logouts {
+						connected.session.shutdown();
+						return Err(CoreError::NotLoggedIn);
+					}
+					self.save(&connected.credentials);
+				}
+				*current = Some((connected.session.clone(), logouts));
 				Ok(connected.session)
 			}
 			Err(CoreError::Spotify(error)) if rejects_credentials(&error) => {
@@ -132,28 +156,37 @@ impl<C: Connector> SessionManager<C> {
 		let mut current = self.current.lock().await;
 		let logouts = self.logouts.load(Ordering::SeqCst);
 		let connected = self.connect(Credentials::with_access_token(access_token)).await?;
-		if self.logouts.load(Ordering::SeqCst) != logouts {
-			connected.session.shutdown();
-			return Err(CoreError::NotLoggedIn);
+		{
+			let _stored = self.lock_stored();
+			if self.logouts.load(Ordering::SeqCst) != logouts {
+				connected.session.shutdown();
+				return Err(CoreError::NotLoggedIn);
+			}
+			self.profile.save_credentials(&connected.credentials)?;
 		}
-		self.profile.save_credentials(&connected.credentials)?;
-		if let Some(previous) = current.replace(connected.session) {
+		if let Some((previous, _)) = current.replace((connected.session, logouts)) {
 			previous.shutdown();
 		}
 		Ok(connected.username)
 	}
 
 	/// Forgets the stored login and ends the session. Never waits for a connect in progress,
-	/// because it runs on foobar2000's UI thread; that connect is thrown away when it finishes.
+	/// because it runs on foobar2000's UI thread; that connect is thrown away when it finishes,
+	/// and a session another call is handing out ends at the next call. When the stored login
+	/// can't be deleted, the session still ends and the error is returned.
 	pub fn logout(&self) -> Result<(), CoreError> {
-		self.logouts.fetch_add(1, Ordering::SeqCst);
-		self.profile.clear_credentials()?;
+		let cleared = {
+			let _stored = self.lock_stored();
+			let cleared = self.profile.clear_credentials();
+			self.logouts.fetch_add(1, Ordering::SeqCst);
+			cleared
+		};
 		if let Ok(mut current) = self.current.try_lock()
-			&& let Some(session) = current.take()
+			&& let Some((session, _)) = current.take()
 		{
 			session.shutdown();
 		}
-		Ok(())
+		Ok(cleared?)
 	}
 
 	/// True when a stored login exists and can be read.
@@ -571,6 +604,37 @@ mod tests {
 		setup.manager.logout().unwrap();
 		assert!(!setup.profile.has_credentials());
 		assert!(!setup.manager.is_logged_in());
+		assert!(setup.connector.last_session().shut_down.load(Ordering::SeqCst));
+	}
+
+	#[tokio::test]
+	async fn logout_while_a_caller_holds_the_session_still_ends_it() {
+		let setup = setup(connects(), true);
+		setup.manager.session().await.unwrap();
+		{
+			// A playback thread taking the live session at the moment the user logs out.
+			let _held = setup.manager.current.lock().await;
+			setup.manager.logout().unwrap();
+		}
+		let result = setup.manager.session().await;
+		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
+		assert!(setup.connector.last_session().shut_down.load(Ordering::SeqCst));
+		assert_eq!(setup.connector.calls(), 1);
+	}
+
+	#[tokio::test]
+	async fn logout_ends_the_session_even_when_the_login_file_cant_be_deleted() {
+		use std::os::windows::fs::OpenOptionsExt;
+
+		let setup = setup(connects(), true);
+		setup.manager.session().await.unwrap();
+		// Another process holding the file open without sharing, as antivirus sometimes does.
+		let _locked = std::fs::OpenOptions::new()
+			.read(true)
+			.share_mode(0)
+			.open(setup.profile.dir().join("credentials.bin"))
+			.unwrap();
+		assert!(setup.manager.logout().is_err());
 		assert!(setup.connector.last_session().shut_down.load(Ordering::SeqCst));
 	}
 
