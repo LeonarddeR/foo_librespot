@@ -48,8 +48,9 @@ pub trait Backend: Send + Sync {
 		on_done: OnDone,
 	) -> Result<Box<dyn LoginTask>, CoreError>;
 	fn logout(&self) -> Result<(), CoreError>;
-	/// The Spotify username of the stored login, or `None` when logged out.
-	fn username(&self) -> Option<String>;
+	/// The Spotify username of the stored login, or `None` when logged out. An error means the
+	/// stored login can't be read, for example because Spotify's core couldn't start.
+	fn username(&self) -> Result<Option<String>, CoreError>;
 }
 
 /// A login running in the background.
@@ -150,8 +151,8 @@ impl Backend for CoreBackend {
 		core()?.logout()
 	}
 
-	fn username(&self) -> Option<String> {
-		core().ok()?.username()
+	fn username(&self) -> Result<Option<String>, CoreError> {
+		Ok(core()?.username())
 	}
 }
 

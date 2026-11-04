@@ -172,9 +172,11 @@ impl LoginController {
 			return;
 		}
 		let state = match (&inner.state, username) {
-			(_, Some(name)) => LoginState::LoggedIn(Some(name)),
-			(LoginState::Failed(_) | LoginState::Cancelled, None) => return,
-			(_, None) => LoginState::LoggedOut,
+			(_, Ok(Some(name))) => LoginState::LoggedIn(Some(name)),
+			// Shown at once, rather than "Not logged in" until the user presses Log in.
+			(_, Err(error)) => LoginState::Failed(error.to_string()),
+			(LoginState::Failed(_) | LoginState::Cancelled, Ok(None)) => return,
+			(_, Ok(None)) => LoginState::LoggedOut,
 		};
 		if inner.state != state {
 			self.0.set(inner, state);
@@ -568,6 +570,21 @@ mod tests {
 		fake.set_username(Some("Kristyn Getty"));
 		controller.refresh();
 		assert_eq!(controller.state(), LoginState::LoggedIn(Some("Kristyn Getty".to_owned())));
+	}
+
+	#[test]
+	fn refresh_says_why_the_stored_login_cant_be_read() {
+		let fake = installed();
+		let (controller, _opened) = controller();
+		fake.fail_start(|| {
+			CoreError::Io(std::io::Error::other("can't use the foo_librespot profile folder"))
+		});
+		controller.refresh();
+		assert!(
+			matches!(controller.state(), LoginState::Failed(reason) if reason.contains("profile folder")),
+			"{:?}",
+			controller.state()
+		);
 	}
 
 	#[test]

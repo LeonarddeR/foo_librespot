@@ -89,6 +89,8 @@ struct State {
 	calls: AtomicUsize,
 	open_calls: AtomicUsize,
 	failure: Mutex<Option<fn() -> CoreError>>,
+	/// While set, reading the stored login fails as if Spotify's core couldn't start.
+	start_failure: Mutex<Option<fn() -> CoreError>>,
 	resolved: Mutex<Option<Resolved>>,
 	cover: Mutex<Option<Vec<u8>>>,
 	/// While set, reads and seeks block, like a Spotify download that has stalled.
@@ -126,6 +128,11 @@ impl FakeBackend {
 	/// Every call fails with `error()` from now on.
 	pub fn fail_with(&self, error: fn() -> CoreError) {
 		*self.0.failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
+	}
+
+	/// Makes reading the stored login fail with `error`, as when the core can't start.
+	pub fn fail_start(&self, error: fn() -> CoreError) {
+		*self.0.start_failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
 	}
 
 	pub fn resolve_to(&self, resolved: Resolved) {
@@ -216,7 +223,7 @@ impl FakeBackend {
 		if is_aborting() {
 			return Err(CoreError::Aborted);
 		}
-		if self.0.require_login.load(Ordering::SeqCst) && self.username().is_none() {
+		if self.0.require_login.load(Ordering::SeqCst) && self.username()?.is_none() {
 			return Err(CoreError::NotLoggedIn);
 		}
 		let failure = *self.0.failure.lock().unwrap_or_else(PoisonError::into_inner);
@@ -288,14 +295,18 @@ impl Backend for FakeBackend {
 		Ok(())
 	}
 
-	fn username(&self) -> Option<String> {
+	fn username(&self) -> Result<Option<String>, CoreError> {
+		let start_failure = *self.0.start_failure.lock().unwrap_or_else(PoisonError::into_inner);
+		if let Some(error) = start_failure {
+			return Err(error());
+		}
 		let username = self.0.username.lock().unwrap_or_else(PoisonError::into_inner).clone();
 		let during =
 			self.0.during_username_read.lock().unwrap_or_else(PoisonError::into_inner).take();
 		if let Some(action) = during {
 			action();
 		}
-		username
+		Ok(username)
 	}
 }
 
