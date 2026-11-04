@@ -3,3 +3,53 @@
 pub mod accessibility;
 pub mod host;
 pub mod template;
+
+/// Window and control styles for dialog templates, as `u32`.
+pub mod style {
+	use crate::bindings::Windows::Win32 as win;
+
+	pub const WS_CHILD: u32 = win::WS_CHILD.cast_unsigned();
+	pub const WS_POPUP: u32 = win::WS_POPUP;
+	pub const WS_CAPTION: u32 = win::WS_CAPTION.cast_unsigned();
+	pub const WS_SYSMENU: u32 = win::WS_SYSMENU.cast_unsigned();
+	pub const WS_TABSTOP: u32 = win::WS_TABSTOP.cast_unsigned();
+	pub const WS_BORDER: u32 = win::WS_BORDER.cast_unsigned();
+	pub const WS_VSCROLL: u32 = win::WS_VSCROLL.cast_unsigned();
+	pub const DS_CONTROL: u32 = win::DS_CONTROL.cast_unsigned();
+	pub const DS_MODALFRAME: u32 = win::DS_MODALFRAME.cast_unsigned();
+	pub const DS_CENTER: u32 = win::DS_CENTER.cast_unsigned();
+	pub const BS_PUSHBUTTON: u32 = win::BS_PUSHBUTTON.cast_unsigned();
+	pub const BS_GROUPBOX: u32 = win::BS_GROUPBOX.cast_unsigned();
+	pub const ES_MULTILINE: u32 = win::ES_MULTILINE.cast_unsigned();
+	pub const ES_READONLY: u32 = win::ES_READONLY.cast_unsigned();
+	pub const ES_AUTOVSCROLL: u32 = win::ES_AUTOVSCROLL.cast_unsigned();
+	pub const SS_NOPREFIX: u32 = win::SS_NOPREFIX.cast_unsigned();
+	pub const CBS_DROPDOWNLIST: u32 = win::CBS_DROPDOWNLIST.cast_unsigned();
+}
+
+/// `WM_COMMAND` notification codes and the ids Windows gives meaning to.
+#[allow(clippy::cast_possible_truncation, reason = "the values are 16-bit by definition")]
+pub mod notify {
+	use crate::bindings::Windows::Win32 as win;
+
+	pub const BN_CLICKED: u16 = win::BN_CLICKED as u16;
+	pub const CBN_SELCHANGE: u16 = win::CBN_SELCHANGE as u16;
+	/// The id of a dialog's Cancel or Close button, which Escape and the close box press.
+	pub const IDCANCEL: u16 = win::IDCANCEL as u16;
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{notify, style};
+
+	#[test]
+	fn styles_and_notifications_have_their_win32_values() {
+		assert_eq!(style::WS_TABSTOP, 0x0001_0000);
+		assert_eq!(style::WS_POPUP, 0x8000_0000);
+		assert_eq!(style::BS_GROUPBOX, 7);
+		assert_eq!(style::ES_READONLY, 0x0800);
+		assert_eq!(style::CBS_DROPDOWNLIST, 3);
+		assert_eq!(style::DS_CENTER, 0x0800);
+		assert_eq!((notify::BN_CLICKED, notify::CBN_SELCHANGE, notify::IDCANCEL), (0, 1, 2));
+	}
+}

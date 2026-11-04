@@ -42,8 +42,10 @@ pub struct FakeApi {
 
 mod preferences;
 mod services;
+mod windows;
 
 pub use preferences::{FakePageCallback, PageInstanceHandle, PreferencesHandle};
+pub use windows::{hidden_window, pump_messages, send_close, send_command};
 
 static API_VTBL: ApiVtbl = ApiVtbl {
 	service_enum_find_class: find_class,

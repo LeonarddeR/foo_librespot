@@ -39,6 +39,7 @@ fn component_registers_all_services() {
 	use oxibar::abi::filesystem::IID as FILESYSTEM;
 	use oxibar::abi::input::INPUT_ENTRY;
 	use oxibar::abi::playlist_loader::IID as PLAYLIST_LOADER;
+	use oxibar::abi::preferences::PAGE_IID as PREFERENCES_PAGE;
 
 	let (_, component) = common::load();
 	let factories = component.factories();
@@ -49,8 +50,9 @@ fn component_registers_all_services() {
 		(FILESYSTEM, "filesystem"),
 		(PLAYLIST_LOADER, "playlist_loader"),
 		(ALBUM_ART, "album_art_extractor"),
+		(PREFERENCES_PAGE, "preferences_page"),
 	] {
 		assert_eq!(factories.iter().filter(|guid| **guid == iid).count(), 1, "{name}");
 	}
-	assert_eq!(factories.len(), 6);
+	assert_eq!(factories.len(), 7);
 }

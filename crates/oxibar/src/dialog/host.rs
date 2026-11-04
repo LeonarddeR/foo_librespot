@@ -58,6 +58,19 @@ impl Dialog {
 		self.0
 	}
 
+	/// The dialog behind a window handle, such as a preferences page's `get_wnd`.
+	pub const fn from_hwnd(hwnd: isize) -> Self {
+		Self(hwnd)
+	}
+
+	/// Moves keyboard focus to control `id`, the way the dialog manager does for Tab.
+	pub fn focus(&self, id: u16) {
+		let control = self.control(id);
+		unsafe {
+			SendMessageW(self.raw(), WM_NEXTDLGCTL as u32, WPARAM(control.0 as usize), LPARAM(1))
+		};
+	}
+
 	pub fn set_text(&self, id: u16, text: &str) {
 		let text = wide(text);
 		unsafe {
@@ -341,45 +354,21 @@ pub(crate) mod tests {
 
 	use super::{Dialog, DialogHandler, create_child_dialog, create_modeless_dialog, destroy};
 	use crate::bindings::Windows::Win32::{
-		BN_CLICKED, CBS_DROPDOWNLIST, COINIT_APARTMENTTHREADED, CoInitializeEx, CreateWindowExW,
-		DS_CONTROL, DS_MODALFRAME, DispatchMessageW, ES_READONLY, GetWindowTextW, HWND, LPARAM,
-		MSG, PM_REMOVE, PeekMessageW, SendMessageW, TranslateMessage, WM_CLOSE, WM_COMMAND, WPARAM,
-		WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
+		BN_CLICKED, CBS_DROPDOWNLIST, DS_CONTROL, DS_MODALFRAME, ES_READONLY, GetWindowTextW, HWND,
+		LPARAM, SendMessageW, WM_CLOSE, WM_COMMAND, WPARAM, WS_CAPTION, WS_CHILD, WS_POPUP,
+		WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
 	};
 	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate};
 
 	/// A hidden top-level window to own the dialogs under test. Also initialises COM for the
 	/// live-region tests, as foobar2000's main thread has it.
 	pub(crate) fn hidden_parent() -> isize {
-		unsafe {
-			let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED as u32);
-			CreateWindowExW(
-				0,
-				windows_core::w!("STATIC"),
-				windows_core::w!(""),
-				WS_POPUP,
-				0,
-				0,
-				100,
-				100,
-				None,
-				None,
-				None,
-				None,
-			)
-			.0 as isize
-		}
+		crate::testing::hidden_window()
 	}
 
 	/// Handles every message waiting for this thread.
 	pub(crate) fn pump() {
-		let mut message = MSG::default();
-		while unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE as u32) }.as_bool() {
-			unsafe {
-				let _ = TranslateMessage(&raw const message);
-				DispatchMessageW(&raw const message);
-			}
-		}
+		crate::testing::pump_messages();
 	}
 
 	fn item(id: u16, class: ControlClass, text: &str, style: i32) -> DialogItem {
@@ -568,6 +557,17 @@ pub(crate) mod tests {
 		poster.post();
 		pump();
 		assert_eq!(record.borrow().refreshes, 1);
+	}
+
+	#[test]
+	fn focus_moves_to_the_named_control() {
+		let (dialog, _record) = child(Recorder::default());
+		dialog.focus(104);
+		assert_eq!(dialog.focused(), Some(104));
+		dialog.focus(102);
+		assert_eq!(dialog.focused(), Some(102));
+		assert_eq!(Dialog::from_hwnd(dialog.hwnd()), dialog);
+		destroy(dialog);
 	}
 
 	#[test]

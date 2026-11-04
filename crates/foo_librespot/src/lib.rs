@@ -1,5 +1,6 @@
 //! foo_librespot: a foobar2000 component that plays Spotify links through librespot.
 
+mod account;
 mod art;
 mod backend;
 mod errors;
@@ -8,8 +9,8 @@ mod input;
 mod lifecycle;
 mod links;
 mod logging;
-#[expect(dead_code, reason = "the preferences page (Task 8) uses the controller")]
 mod login;
+mod prefs;
 mod settings;
 #[cfg(test)]
 mod testing;
@@ -21,6 +22,7 @@ use oxibar::filesystem_service::filesystem_factory;
 use oxibar::initquit::{InitQuit, InitQuitService};
 use oxibar::input::input_factory;
 use oxibar::playlist_loader::playlist_loader_factory;
+use oxibar::preferences::preferences_page_factory;
 use oxibar::service::Singleton;
 
 const ABOUT: &str = "Plays Spotify tracks, albums and playlists from their links. Needs Spotify Premium.
@@ -54,5 +56,6 @@ oxibar::component! {
 		filesystem_factory::<links::SpotifyFilesystem>(),
 		playlist_loader_factory::<links::SpotifyLoader>(),
 		album_art_factory::<art::SpotifyArt>(),
+		preferences_page_factory::<prefs::SpotifyPage>(),
 	],
 }

@@ -22,7 +22,6 @@ pub type OnCode = Box<dyn FnOnce(DeviceCode) + Send>;
 /// Gets the Spotify username, or why a login failed.
 pub type OnDone = Box<dyn FnOnce(Result<String, CoreError>) + Send>;
 
-#[cfg_attr(not(test), expect(dead_code, reason = "the preferences page (Task 8) logs in"))]
 pub trait Backend: Send + Sync {
 	fn resolve(&self, link: &Link, is_aborting: &dyn Fn() -> bool) -> Result<Resolved, CoreError>;
 	fn track_info(
@@ -53,7 +52,6 @@ pub trait Backend: Send + Sync {
 }
 
 /// A login running in the background.
-#[cfg_attr(not(test), expect(dead_code, reason = "the preferences page (Task 8) logs in"))]
 pub trait LoginTask: Send {
 	fn cancel(&self);
 }
