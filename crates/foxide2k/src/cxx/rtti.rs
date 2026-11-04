@@ -16,7 +16,7 @@ const NAME_CAPACITY: usize = 64;
 /// MSVC's `TypeDescriptor`: the `type_info` object behind `typeid`. C++ catch clauses match
 /// thrown types by comparing these names.
 #[repr(C)]
-pub(crate) struct TypeDescriptor {
+pub struct TypeDescriptor {
 	vftable: AtomicPtr<c_void>,
 	spare: usize,
 	name: [u8; NAME_CAPACITY],
@@ -44,7 +44,7 @@ impl TypeDescriptor {
 
 /// MSVC's `PMD`: where a base class sits inside the thrown object.
 #[repr(C)]
-pub(crate) struct Pmd {
+pub struct Pmd {
 	pub mdisp: i32,
 	pub pdisp: i32,
 	pub vdisp: i32,
@@ -52,7 +52,7 @@ pub(crate) struct Pmd {
 
 /// MSVC's `CatchableType`: one class the thrown object can be caught as.
 #[repr(C)]
-pub(crate) struct CatchableType {
+pub struct CatchableType {
 	properties: u32,
 	type_descriptor: AtomicI32,
 	pub this_displacement: Pmd,
@@ -92,7 +92,7 @@ struct CatchableTypeArray {
 
 /// MSVC's `ThrowInfo`, the second argument of `_CxxThrowException`.
 #[repr(C)]
-pub(crate) struct ThrowInfo {
+pub struct ThrowInfo {
 	attributes: u32,
 	unwind: AtomicI32,
 	forward_compat: i32,
@@ -143,7 +143,7 @@ static THROW_INFOS: [ThrowInfo; TYPES.len()] = [const { ThrowInfo::new() }; TYPE
 static INIT: Once = Once::new();
 
 /// The address this module was loaded at.
-pub(crate) fn image_base() -> usize {
+pub fn image_base() -> usize {
 	(&raw const __ImageBase) as usize
 }
 
@@ -186,7 +186,7 @@ fn init() {
 }
 
 /// The ThrowInfo for throwing `kind`.
-pub(crate) fn throw_info(kind: ExceptionKind) -> &'static ThrowInfo {
+pub fn throw_info(kind: ExceptionKind) -> &'static ThrowInfo {
 	init();
 	&THROW_INFOS[kind as usize]
 }

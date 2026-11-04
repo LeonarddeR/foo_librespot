@@ -41,8 +41,6 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"
 option_if_let_else = "allow"
-# Conflicts with rustc's unreachable_pub, so one of the two always fires.
-redundant_pub_crate = "allow"
 significant_drop_tightening = "allow"
 similar_names = "allow"
 struct_excessive_bools = "allow"

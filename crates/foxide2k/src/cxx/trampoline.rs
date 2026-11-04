@@ -43,7 +43,7 @@ std::arch::global_asm!(
 );
 
 /// Where the handler finds the `slot` argument, relative to the establisher frame.
-pub(crate) const SLOT_OFFSET: usize = 32;
+pub const SLOT_OFFSET: usize = 32;
 
 unsafe extern "C-unwind" {
 	pub(crate) fn foxide2k_cxx_try(
@@ -58,6 +58,6 @@ unsafe extern "C" {
 }
 
 /// The address `RtlUnwindEx` resumes at after a catch.
-pub(crate) fn landing() -> *const c_void {
+pub fn landing() -> *const c_void {
 	(&raw const foxide2k_cxx_try_landing).cast()
 }

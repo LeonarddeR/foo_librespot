@@ -389,12 +389,12 @@ pub(crate) mod tests {
 
 	/// A hidden top-level window to own the dialogs under test. Also initialises COM for the
 	/// live-region tests, as foobar2000's main thread has it.
-	pub(crate) fn hidden_parent() -> isize {
+	pub fn hidden_parent() -> isize {
 		crate::testing::hidden_window()
 	}
 
 	/// Handles every message waiting for this thread.
-	pub(crate) fn pump() {
+	pub fn pump() {
 		crate::testing::pump_messages();
 	}
 
@@ -436,7 +436,7 @@ pub(crate) mod tests {
 	}
 
 	#[derive(Default)]
-	pub(crate) struct Record {
+	pub struct Record {
 		pub inits: usize,
 		pub commands: Vec<(u16, u16)>,
 		pub refreshes: usize,
