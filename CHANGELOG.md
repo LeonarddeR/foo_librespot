@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An artist link adds the artist's popular tracks in your country, as the artist's Spotify page lists them.
+
+### Changed
+
+- A track link is added with its title and other info straight away, and asks for a login when you're logged out, like an album link.
+- Importing a podcast skips the episodes Spotify blocks in your country or hasn't released yet, with the reason, as it already did for tracks. An episode that plays from the podcast's own website is still added.
+- A Spotify link that can't be played, such as a local file or a profile page, now shows a popup saying why, instead of doing nothing.
+- Pressing Play right after a big import waits for Spotify's request limit instead of failing at once.
+- The Spotify page in Preferences says why the stored login can't be read as soon as it opens.
+- The Spotify page and the login window use the font of Windows' own dialogs.
+
+### Fixed
+
+- A temporary error on Spotify's side no longer deletes your login.
+- Logging out sticks, also when a track was starting at that moment.
+- Cancelling the login at the very moment you confirm it no longer leaves you logged in.
+- Tracks are no longer skipped as "not available in your country ()" when Spotify is slow to send your country.
+- Reading many tracks while offline no longer waits 30 seconds for each of them.
+- An album added before its release date is checked again when you add it later.
+- Loading old foo_spotify playlists makes half as many Spotify requests.
+
 ## [0.1.0] - 2026-11-04
 
 ### Added
