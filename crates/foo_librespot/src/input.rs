@@ -62,9 +62,11 @@ impl Input for SpotifyInput {
 	}
 
 	fn open(path: &str, _reason: OpenReason, _abort: &Abort) -> Result<Self> {
-		// Nothing to fetch yet: info reads and decoding each ask Spotify for what they need.
+		// Nothing to fetch yet: info reads and decoding each ask Spotify for what they need. The
+		// buffer grows on the first read, so the info reads foobar2000 opens for every entry cost
+		// nothing.
 		let id = item_or_error(path)?;
-		Ok(Self { id, track: None, buffer: Vec::with_capacity(CHUNK_FRAMES * CHANNELS) })
+		Ok(Self { id, track: None, buffer: Vec::new() })
 	}
 
 	fn get_info(&mut self, info: &mut FileInfo<'_>, abort: &Abort) -> Result<()> {
