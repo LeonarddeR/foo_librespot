@@ -21,3 +21,15 @@ foxide2k = { path = "../foxide2k", features = ["testing"] }
 
 [lints]
 workspace = true
+
+# cargo-release, for this crate only; see release.toml. The check runs fmt, clippy, the DLL build
+# the tests load, and the tests; cargo-release allows one hook command, so they are chained.
+[package.metadata.release]
+pre-release-hook = [
+	"cmd",
+	"/c",
+	"cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo build --workspace --all-features && cargo nextest run --workspace --all-features",
+]
+pre-release-replacements = [
+	{ file = "../../CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}", exactly = 1 },
+]

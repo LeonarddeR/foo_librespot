@@ -1,0 +1,21 @@
+# cargo-release configuration for foo_librespot.
+# Nothing is published to crates.io; cargo-release is used to bump the workspace version, update
+# Cargo.lock, date the CHANGELOG.md section, commit, and tag v<version>. Pushing the tag makes CI
+# build the component package and publish the GitHub release.
+#
+#   cargo release            dry run: shows what it would do
+#   cargo release --execute  releases the current version
+#
+# The pre-release check and the CHANGELOG.md stamp are set on foo_librespot alone, in its
+# Cargo.toml: settings here apply to every member, which would stamp the changelog once per crate.
+
+publish = false
+push = true
+tag = true
+# All members share one version; the identical tag name across members collapses into one tag.
+shared-version = true
+consolidate-commits = true
+tag-name = "v{{version}}"
+tag-message = "Release {{version}}"
+pre-release-commit-message = "Release {{version}}"
+allow-branch = ["main"]
