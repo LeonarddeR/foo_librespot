@@ -42,7 +42,7 @@ pub fn parse(path: &str) -> Option<ToneSpec> {
 		return Some(ToneSpec::HostCheck);
 	}
 	#[cfg(feature = "test-panic")]
-	if rest == "panic" {
+	if rest.eq_ignore_ascii_case("panic") {
 		return Some(ToneSpec::Panic);
 	}
 	if rest.is_empty() || !rest.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -121,6 +121,14 @@ mod tests {
 		assert_eq!(parse("oxitone://22050"), None);
 		assert_eq!(parse("oxitone://99999999999999999999"), None);
 		assert_eq!(parse("oxitone://22049"), Some(ToneSpec::Sine { hz: 22_049 }));
+	}
+
+	#[cfg(feature = "test-panic")]
+	#[test]
+	fn recognises_panic_in_any_case_like_the_rest_of_the_path() {
+		for path in ["oxitone://panic", "OXITONE://PANIC", "oxitone://Panic"] {
+			assert_eq!(parse(path), Some(ToneSpec::Panic), "{path}");
+		}
 	}
 
 	#[test]
