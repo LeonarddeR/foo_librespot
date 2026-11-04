@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::abi::file_info::FileInfo as RawFileInfo;
+use crate::abi::file_info::{FileInfo as RawFileInfo, ReplayGainInfo};
 use crate::cxx::try_host;
 use crate::error::Result;
 
@@ -23,6 +23,13 @@ impl FileInfo<'_> {
 	pub fn set_length(&mut self, seconds: f64) -> Result<()> {
 		let raw = self.raw;
 		try_host(|| unsafe { ((*(*raw).vtbl).set_length)(raw, seconds) })?;
+		Ok(())
+	}
+
+	/// Sets the ReplayGain values; leave a field at `REPLAYGAIN_UNSET`'s value to mean "not set".
+	pub fn set_replaygain(&mut self, value: ReplayGainInfo) -> Result<()> {
+		let raw = self.raw;
+		try_host(|| unsafe { ((*(*raw).vtbl).set_replaygain)(raw, &raw const value) })?;
 		Ok(())
 	}
 
