@@ -1,9 +1,10 @@
-//! Spotify track metadata, reduced to the fields foobar2000 shows.
+//! Spotify track and episode metadata, reduced to the fields foobar2000 shows.
 
 use librespot_core::date::Date;
-use librespot_metadata::Track;
 use librespot_metadata::image::Images;
+use librespot_metadata::{Episode, Track};
 
+use crate::link::ItemId;
 use crate::replaygain::ReplayGain;
 use crate::{CoreError, FileId, SpotifyId};
 
@@ -15,10 +16,10 @@ pub struct Cover {
 	pub height: i32,
 }
 
-/// What foobar2000 shows for a Spotify track.
+/// What foobar2000 shows for a Spotify track or podcast episode.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackInfo {
-	pub id: SpotifyId,
+	pub id: ItemId,
 	pub title: String,
 	pub artists: Vec<String>,
 	pub album: String,
@@ -38,13 +39,17 @@ pub struct TrackInfo {
 	/// ReplayGain from Spotify's loudness metadata, known before the track is ever played; `None`
 	/// when Spotify has none. Set by whoever fetched the metadata.
 	pub replay_gain: Option<ReplayGain>,
+	/// What an episode is about; `None` for tracks.
+	pub description: Option<String>,
+	/// The podcast's own audio link, for an episode Spotify doesn't host.
+	pub external_url: Option<String>,
 }
 
 pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
 	let album = &track.album;
 	let covers = if album.covers.is_empty() { &album.cover_group } else { &album.covers };
 	Ok(TrackInfo {
-		id: SpotifyId::try_from(&track.id)?,
+		id: ItemId::Track(SpotifyId::try_from(&track.id)?),
 		title: track.name.clone(),
 		artists: track.artists.iter().map(|artist| artist.name.clone()).collect(),
 		album: album.name.clone(),
@@ -57,6 +62,35 @@ pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
 		has_audio: !track.files.0.is_empty() || !track.alternatives.0.is_empty(),
 		unavailable: None,
 		replay_gain: None,
+		description: None,
+		external_url: None,
+	})
+}
+
+/// What foobar2000 shows for a podcast episode: the show stands in for both the artist and the
+/// album, as podcast apps show it.
+pub fn episode_info(episode: &Episode) -> Result<TrackInfo, CoreError> {
+	let show: Vec<String> =
+		Some(episode.show_name.clone()).filter(|name| !name.is_empty()).into_iter().collect();
+	let has_audio = !episode.audio.0.is_empty();
+	let date = &episode.publish_time;
+	Ok(TrackInfo {
+		id: ItemId::Episode(SpotifyId::try_from(&episode.id)?),
+		title: episode.name.clone(),
+		artists: show.clone(),
+		album: episode.show_name.clone(),
+		album_artists: show,
+		track_number: u32::try_from(episode.number).unwrap_or(0),
+		disc_number: 0,
+		date: format_date(date.year(), u8::from(date.month()), date.day()),
+		duration_ms: u32::try_from(episode.duration).unwrap_or(0),
+		covers: sorted_covers(&episode.covers),
+		has_audio,
+		unavailable: None,
+		replay_gain: None,
+		description: Some(episode.description.clone()).filter(|text| !text.is_empty()),
+		external_url: Some(episode.external_url.clone())
+			.filter(|url| !has_audio && !url.is_empty()),
 	})
 }
 
@@ -119,10 +153,12 @@ fn sorted_covers(images: &Images) -> Vec<Cover> {
 
 #[cfg(test)]
 mod tests {
+	use librespot_metadata::Episode;
 	use librespot_protocol::metadata::audio_file::Format;
 	use librespot_protocol::metadata::{
 		Album as AlbumMessage, Artist as ArtistMessage, AudioFile as AudioFileMessage,
-		Date as DateMessage, Image as ImageMessage, ImageGroup, Track as TrackMessage,
+		Date as DateMessage, Episode as EpisodeMessage, Image as ImageMessage, ImageGroup,
+		Show as ShowMessage, Track as TrackMessage,
 	};
 	use protobuf::MessageField;
 
@@ -131,8 +167,64 @@ mod tests {
 		Availability as AvailabilityMessage, Restriction as RestrictionMessage,
 	};
 
-	use super::{Cover, availability, format_date, largest_cover, track_info};
+	use super::{Cover, availability, episode_info, format_date, largest_cover, track_info};
+	use crate::link::ItemId;
 	use crate::{FileId, SpotifyId};
+
+	fn episode_message() -> EpisodeMessage {
+		let mut episode = EpisodeMessage::new();
+		episode.set_gid(gid(50));
+		episode.set_name("Singing the Psalms".to_owned());
+		episode.set_duration(1_800_000);
+		episode.set_description("How the Psalms shaped the songs of the church.".to_owned());
+		episode.set_number(12);
+		let mut date = DateMessage::new();
+		date.set_year(2026);
+		date.set_month(10);
+		date.set_day(3);
+		episode.publish_time = MessageField::some(date);
+		let mut show = ShowMessage::new();
+		show.set_name("Sing! Podcast".to_owned());
+		episode.show = MessageField::some(show);
+		let mut cover = ImageGroup::new();
+		cover.image = vec![image(300), image(640)];
+		episode.cover_image = MessageField::some(cover);
+		let mut file = AudioFileMessage::new();
+		file.set_file_id(vec![7; 20]);
+		file.set_format(Format::OGG_VORBIS_96);
+		episode.audio = vec![file];
+		episode
+	}
+
+	#[test]
+	fn episode_info_puts_the_show_in_artist_and_album_with_date_number_and_description() {
+		let info = episode_info(&Episode::try_from(&episode_message()).unwrap()).unwrap();
+		assert_eq!(info.id, ItemId::Episode(SpotifyId::from_raw(&gid(50)).unwrap()));
+		assert_eq!(info.title, "Singing the Psalms");
+		assert_eq!(info.artists, ["Sing! Podcast"]);
+		assert_eq!(info.album, "Sing! Podcast");
+		assert_eq!(info.album_artists, ["Sing! Podcast"]);
+		assert_eq!(info.track_number, 12);
+		assert_eq!(info.date.as_deref(), Some("2026-10-03"));
+		assert_eq!(info.duration_ms, 1_800_000);
+		assert_eq!(
+			info.description.as_deref(),
+			Some("How the Psalms shaped the songs of the church.")
+		);
+		assert_eq!(info.covers[0].width, 640);
+		assert!(info.has_audio);
+		assert_eq!(info.external_url, None);
+	}
+
+	#[test]
+	fn an_episode_hosted_elsewhere_keeps_its_own_link() {
+		let mut message = episode_message();
+		message.audio.clear();
+		message.set_external_url("https://podcasts.example/12.mp3".to_owned());
+		let info = episode_info(&Episode::try_from(&message).unwrap()).unwrap();
+		assert!(!info.has_audio);
+		assert_eq!(info.external_url.as_deref(), Some("https://podcasts.example/12.mp3"));
+	}
 
 	fn gid(byte: u8) -> Vec<u8> {
 		vec![byte; 16]
@@ -193,7 +285,7 @@ mod tests {
 	#[test]
 	fn maps_title_artists_album_and_numbers() {
 		let info = track_info(&parse(&track())).unwrap();
-		assert_eq!(info.id, SpotifyId::from_raw(&gid(0x10)).unwrap());
+		assert_eq!(info.id, ItemId::Track(SpotifyId::from_raw(&gid(0x10)).unwrap()));
 		assert_eq!(info.title, "Never Gonna Give You Up");
 		assert_eq!(info.artists, ["Rick Astley", "Guest"]);
 		assert_eq!(info.album, "Whenever You Need Somebody");

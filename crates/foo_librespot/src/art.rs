@@ -1,4 +1,4 @@
-//! Album covers for Spotify tracks.
+//! Album covers for Spotify tracks, and covers for episodes.
 
 use foxide2k::abort::Abort;
 use foxide2k::album_art::{AlbumArt, ArtKind};
@@ -8,7 +8,7 @@ use foxide2k::input::Input;
 
 use crate::backend::backend;
 use crate::errors::host_error;
-use crate::input::{SpotifyInput, track_id};
+use crate::input::{SpotifyInput, item_id};
 
 /// The largest album cover Spotify has, as the front cover. Spotify has no other kinds.
 pub struct SpotifyArt;
@@ -17,15 +17,16 @@ impl AlbumArt for SpotifyArt {
 	const INPUT_GUID: Guid = SpotifyInput::GUID;
 
 	fn is_our_path(path: &str, _extension: &str) -> bool {
-		track_id(path).is_some()
+		item_id(path).is_some()
 	}
 
 	fn query(path: &str, kind: ArtKind, abort: &Abort) -> Result<Option<Vec<u8>>> {
 		if kind != ArtKind::FrontCover {
 			return Ok(None);
 		}
-		let id = track_id(path)
-			.ok_or_else(|| Error::unsupported_format(format!("not a Spotify track: {path}")))?;
+		let id = item_id(path).ok_or_else(|| {
+			Error::unsupported_format(format!("not a Spotify track or episode: {path}"))
+		})?;
 		backend().cover(id, &|| abort.is_aborting()).map_err(host_error)
 	}
 }
@@ -41,7 +42,7 @@ mod tests {
 	use super::SpotifyArt;
 	use crate::backend;
 	use crate::input::SpotifyInput;
-	use crate::testing::{FakeBackend, TRACK_ID};
+	use crate::testing::{EPISODE_ID, FakeBackend, TRACK_ID};
 
 	fn path() -> String {
 		format!("sptf://spotify:track:{TRACK_ID}")
@@ -94,5 +95,7 @@ mod tests {
 		assert!(extractor.is_our_path(&path(), ""));
 		assert!(!extractor.is_our_path("file://C:\\a.mp3", "mp3"));
 		assert!(!extractor.is_our_path("sptf://spotify:album:4wPtS24asgBAG4VOmYYB9O", ""));
+		assert!(extractor.is_our_path(&format!("sptf://spotify:episode:{EPISODE_ID}"), ""));
+		assert!(!extractor.is_our_path("sptf://spotify:show:5CfCWKI5pZ28U0uOzXkDHe", ""));
 	}
 }

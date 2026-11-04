@@ -12,7 +12,7 @@
 use std::fmt::Write as _;
 
 use foo_librespot_core::CoreError;
-use foo_librespot_core::link::{Link, LinkKind, PATH_SCHEME, parse_link, track_path};
+use foo_librespot_core::link::{Link, LinkKind, PATH_SCHEME, item_path, parse_link};
 use foo_librespot_core::resolve::Skipped;
 use foxide2k::abort::Abort;
 use foxide2k::console;
@@ -36,10 +36,14 @@ fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
 
 /// The one path foobar2000 stores for `link`.
 fn canonical(link: &Link) -> String {
+	if let Some(item) = link.item() {
+		return item_path(item);
+	}
 	let kind = match link.kind {
-		LinkKind::Track => return track_path(link.id),
 		LinkKind::Album => "album",
 		LinkKind::Playlist => "playlist",
+		LinkKind::Show => "show",
+		LinkKind::Track | LinkKind::Episode => unreachable!("a single item has a path"),
 	};
 	format!("{PATH_SCHEME}spotify:{kind}:{}", link.id.to_base62())
 }
@@ -64,12 +68,14 @@ impl Filesystem for SpotifyFilesystem {
 		Self::canonical_path(path).map(|canonical| canonical[PATH_SCHEME.len()..].to_owned())
 	}
 
+	/// Tracks go straight to the input. Episodes go through the loader like collections: one
+	/// Spotify doesn't host becomes the podcast's own audio link, which only the loader can add.
 	fn content_type(path: &str) -> Option<String> {
-		match parse_link(path) {
-			Ok(Link { kind: LinkKind::Album | LinkKind::Playlist, .. }) => {
+		match parse_link(path).ok()?.kind {
+			LinkKind::Track => None,
+			LinkKind::Album | LinkKind::Playlist | LinkKind::Show | LinkKind::Episode => {
 				Some(CONTENT_TYPE.to_owned())
 			}
-			_ => None,
 		}
 	}
 }
@@ -124,15 +130,19 @@ impl PlaylistLoader for SpotifyLoader {
 			abort.check()?;
 			let mut info = FileInfoImpl::new();
 			fill_info(&mut info.file_info(), track)?;
-			callback.add_entry(&track_path(track.id), &mut info)?;
+			// An episode Spotify doesn't host is the podcast's own audio link, which foobar2000
+			// plays itself.
+			let path = track.external_url.clone().unwrap_or_else(|| item_path(track.id));
+			callback.add_entry(&path, &mut info)?;
 		}
 		for skipped in &resolved.skipped {
 			console::print(&format!("foo_librespot: skipped {}: {}", skipped.uri, skipped.reason));
 		}
 		let source = resolved.name.as_deref().unwrap_or("the link");
+		let added = resolved.tracks.len();
 		console::print(&format!(
-			"foo_librespot: added {} tracks from {source}",
-			resolved.tracks.len()
+			"foo_librespot: added {added} {} from {source}",
+			plural(added, "track", "tracks")
 		));
 		if !resolved.skipped.is_empty() {
 			let message = skipped_message(resolved.tracks.len(), source, &resolved.skipped);
@@ -163,8 +173,8 @@ mod tests {
 	use super::{CONTENT_TYPE, SpotifyFilesystem, SpotifyLoader};
 	use crate::backend;
 	use crate::testing::{
-		FakeBackend, TRACK_ID, cancel_login_when_started, confirm_login_when_started,
-		installed_prompt, stop_after, track_info,
+		EPISODE_ID, FakeBackend, TRACK_ID, cancel_login_when_started, confirm_login_when_started,
+		episode_info, installed_prompt, stop_after, track_info,
 	};
 
 	const ALBUM: &str = "4wPtS24asgBAG4VOmYYB9O";
@@ -240,6 +250,16 @@ mod tests {
 			filesystem.canonical_path(&format!("spotify:track:{TRACK_ID}")).as_deref(),
 			Some(format!("sptf://spotify:track:{TRACK_ID}").as_str())
 		);
+		assert_eq!(
+			filesystem
+				.canonical_path(&format!("https://open.spotify.com/episode/{EPISODE_ID}?si=x"))
+				.as_deref(),
+			Some(format!("sptf://spotify:episode:{EPISODE_ID}").as_str())
+		);
+		assert_eq!(
+			filesystem.canonical_path("spotify:show:5CfCWKI5pZ28U0uOzXkDHe").as_deref(),
+			Some("sptf://spotify:show:5CfCWKI5pZ28U0uOzXkDHe")
+		);
 		assert_eq!(filesystem.canonical_path("file://C:\\a.mp3"), None);
 		assert_eq!(
 			filesystem.display_path(&canonical).as_deref(),
@@ -248,7 +268,7 @@ mod tests {
 	}
 
 	#[test]
-	fn album_paths_have_the_private_content_type_and_tracks_none() {
+	fn collections_and_episodes_have_the_private_content_type_and_tracks_none() {
 		let filesystem = filesystem();
 		let album =
 			filesystem.open(&format!("sptf://spotify:album:{ALBUM}"), OPEN_MODE_READ).unwrap();
@@ -256,6 +276,80 @@ mod tests {
 		let track =
 			filesystem.open(&format!("sptf://spotify:track:{TRACK_ID}"), OPEN_MODE_READ).unwrap();
 		assert_eq!(track.content_type(), None);
+		let show =
+			filesystem.open("sptf://spotify:show:5CfCWKI5pZ28U0uOzXkDHe", OPEN_MODE_READ).unwrap();
+		assert_eq!(show.content_type().as_deref(), Some(CONTENT_TYPE));
+		let episode = filesystem
+			.open(&format!("sptf://spotify:episode:{EPISODE_ID}"), OPEN_MODE_READ)
+			.unwrap();
+		assert_eq!(episode.content_type().as_deref(), Some(CONTENT_TYPE));
+	}
+
+	#[test]
+	fn one_added_item_is_one_track_on_the_console() {
+		let api = FakeApi::new();
+		api.install();
+		let fake = installed();
+		fake.resolve_to(Resolved {
+			name: None,
+			tracks: vec![Arc::new(episode_info(id(1), "Our Ransom (Part 1)"))],
+			skipped: Vec::new(),
+		});
+		let (callback, _record) = FakeLoaderCallback::new();
+		let path = format!("sptf://spotify:episode:{}", id(1).to_base62());
+		loader().open(&path, callback, &FakeAbort::new(false)).unwrap();
+		let lines = api.console_lines();
+		assert!(
+			lines.iter().any(|line| line == "foo_librespot: added 1 track from the link"),
+			"{lines:?}"
+		);
+	}
+
+	#[test]
+	fn an_episode_link_hosted_elsewhere_adds_the_podcasts_own_link() {
+		let fake = installed();
+		let mut elsewhere = episode_info(id(2), "Hosted elsewhere");
+		elsewhere.has_audio = false;
+		elsewhere.external_url = Some("https://podcasts.example/12.mp3".to_owned());
+		fake.resolve_to(Resolved {
+			name: None,
+			tracks: vec![Arc::new(elsewhere)],
+			skipped: Vec::new(),
+		});
+		let (callback, record) = FakeLoaderCallback::new();
+		let path = format!("sptf://spotify:episode:{}", id(2).to_base62());
+		loader().open(&path, callback, &FakeAbort::new(false)).unwrap();
+		let record = record.lock().unwrap();
+		let paths: Vec<String> = record.entries.iter().map(|entry| entry.path.clone()).collect();
+		assert_eq!(paths, ["https://podcasts.example/12.mp3"]);
+	}
+
+	#[test]
+	fn show_adds_spotify_episodes_as_paths_and_others_under_their_own_link() {
+		let fake = installed();
+		let mut elsewhere = episode_info(id(2), "Hosted elsewhere");
+		elsewhere.has_audio = false;
+		elsewhere.external_url = Some("https://podcasts.example/12.mp3".to_owned());
+		fake.resolve_to(Resolved {
+			name: Some("Sing! Podcast".to_owned()),
+			tracks: vec![Arc::new(episode_info(id(1), "On Spotify")), Arc::new(elsewhere)],
+			skipped: Vec::new(),
+		});
+		let (callback, record) = FakeLoaderCallback::new();
+		loader()
+			.open("sptf://spotify:show:5CfCWKI5pZ28U0uOzXkDHe", callback, &FakeAbort::new(false))
+			.unwrap();
+		let record = record.lock().unwrap();
+		let paths: Vec<String> = record.entries.iter().map(|entry| entry.path.clone()).collect();
+		assert_eq!(
+			paths,
+			[
+				format!("sptf://spotify:episode:{}", id(1).to_base62()),
+				"https://podcasts.example/12.mp3".to_owned()
+			]
+		);
+		assert_eq!(record.entries[1].meta("TITLE"), ["Hosted elsewhere"]);
+		assert_eq!(record.entries[1].meta("GENRE"), ["Podcast"]);
 	}
 
 	#[test]
@@ -302,9 +396,10 @@ mod tests {
 		api.install();
 		let fake = installed();
 		let mut resolved = album();
-		resolved
-			.skipped
-			.push(Skipped { uri: "spotify:episode:abc".to_owned(), reason: SkipReason::Episode });
+		resolved.skipped.push(Skipped {
+			uri: "spotify:local:a:b:c:1".to_owned(),
+			reason: SkipReason::LocalFile,
+		});
 		fake.resolve_to(resolved);
 		let (callback, _record) = FakeLoaderCallback::new();
 		loader()
@@ -313,7 +408,7 @@ mod tests {
 		let lines = api.console_lines();
 		assert!(
 			lines.iter().any(|line| line
-				== "foo_librespot: skipped spotify:episode:abc: podcast episodes can't be played"),
+				== "foo_librespot: skipped spotify:local:a:b:c:1: local files in Spotify playlists can't be played"),
 			"{lines:?}"
 		);
 		assert!(
@@ -326,8 +421,8 @@ mod tests {
 		let mut resolved = album();
 		resolved.skipped = (0..count)
 			.map(|index| Skipped {
-				uri: format!("spotify:episode:{index:022}"),
-				reason: SkipReason::Episode,
+				uri: format!("spotify:local:a:b:{index}:1"),
+				reason: SkipReason::LocalFile,
 			})
 			.collect();
 		resolved
@@ -351,8 +446,8 @@ mod tests {
 		assert_eq!(
 			message,
 			"Added 3 tracks from In Christ Alone.\n\n2 items could not be added:\n\
-			 spotify:episode:0000000000000000000000: podcast episodes can't be played\n\
-			 spotify:episode:0000000000000000000001: podcast episodes can't be played"
+			 spotify:local:a:b:0:1: local files in Spotify playlists can't be played\n\
+			 spotify:local:a:b:1:1: local files in Spotify playlists can't be played"
 		);
 	}
 
@@ -384,7 +479,7 @@ mod tests {
 		assert_eq!(lines.len(), 3 + 20 + 1, "{lines:?}");
 		assert_eq!(
 			lines[22],
-			"spotify:episode:0000000000000000000019: podcast episodes can't be played"
+			"spotify:local:a:b:19:1: local files in Spotify playlists can't be played"
 		);
 		assert_eq!(lines[23], "…and 5 more; see the console.");
 	}

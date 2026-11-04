@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use foo_librespot_core::audio::decoder::PcmDecoder;
-use foo_librespot_core::link::Link;
+use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::replaygain::ReplayGain;
@@ -24,9 +24,16 @@ pub fn track_id() -> SpotifyId {
 	SpotifyId::from_base62(TRACK_ID).unwrap()
 }
 
+/// A podcast episode, the one the maintainer shared as an example.
+pub const EPISODE_ID: &str = "4QomYTPgZ1mpVbUmxBsUpz";
+
+pub fn episode_id() -> SpotifyId {
+	SpotifyId::from_base62(EPISODE_ID).unwrap()
+}
+
 pub fn track_info(id: SpotifyId, title: &str) -> TrackInfo {
 	TrackInfo {
-		id,
+		id: ItemId::Track(id),
 		title: title.to_owned(),
 		artists: vec!["Keith Getty".to_owned(), "Kristyn Getty".to_owned()],
 		album: "In Christ Alone".to_owned(),
@@ -44,6 +51,29 @@ pub fn track_info(id: SpotifyId, title: &str) -> TrackInfo {
 			album_gain_db: -8.51,
 			album_peak: 1.0724,
 		}),
+		description: None,
+		external_url: None,
+	}
+}
+
+/// An episode Spotify hosts.
+pub fn episode_info(id: SpotifyId, title: &str) -> TrackInfo {
+	TrackInfo {
+		id: ItemId::Episode(id),
+		title: title.to_owned(),
+		artists: vec!["Sing! Podcast".to_owned()],
+		album: "Sing! Podcast".to_owned(),
+		album_artists: vec!["Sing! Podcast".to_owned()],
+		track_number: 12,
+		disc_number: 0,
+		date: Some("2026-10-03".to_owned()),
+		duration_ms: 1_800_000,
+		covers: Vec::new(),
+		has_audio: true,
+		unavailable: None,
+		replay_gain: None,
+		description: Some("How the Psalms shaped the songs of the church.".to_owned()),
+		external_url: None,
 	}
 }
 
@@ -193,16 +223,19 @@ impl Backend for FakeBackend {
 
 	fn track_info(
 		&self,
-		id: SpotifyId,
+		id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Arc<TrackInfo>, CoreError> {
 		self.enter(is_aborting)?;
-		Ok(Arc::new(track_info(id, "In Christ Alone")))
+		Ok(Arc::new(match id {
+			ItemId::Track(id) => track_info(id, "In Christ Alone"),
+			ItemId::Episode(id) => episode_info(id, "Singing the Psalms"),
+		}))
 	}
 
 	fn open_track(
 		&self,
-		_id: SpotifyId,
+		_id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Box<dyn PcmTrack>, CoreError> {
 		self.0.open_calls.fetch_add(1, Ordering::SeqCst);
@@ -213,7 +246,7 @@ impl Backend for FakeBackend {
 
 	fn cover(
 		&self,
-		_id: SpotifyId,
+		_id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Option<Vec<u8>>, CoreError> {
 		self.enter(is_aborting)?;

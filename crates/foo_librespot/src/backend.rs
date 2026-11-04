@@ -7,11 +7,11 @@ use std::time::Duration;
 
 use foo_librespot_core::audio::format;
 use foo_librespot_core::audio::track::SpotifyTrack;
-use foo_librespot_core::link::Link;
+use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::resolve::Resolved;
-use foo_librespot_core::{Core, CoreError, LoginHandle, SpotifyId};
+use foo_librespot_core::{Core, CoreError, LoginHandle};
 
 use crate::lifecycle::Lifecycle;
 use crate::settings;
@@ -27,17 +27,17 @@ pub trait Backend: Send + Sync {
 	fn resolve(&self, link: &Link, is_aborting: &dyn Fn() -> bool) -> Result<Resolved, CoreError>;
 	fn track_info(
 		&self,
-		id: SpotifyId,
+		id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Arc<TrackInfo>, CoreError>;
 	fn open_track(
 		&self,
-		id: SpotifyId,
+		id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Box<dyn PcmTrack>, CoreError>;
 	fn cover(
 		&self,
-		id: SpotifyId,
+		id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Option<Vec<u8>>, CoreError>;
 	/// Starts a browser login in the background. `on_code` gets the code to show; `on_done` gets
@@ -122,7 +122,7 @@ impl Backend for CoreBackend {
 
 	fn track_info(
 		&self,
-		id: SpotifyId,
+		id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Arc<TrackInfo>, CoreError> {
 		core()?.track_info(id, is_aborting)
@@ -130,7 +130,7 @@ impl Backend for CoreBackend {
 
 	fn open_track(
 		&self,
-		id: SpotifyId,
+		id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Box<dyn PcmTrack>, CoreError> {
 		Ok(Box::new(core()?.open_track(id, settings::bitrate(), is_aborting)?))
@@ -138,7 +138,7 @@ impl Backend for CoreBackend {
 
 	fn cover(
 		&self,
-		id: SpotifyId,
+		id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Option<Vec<u8>>, CoreError> {
 		core()?.cover(id, is_aborting)

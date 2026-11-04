@@ -1,10 +1,10 @@
-//! The input that plays `sptf://spotify:track:<id>` entries.
+//! The input that plays `sptf://spotify:track:<id>` and `sptf://spotify:episode:<id>` entries.
 
 use std::ffi::CStr;
 
+use foo_librespot_core::CoreError;
 use foo_librespot_core::audio::decoder::{CHANNELS, SAMPLE_RATE};
-use foo_librespot_core::link::parse_track_path;
-use foo_librespot_core::{CoreError, SpotifyId};
+use foo_librespot_core::link::{ItemId, parse_item_path, parse_link};
 use foxide2k::abort::Abort;
 use foxide2k::audio_chunk::{AudioChunk, CHANNEL_MASK_STEREO};
 use foxide2k::cxx::ExceptionKind;
@@ -22,23 +22,22 @@ use crate::worker::AbortableTrack;
 /// A tenth of a second per `decode_run`, as foobar2000's own inputs deliver.
 const CHUNK_FRAMES: usize = 4410;
 
-/// The Spotify track a path names: `sptf://spotify:track:<id>`, which foo_librespot and
-/// foo_spotify store, or a bare `spotify:track:<id>`.
-pub fn track_id(path: &str) -> Option<SpotifyId> {
-	if let Some(id) = parse_track_path(path) {
-		return Some(id);
+/// The Spotify track or episode a path names: `sptf://spotify:track:<id>`, which foo_librespot
+/// and foo_spotify store, `sptf://spotify:episode:<id>`, or a bare `spotify:` URI of either.
+pub fn item_id(path: &str) -> Option<ItemId> {
+	if let Some(item) = parse_item_path(path) {
+		return Some(item);
 	}
 	let path = path.trim();
-	let prefix = path.get(.."spotify:track:".len())?;
-	if !prefix.eq_ignore_ascii_case("spotify:track:") {
+	if !path.get(.."spotify:".len())?.eq_ignore_ascii_case("spotify:") {
 		return None;
 	}
-	SpotifyId::from_base62(&path[prefix.len()..]).ok()
+	parse_link(path).ok()?.item()
 }
 
 /// One opened Spotify track.
 pub struct SpotifyInput {
-	id: SpotifyId,
+	id: ItemId,
 	track: Option<AbortableTrack>,
 	buffer: Vec<f64>,
 	/// Whether foobar2000 was told the codec and bitrate of the file being played.
@@ -58,13 +57,14 @@ impl Input for SpotifyInput {
 	const NAME: &'static CStr = c"Spotify (foo_librespot)";
 
 	fn is_our_path(path: &str) -> bool {
-		track_id(path).is_some()
+		item_id(path).is_some()
 	}
 
 	fn open(path: &str, _reason: OpenReason, _abort: &Abort) -> Result<Self> {
 		// Nothing to fetch yet: info reads and decoding each ask Spotify for what they need.
-		let id = track_id(path)
-			.ok_or_else(|| Error::unsupported_format(format!("not a Spotify track: {path}")))?;
+		let id = item_id(path).ok_or_else(|| {
+			Error::unsupported_format(format!("not a Spotify track or episode: {path}"))
+		})?;
 		Ok(Self {
 			id,
 			track: None,
@@ -161,7 +161,7 @@ mod tests {
 	use super::SpotifyInput;
 	use crate::backend;
 	use crate::testing::{
-		FakeBackend, TRACK_ID, cancel_login_when_started, confirm_login_when_started,
+		EPISODE_ID, FakeBackend, TRACK_ID, cancel_login_when_started, confirm_login_when_started,
 		fixture_samples, installed_prompt, stop_after,
 	};
 
@@ -180,11 +180,14 @@ mod tests {
 	}
 
 	#[test]
-	fn claims_only_spotify_track_paths() {
+	fn claims_only_spotify_track_and_episode_paths() {
 		let entry = entry();
 		assert!(entry.is_our_path(&path()));
 		assert!(entry.is_our_path(&format!("spotify:track:{TRACK_ID}")));
+		assert!(entry.is_our_path(&format!("sptf://spotify:episode:{EPISODE_ID}")));
+		assert!(entry.is_our_path(&format!("spotify:episode:{EPISODE_ID}")));
 		assert!(!entry.is_our_path("sptf://spotify:album:4wPtS24asgBAG4VOmYYB9O"));
+		assert!(!entry.is_our_path("sptf://spotify:show:5CfCWKI5pZ28U0uOzXkDHe"));
 		assert!(!entry.is_our_path("file://C:\\a.mp3"));
 		assert!(!entry.is_our_path("oxitone://440"));
 	}

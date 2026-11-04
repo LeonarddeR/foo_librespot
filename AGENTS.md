@@ -34,7 +34,8 @@ foo_librespot is a foobar2000 2.25+ x64 component, written entirely in Rust, tha
 Do not re-litigate these without new evidence.
 
 - The component is written entirely in Rust, including the assembly-level C++ exception catcher. A C fallback needs the maintainer's approval.
-- Spotify tracks are stored as `sptf://spotify:track:<id>`, the form foo_spotify used, so old playlists keep working.
+- Spotify tracks are stored as `sptf://spotify:track:<id>`, the form foo_spotify used, so old playlists keep working. Episodes Spotify hosts are stored as `sptf://spotify:episode:<id>`.
+- An episode Spotify doesn't host is added as the podcast's own audio link (`Episode::external_url`), which foobar2000 plays itself (the maintainer's decision).
 - Login uses librespot's OAuth device flow with librespot's built-in client ID. No Spotify Web API.
 - The browser never opens by itself (the maintainer's decision). Only the "Open browser" button opens Spotify's login page; a link that needs a login opens the login window, not the browser.
 - The preferences page and the login window are standard Win32 dialogs built from in-memory templates. Each label is created right before its control, creation order is tab order, and the status line is a polite live region.

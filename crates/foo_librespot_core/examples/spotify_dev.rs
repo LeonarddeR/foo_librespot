@@ -16,7 +16,7 @@ use std::sync::mpsc;
 
 use foo_librespot_core::audio::decoder::{CHANNELS, SAMPLE_RATE};
 use foo_librespot_core::audio::format::Bitrate;
-use foo_librespot_core::link::{LinkKind, parse_link};
+use foo_librespot_core::link::parse_link;
 use foo_librespot_core::{Core, CoreError};
 
 const USAGE: &str = "usage: spotify_dev [--profile <folder>] login | logout | resolve <link> | decode <track link> <seconds> <out.wav> [--seek <seconds>]";
@@ -81,15 +81,18 @@ fn resolve(core: &Core, link: &str) -> Result<(), CoreError> {
 	for (index, track) in resolved.tracks.iter().enumerate() {
 		let seconds = track.duration_ms / 1000;
 		println!(
-			"{}. {} – {} ({}:{:02}) [{}] spotify:track:{}",
+			"{}. {} – {} ({}:{:02}) [{}] {}",
 			index + 1,
 			track.artists.join(", "),
 			track.title,
 			seconds / 60,
 			seconds % 60,
 			track.album,
-			track.id.to_base62()
+			track.id.uri().to_uri()
 		);
+		if let Some(url) = &track.external_url {
+			println!("   hosted elsewhere: {url}");
+		}
 	}
 	for skipped in &resolved.skipped {
 		println!("skipped {}: {}", skipped.uri, skipped.reason);
@@ -105,15 +108,14 @@ fn decode(
 	out: &str,
 	seek: Option<&str>,
 ) -> Result<(), CoreError> {
-	let link = parse_link(link)?;
-	if link.kind != LinkKind::Track {
-		return Err(CoreError::Unavailable("decode needs a track link".to_owned()));
-	}
+	let Some(item) = parse_link(link)?.item() else {
+		return Err(CoreError::Unavailable("decode needs a track or episode link".to_owned()));
+	};
 	let seconds: f64 =
 		seconds.parse().map_err(|_| CoreError::Unavailable(format!("not a number: {seconds}")))?;
-	let info = core.track_info(link.id, &|| false)?;
+	let info = core.track_info(item, &|| false)?;
 	println!("replay gain from metadata: {:?}", info.replay_gain);
-	let mut track = core.open_track(link.id, Bitrate::default(), &|| false)?;
+	let mut track = core.open_track(item, Bitrate::default(), &|| false)?;
 	println!("format: {:?}", track.format());
 	println!("total frames: {:?}", track.total_frames());
 	println!("replay gain from the file header: {:?}", track.replay_gain());

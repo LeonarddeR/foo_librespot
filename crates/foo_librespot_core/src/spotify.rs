@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::CoreError;
 use crate::art::fetch_cover;
 use crate::audio::format::Bitrate;
 use crate::audio::track::{SpotifyTrack, fetch_track};
-use crate::link::Link;
+use crate::link::{ItemId, Link};
 use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
 use crate::metadata::{TrackInfo, largest_cover};
 use crate::profile::Profile;
@@ -16,7 +17,6 @@ use crate::resolve::{
 };
 use crate::runtime::CoreRuntime;
 use crate::session::{LibrespotConnector, SessionManager};
-use crate::{CoreError, SpotifyId};
 
 /// How long [`Core::shutdown`] gives running Spotify calls to finish.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -98,7 +98,7 @@ impl Core {
 
 	pub fn track_info(
 		&self,
-		id: SpotifyId,
+		id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Arc<TrackInfo>, CoreError> {
 		if let Some(info) = self.cache.get(&id) {
@@ -107,19 +107,21 @@ impl Core {
 		self.runtime.block_on(
 			async {
 				let session = self.sessions.session().await?;
-				CachedSource::new(LibrespotMetadata::new(session), self.cache.clone())
-					.track(id)
-					.await
+				let source = CachedSource::new(LibrespotMetadata::new(session), self.cache.clone());
+				match id {
+					ItemId::Track(id) => source.track(id).await,
+					ItemId::Episode(id) => source.episode(id).await,
+				}
 			},
 			is_aborting,
 		)?
 	}
 
-	/// Opens a track for decoding. The download starts in the background; reading blocks the
-	/// caller until the data it needs has arrived.
+	/// Opens a track or episode for decoding. The download starts in the background; reading
+	/// blocks the caller until the data it needs has arrived.
 	pub fn open_track(
 		&self,
-		id: SpotifyId,
+		id: ItemId,
 		bitrate: Bitrate,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<SpotifyTrack, CoreError> {
@@ -134,10 +136,11 @@ impl Core {
 		self.runtime.block_on_blocking(move || fetched.open(), is_aborting)?
 	}
 
-	/// The largest album cover of a track, as JPEG bytes; `None` when it has none.
+	/// The largest album cover of a track, or cover of an episode, as JPEG bytes; `None` when it
+	/// has none.
 	pub fn cover(
 		&self,
-		id: SpotifyId,
+		id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Option<Vec<u8>>, CoreError> {
 		let info = self.track_info(id, is_aborting)?;

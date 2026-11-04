@@ -1,5 +1,6 @@
 //! Spotify track metadata into the fields foobar2000 shows.
 
+use foo_librespot_core::link::ItemId;
 use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::replaygain::ReplayGain;
 use foxide2k::abi::file_info::ReplayGainInfo;
@@ -24,10 +25,21 @@ pub fn fill_info(info: &mut FileInfo<'_>, track: &TrackInfo) -> Result<()> {
 	if let Some(date) = &track.date {
 		info.meta_set("DATE", date)?;
 	}
+	if let Some(description) = &track.description {
+		info.meta_set("COMMENT", description)?;
+	}
 	info.set_length(f64::from(track.duration_ms) / 1000.0)?;
-	info.info_set("codec", "Vorbis")?;
-	info.info_set_int("samplerate", 44_100)?;
-	info.info_set_int("channels", 2)?;
+	match track.id {
+		// Spotify's tracks are 44.1 kHz stereo Vorbis; the bitrate shows once a file is chosen.
+		ItemId::Track(_) => {
+			info.info_set("codec", "Vorbis")?;
+			info.info_set_int("samplerate", 44_100)?;
+			info.info_set_int("channels", 2)?;
+		}
+		// An episode's format is only known when it plays, and one hosted elsewhere is whatever
+		// file the podcast serves.
+		ItemId::Episode(_) => info.meta_set("GENRE", "Podcast")?,
+	}
 	if let Some(gain) = track.replay_gain {
 		info.set_replaygain(replaygain_info(gain))?;
 	}
@@ -56,7 +68,7 @@ mod tests {
 	use foxide2k::file_info_impl::FileInfoImpl;
 
 	use super::fill_info;
-	use crate::testing::{track_id, track_info};
+	use crate::testing::{episode_id, episode_info, track_id, track_info};
 
 	#[test]
 	fn fill_info_writes_every_field() {
@@ -73,10 +85,26 @@ mod tests {
 		assert_eq!(info.info("codec").as_deref(), Some("Vorbis"));
 		assert_eq!(info.info("samplerate").as_deref(), Some("44100"));
 		assert_eq!(info.info("channels").as_deref(), Some("2"));
+		assert!(info.meta("GENRE").is_empty());
 		let gain = info.replaygain();
 		assert!((gain.track_gain - -6.62).abs() < 1e-4, "{gain:?}");
 		assert!((gain.album_gain - -8.51).abs() < 1e-4, "{gain:?}");
 		assert!((gain.track_peak - 1.0127).abs() < 1e-4, "{gain:?}");
+	}
+
+	#[test]
+	fn episodes_are_podcasts_with_their_description_and_no_fixed_audio_format() {
+		let mut info = FileInfoImpl::new();
+		fill_info(&mut info.file_info(), &episode_info(episode_id(), "Singing the Psalms"))
+			.unwrap();
+		assert_eq!(info.meta("TITLE"), ["Singing the Psalms"]);
+		assert_eq!(info.meta("ALBUM"), ["Sing! Podcast"]);
+		assert_eq!(info.meta("GENRE"), ["Podcast"]);
+		assert_eq!(info.meta("COMMENT"), ["How the Psalms shaped the songs of the church."]);
+		assert_eq!(info.meta("TRACKNUMBER"), ["12"]);
+		assert!((info.length() - 1800.0).abs() < 1e-9);
+		assert_eq!(info.info("codec"), None);
+		assert_eq!(info.info("samplerate"), None);
 	}
 
 	#[test]

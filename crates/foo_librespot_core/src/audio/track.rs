@@ -10,8 +10,9 @@ use librespot_metadata::track::Tracks;
 use super::decoder::PcmDecoder;
 use super::format::{Bitrate, bytes_per_second, header_offset, mime_type, pick_file};
 use super::header::{NormalisationData, Subfile};
+use crate::link::ItemId;
 use crate::replaygain::ReplayGain;
-use crate::{CoreError, SpotifyId, SpotifyUri};
+use crate::{CoreError, SpotifyUri};
 
 /// Whether a track can be played as it is, only through one of its alternatives, or not at all.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,14 +46,15 @@ pub struct FetchedTrack {
 	controller: StreamLoaderController,
 }
 
-/// Finds the file to play for `id` and starts downloading it. This only awaits; the blocking
+/// Finds the file to play for `item` and starts downloading it. This only awaits; the blocking
 /// reads happen in [`FetchedTrack::open`], which must not run on a tokio worker.
 pub async fn fetch_track(
 	session: &Session,
-	id: SpotifyId,
+	item: ItemId,
 	bitrate: Bitrate,
 ) -> Result<FetchedTrack, CoreError> {
-	let item = AudioItem::get_file(session, SpotifyUri::Track { id }).await?;
+	let id = item.id();
+	let item = AudioItem::get_file(session, item.uri()).await?;
 	let item = match playability(&item.availability, &item.files, item.alternatives.as_ref()) {
 		Playability::Play => item,
 		Playability::TryAlternatives(alternatives) => {

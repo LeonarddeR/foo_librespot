@@ -1,4 +1,5 @@
-//! Turning a track, album or playlist link into the tracks to add to a foobar2000 playlist.
+//! Turning a track, album, playlist, episode or show link into the tracks and episodes to add
+//! to a foobar2000 playlist.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -8,7 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use futures_util::stream::{self, StreamExt};
 use librespot_core::Session;
 use librespot_core::date::Date;
-use librespot_metadata::{Album, Metadata, Playlist, Track};
+use librespot_metadata::{Album, Episode, Metadata, Playlist, Show, Track};
 use librespot_protocol::extended_metadata::{
 	BatchedEntityRequest, BatchedExtensionResponse, EntityRequest, ExtensionQuery,
 };
@@ -16,8 +17,8 @@ use librespot_protocol::extension_kind::ExtensionKind;
 use librespot_protocol::metadata::Track as TrackMessage;
 use protobuf::{EnumOrUnknown, Message};
 
-use crate::link::{Link, LinkKind};
-use crate::metadata::{TrackInfo, availability, track_info};
+use crate::link::{ItemId, Link, LinkKind};
+use crate::metadata::{TrackInfo, availability, episode_info, track_info};
 use crate::replaygain::parse_audio_files;
 use crate::{CoreError, SpotifyId, SpotifyUri};
 
@@ -27,7 +28,6 @@ pub const FETCH_CONCURRENCY: usize = 8;
 /// Why an entry of an album or playlist was left out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SkipReason {
-	Episode,
 	LocalFile,
 	Unsupported(String),
 	Unavailable(String),
@@ -36,7 +36,6 @@ pub enum SkipReason {
 impl fmt::Display for SkipReason {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			Self::Episode => f.write_str("podcast episodes can't be played"),
 			Self::LocalFile => f.write_str("local files in Spotify playlists can't be played"),
 			Self::Unsupported(kind) => write!(f, "Spotify {kind} items can't be played"),
 			Self::Unavailable(reason) => write!(f, "not available: {reason}"),
@@ -78,16 +77,33 @@ pub trait MetadataSource: Send + Sync {
 		&self,
 		id: SpotifyId,
 	) -> impl Future<Output = Result<(String, Vec<SpotifyUri>), CoreError>> + Send;
+
+	fn episode(
+		&self,
+		id: SpotifyId,
+	) -> impl Future<Output = Result<Arc<TrackInfo>, CoreError>> + Send;
+
+	/// The show name and its episode ids in the order Spotify lists them.
+	fn show(
+		&self,
+		id: SpotifyId,
+	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send;
 }
 
 enum Entry {
-	Track(SpotifyId),
+	Item(ItemId),
 	Skip(Skipped),
 }
 
 enum Fetched {
-	Track(SpotifyId, Result<Arc<TrackInfo>, CoreError>),
+	Item(ItemId, Result<Arc<TrackInfo>, CoreError>),
 	Skip(Skipped),
+}
+
+/// Whether `info` can go in a playlist: Spotify has audio for it, or, for an episode Spotify
+/// does not host, the podcast's own link.
+fn playable(info: &TrackInfo) -> bool {
+	(info.has_audio || info.external_url.is_some()) && info.unavailable.is_none()
 }
 
 /// Resolves `link` into tracks. Entries that can't be played are skipped with a reason; only
@@ -95,14 +111,19 @@ enum Fetched {
 /// failure never looks like an empty album.
 pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resolved, CoreError> {
 	let (name, entries) = match link.kind {
-		LinkKind::Track => (None, vec![Entry::Track(link.id)]),
+		LinkKind::Track => (None, vec![Entry::Item(ItemId::Track(link.id))]),
+		LinkKind::Episode => (None, vec![Entry::Item(ItemId::Episode(link.id))]),
 		LinkKind::Album => {
 			let (name, ids) = source.album(link.id).await?;
-			(Some(name), ids.into_iter().map(Entry::Track).collect())
+			(Some(name), ids.into_iter().map(|id| Entry::Item(ItemId::Track(id))).collect())
 		}
 		LinkKind::Playlist => {
 			let (name, uris) = source.playlist(link.id).await?;
 			(Some(name), uris.iter().map(playlist_entry).collect())
+		}
+		LinkKind::Show => {
+			let (name, ids) = source.show(link.id).await?;
+			(Some(name), ids.into_iter().map(|id| Entry::Item(ItemId::Episode(id))).collect())
 		}
 	};
 
@@ -110,7 +131,12 @@ pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resol
 	let fetched: Vec<Fetched> = stream::iter(entries)
 		.map(|entry| async move {
 			match entry {
-				Entry::Track(id) => Fetched::Track(id, source.track(id).await),
+				Entry::Item(item @ ItemId::Track(id)) => {
+					Fetched::Item(item, source.track(id).await)
+				}
+				Entry::Item(item @ ItemId::Episode(id)) => {
+					Fetched::Item(item, source.episode(id).await)
+				}
 				Entry::Skip(skipped) => Fetched::Skip(skipped),
 			}
 		})
@@ -123,20 +149,16 @@ pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resol
 	for item in fetched {
 		match item {
 			Fetched::Skip(skipped) => resolved.skipped.push(skipped),
-			Fetched::Track(_, Ok(info)) if info.has_audio && info.unavailable.is_none() => {
-				resolved.tracks.push(info);
-			}
-			Fetched::Track(id, Ok(info)) => resolved.skipped.push(Skipped {
-				uri: SpotifyUri::Track { id }.to_uri(),
+			Fetched::Item(_, Ok(info)) if playable(&info) => resolved.tracks.push(info),
+			Fetched::Item(item, Ok(info)) => resolved.skipped.push(Skipped {
+				uri: item.uri().to_uri(),
 				reason: SkipReason::Unavailable(
-					info.unavailable
-						.clone()
-						.unwrap_or_else(|| "Spotify has no audio for this track".to_owned()),
+					info.unavailable.clone().unwrap_or_else(|| no_audio(item).to_owned()),
 				),
 			}),
-			Fetched::Track(id, Err(error)) => {
+			Fetched::Item(item, Err(error)) => {
 				resolved.skipped.push(Skipped {
-					uri: SpotifyUri::Track { id }.to_uri(),
+					uri: item.uri().to_uri(),
 					reason: SkipReason::Unavailable(error.to_string()),
 				});
 				first_error.get_or_insert(error);
@@ -151,22 +173,29 @@ pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resol
 	Ok(resolved)
 }
 
+const fn no_audio(item: ItemId) -> &'static str {
+	match item {
+		ItemId::Track(_) => "Spotify has no audio for this track",
+		ItemId::Episode(_) => "Spotify has no audio for this episode",
+	}
+}
+
 fn playlist_entry(uri: &SpotifyUri) -> Entry {
 	let reason = match uri {
-		SpotifyUri::Track { id } => return Entry::Track(*id),
-		SpotifyUri::Episode { .. } => SkipReason::Episode,
+		SpotifyUri::Track { id } => return Entry::Item(ItemId::Track(*id)),
+		SpotifyUri::Episode { id } => return Entry::Item(ItemId::Episode(*id)),
 		SpotifyUri::Local { .. } => SkipReason::LocalFile,
 		other => SkipReason::Unsupported(other.item_type().to_owned()),
 	};
 	Entry::Skip(Skipped { uri: uri.to_uri(), reason })
 }
 
-/// Track metadata already fetched this run, shared by everything that looks tracks up.
+/// Track and episode metadata already fetched this run, shared by everything that looks them up.
 #[derive(Clone, Debug, Default)]
-pub struct TrackCache(Arc<Mutex<HashMap<SpotifyId, Arc<TrackInfo>>>>);
+pub struct TrackCache(Arc<Mutex<HashMap<ItemId, Arc<TrackInfo>>>>);
 
 impl TrackCache {
-	pub fn get(&self, id: &SpotifyId) -> Option<Arc<TrackInfo>> {
+	pub fn get(&self, id: &ItemId) -> Option<Arc<TrackInfo>> {
 		self.0.lock().unwrap_or_else(PoisonError::into_inner).get(id).cloned()
 	}
 
@@ -181,7 +210,7 @@ impl TrackCache {
 	}
 }
 
-/// A [`MetadataSource`] that looks each track up only once.
+/// A [`MetadataSource`] that looks each track and episode up only once.
 pub struct CachedSource<S> {
 	inner: S,
 	cache: TrackCache,
@@ -199,12 +228,28 @@ impl<S> CachedSource<S> {
 
 impl<S: MetadataSource> MetadataSource for CachedSource<S> {
 	async fn track(&self, id: SpotifyId) -> Result<Arc<TrackInfo>, CoreError> {
-		if let Some(info) = self.cache.get(&id) {
+		if let Some(info) = self.cache.get(&ItemId::Track(id)) {
 			return Ok(info);
 		}
 		let info = self.inner.track(id).await?;
 		self.cache.insert(Arc::clone(&info));
 		Ok(info)
+	}
+
+	async fn episode(&self, id: SpotifyId) -> Result<Arc<TrackInfo>, CoreError> {
+		if let Some(info) = self.cache.get(&ItemId::Episode(id)) {
+			return Ok(info);
+		}
+		let info = self.inner.episode(id).await?;
+		self.cache.insert(Arc::clone(&info));
+		Ok(info)
+	}
+
+	fn show(
+		&self,
+		id: SpotifyId,
+	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send {
+		self.inner.show(id)
 	}
 
 	fn album(
@@ -276,6 +321,17 @@ impl MetadataSource for LibrespotMetadata {
 			Playlist::get(&self.session, &SpotifyUri::Playlist { user: None, id }).await?;
 		Ok((playlist.name().to_owned(), playlist.tracks().cloned().collect()))
 	}
+
+	async fn episode(&self, id: SpotifyId) -> Result<Arc<TrackInfo>, CoreError> {
+		let episode = Episode::get(&self.session, &SpotifyUri::Episode { id }).await?;
+		Ok(Arc::new(episode_info(&episode)?))
+	}
+
+	async fn show(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
+		let show = Show::get(&self.session, &SpotifyUri::Show { id }).await?;
+		let ids = show.episodes.0.iter().map(SpotifyId::try_from).collect::<Result<Vec<_>, _>>()?;
+		Ok((show.name, ids))
+	}
 }
 
 /// The raw values of the extensions asked for in one extended-metadata request.
@@ -325,7 +381,7 @@ mod tests {
 	use protobuf::{EnumOrUnknown, MessageField};
 
 	use super::{CachedSource, MetadataSource, SkipReason, TrackCache, extension_values, resolve};
-	use crate::link::{Link, LinkKind};
+	use crate::link::{ItemId, Link, LinkKind};
 	use crate::metadata::TrackInfo;
 	use crate::{CoreError, SpotifyId, SpotifyUri};
 
@@ -335,7 +391,7 @@ mod tests {
 
 	fn info(byte: u8) -> TrackInfo {
 		TrackInfo {
-			id: id(byte),
+			id: ItemId::Track(id(byte)),
 			title: format!("Track {byte}"),
 			artists: vec!["Artist".to_owned()],
 			album: "Album".to_owned(),
@@ -348,14 +404,38 @@ mod tests {
 			has_audio: true,
 			unavailable: None,
 			replay_gain: None,
+			description: None,
+			external_url: None,
+		}
+	}
+
+	fn episode(byte: u8) -> TrackInfo {
+		TrackInfo {
+			id: ItemId::Episode(id(byte)),
+			title: format!("Episode {byte}"),
+			artists: vec!["The Show".to_owned()],
+			album: "The Show".to_owned(),
+			album_artists: vec!["The Show".to_owned()],
+			track_number: 0,
+			disc_number: 0,
+			date: Some("2026-10-01".to_owned()),
+			duration_ms: 1000,
+			covers: Vec::new(),
+			has_audio: true,
+			unavailable: None,
+			replay_gain: None,
+			description: Some("What this episode is about.".to_owned()),
+			external_url: None,
 		}
 	}
 
 	#[derive(Default)]
 	struct FakeSource {
 		tracks: HashMap<SpotifyId, (Result<TrackInfo, &'static str>, Duration)>,
+		episodes: HashMap<SpotifyId, TrackInfo>,
 		albums: HashMap<SpotifyId, Result<(String, Vec<SpotifyId>), &'static str>>,
 		playlists: HashMap<SpotifyId, (String, Vec<SpotifyUri>)>,
+		shows: HashMap<SpotifyId, (String, Vec<SpotifyId>)>,
 		track_calls: AtomicUsize,
 	}
 
@@ -393,6 +473,16 @@ mod tests {
 			tokio::task::yield_now().await;
 			Ok(self.playlists.get(&id).expect("unknown playlist").clone())
 		}
+
+		async fn episode(&self, id: SpotifyId) -> Result<Arc<TrackInfo>, CoreError> {
+			tokio::task::yield_now().await;
+			Ok(Arc::new(self.episodes.get(&id).expect("unknown episode").clone()))
+		}
+
+		async fn show(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
+			tokio::task::yield_now().await;
+			Ok(self.shows.get(&id).expect("unknown show").clone())
+		}
 	}
 
 	fn titles(tracks: &[Arc<TrackInfo>]) -> Vec<&str> {
@@ -406,6 +496,45 @@ mod tests {
 		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
 		assert_eq!(resolved.name, None);
 		assert!(resolved.skipped.is_empty());
+	}
+
+	#[tokio::test]
+	async fn episode_link_resolves_to_one_episode() {
+		let mut source = FakeSource::default();
+		source.episodes.insert(id(50), episode(50));
+		let resolved =
+			resolve(&source, &Link { kind: LinkKind::Episode, id: id(50) }).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Episode 50"]);
+		assert_eq!(resolved.tracks[0].id, ItemId::Episode(id(50)));
+	}
+
+	#[tokio::test]
+	async fn show_link_resolves_to_its_episodes_in_order_with_the_show_name() {
+		let mut source = FakeSource::default();
+		for byte in [50, 51, 52] {
+			source.episodes.insert(id(byte), episode(byte));
+		}
+		source.shows.insert(id(250), ("The Show".to_owned(), vec![id(52), id(50), id(51)]));
+		let resolved = resolve(&source, &Link { kind: LinkKind::Show, id: id(250) }).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Episode 52", "Episode 50", "Episode 51"]);
+		assert_eq!(resolved.name.as_deref(), Some("The Show"));
+	}
+
+	#[tokio::test]
+	async fn an_episode_spotify_doesnt_host_is_kept_for_its_own_link() {
+		let mut source = FakeSource::default();
+		let mut hosted_elsewhere = episode(50);
+		hosted_elsewhere.has_audio = false;
+		hosted_elsewhere.external_url = Some("https://podcasts.example/episode-50.mp3".to_owned());
+		let mut silent = episode(51);
+		silent.has_audio = false;
+		source.episodes.insert(id(50), hosted_elsewhere);
+		source.episodes.insert(id(51), silent);
+		source.shows.insert(id(250), ("The Show".to_owned(), vec![id(50), id(51)]));
+		let resolved = resolve(&source, &Link { kind: LinkKind::Show, id: id(250) }).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Episode 50"]);
+		assert_eq!(resolved.skipped.len(), 1);
+		assert_eq!(resolved.skipped[0].uri, SpotifyUri::Episode { id: id(51) }.to_uri());
 	}
 
 	#[tokio::test]
@@ -434,8 +563,9 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn playlist_skips_episodes_and_local_files_with_reasons() {
+	async fn playlist_keeps_episodes_and_skips_local_files_with_a_reason() {
 		let mut source = FakeSource::with_tracks(&[1, 2]);
+		source.episodes.insert(id(50), episode(50));
 		let episode = SpotifyUri::Episode { id: id(50) };
 		let local = SpotifyUri::from_uri("spotify:local:Artist:Album:Song:180").unwrap();
 		source.playlists.insert(
@@ -452,14 +582,11 @@ mod tests {
 		);
 		let resolved =
 			resolve(&source, &Link { kind: LinkKind::Playlist, id: id(200) }).await.unwrap();
-		assert_eq!(titles(&resolved.tracks), ["Track 1", "Track 2"]);
+		assert_eq!(titles(&resolved.tracks), ["Track 1", "Episode 50", "Track 2"]);
 		assert_eq!(resolved.name.as_deref(), Some("Mix"));
 		let skipped: Vec<_> =
 			resolved.skipped.iter().map(|item| (item.uri.clone(), item.reason.clone())).collect();
-		assert_eq!(
-			skipped,
-			[(episode.to_uri(), SkipReason::Episode), (local.to_uri(), SkipReason::LocalFile)]
-		);
+		assert_eq!(skipped, [(local.to_uri(), SkipReason::LocalFile)]);
 	}
 
 	#[tokio::test]
@@ -564,7 +691,7 @@ mod tests {
 		let cache = TrackCache::default();
 		cache.insert(Arc::new(info(1)));
 		cache.clear();
-		assert!(cache.get(&id(1)).is_none());
+		assert!(cache.get(&ItemId::Track(id(1))).is_none());
 	}
 
 	#[tokio::test]
@@ -598,6 +725,9 @@ mod tests {
 		let again = resolve(&source, &link).await.unwrap();
 		assert_eq!(again.tracks.len(), 3);
 		assert_eq!(source.inner().track_calls.load(Ordering::SeqCst), 3);
-		assert_eq!(cache.get(&id(2)).map(|track| track.title.clone()).as_deref(), Some("Track 2"));
+		assert_eq!(
+			cache.get(&ItemId::Track(id(2))).map(|track| track.title.clone()).as_deref(),
+			Some("Track 2")
+		);
 	}
 }
