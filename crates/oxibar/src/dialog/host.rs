@@ -189,11 +189,15 @@ pub const fn refresh_poster(dialog: &Dialog) -> RefreshPoster {
 
 /// Where a dialog keeps its handler, behind `DWLP_USER`.
 struct Slot {
-	/// Taken out while a call runs, so a message that arrives during the call is ignored.
+	/// Taken out while a call runs, so a message that arrives during the call is ignored (a
+	/// refresh is remembered instead).
 	handler: Cell<Option<Box<dyn DialogHandler>>>,
 	busy: Cell<bool>,
 	/// The window is gone. A running call drops the handler and the slot when it returns.
 	destroyed: Cell<bool>,
+	/// A refresh arrived while a call ran, for example while `ShellExecuteW` pumped messages;
+	/// it runs once that call returns, so the dialog never stays out of date.
+	refresh_pending: Cell<bool>,
 }
 
 thread_local! {
@@ -221,6 +225,9 @@ fn call<R>(window: HWND, f: impl FnOnce(&mut dyn DialogHandler, &Dialog) -> R) -
 		drop(unsafe { Box::from_raw(slot) });
 	} else {
 		unsafe { &*slot }.handler.set(Some(handler));
+		if unsafe { &*slot }.refresh_pending.take() {
+			call(window, DialogHandler::refresh);
+		}
 	}
 	result.map_err(|_| console::print("OxiBar: a dialog handler panicked")).ok()
 }
@@ -265,7 +272,12 @@ fn handle(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> isize {
 			1
 		}
 		WM_REFRESH => {
-			call(window, DialogHandler::refresh);
+			let slot = slot_of(window);
+			if !slot.is_null() && unsafe { &*slot }.busy.get() {
+				unsafe { &*slot }.refresh_pending.set(true);
+			} else {
+				call(window, DialogHandler::refresh);
+			}
 			1
 		}
 		NC_DESTROY => {
@@ -298,6 +310,7 @@ fn create(
 		handler: Cell::new(Some(handler)),
 		busy: Cell::new(false),
 		destroyed: Cell::new(false),
+		refresh_pending: Cell::new(false),
 	}));
 	CLAIMED.set(0);
 	let parent = (parent != 0).then_some(HWND(parent as _));
@@ -422,6 +435,8 @@ pub(crate) mod tests {
 		focus: Option<u16>,
 		panic_on_command: bool,
 		destroy_on_command: bool,
+		/// Posts a refresh and pumps messages inside `command`, as `ShellExecuteW` can.
+		pump_on_command: bool,
 	}
 
 	impl DialogHandler for Recorder {
@@ -433,6 +448,10 @@ pub(crate) mod tests {
 		fn command(&mut self, dialog: &Dialog, id: u16, notification: u16) {
 			assert!(!self.panic_on_command, "a handler bug");
 			self.record.borrow_mut().commands.push((id, notification));
+			if self.pump_on_command {
+				super::refresh_poster(dialog).post();
+				pump();
+			}
 			if self.destroy_on_command {
 				destroy(*dialog);
 				// Still running after the window is gone: the handler must still be alive.
@@ -567,6 +586,18 @@ pub(crate) mod tests {
 		dialog.focus(102);
 		assert_eq!(dialog.focused(), Some(102));
 		assert_eq!(Dialog::from_hwnd(dialog.hwnd()), dialog);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn refresh_that_arrives_during_a_call_runs_after_it() {
+		let mut recorder = Recorder::default();
+		recorder.pump_on_command = true;
+		let (dialog, record) = child(recorder);
+		click(dialog, 102);
+		assert_eq!(record.borrow().refreshes, 1, "the refresh was dropped");
+		pump();
+		assert_eq!(record.borrow().refreshes, 1);
 		destroy(dialog);
 	}
 
