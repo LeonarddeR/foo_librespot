@@ -206,7 +206,8 @@ mod tests {
 		assert!(
 			filesystem.is_our_path(&format!("https://open.spotify.com/intl-nl/track/{TRACK_ID}"))
 		);
-		assert!(!filesystem.is_our_path("https://open.spotify.com/artist/1hZbT7cOjvmLOdb5Ey5SHu"));
+		assert!(filesystem.is_our_path("https://open.spotify.com/artist/1hZbT7cOjvmLOdb5Ey5SHu"));
+		assert!(!filesystem.is_our_path("https://open.spotify.com/genre/1hZbT7cOjvmLOdb5Ey5SHu"));
 		assert!(!filesystem.is_our_path("https://www.youtube.com/watch?v=abc"));
 		assert!(!filesystem.is_our_path("file://C:\\a.mp3"));
 	}
@@ -353,7 +354,7 @@ mod tests {
 	#[test]
 	fn loader_rejects_non_spotify_pages_without_the_backend() {
 		let fake = installed();
-		for path in ["https://example.com/", &format!("https://open.spotify.com/artist/{ALBUM}")] {
+		for path in ["https://example.com/", "https://www.youtube.com/watch?v=abc"] {
 			let (callback, record) = FakeLoaderCallback::new();
 			let error = loader().open(path, callback, &FakeAbort::new(false)).unwrap_err();
 			assert_eq!(error.kind, ExceptionKind::IoUnsupportedFormat, "{path}");
@@ -377,6 +378,27 @@ mod tests {
 		assert_eq!(record.entries[1].meta("TITLE"), ["Across The Lands"]);
 		assert!((record.entries[0].replaygain.track_gain - -6.62).abs() < 1e-4);
 		assert_eq!(record.live_handles(), 0);
+	}
+
+	#[test]
+	fn artist_link_goes_to_the_loader_and_adds_the_popular_tracks() {
+		let path = "https://open.spotify.com/artist/2UV3Ygbhy1gXAbbrQ9BHdQ";
+		let stub = filesystem().open(path, OPEN_MODE_READ).unwrap();
+		assert_eq!(stub.content_type().as_deref(), Some(CONTENT_TYPE));
+		let fake = installed();
+		fake.resolve_to(Resolved {
+			name: Some("Keith & Kristyn Getty".to_owned()),
+			tracks: vec![
+				Arc::new(track_info(id(2), "In Christ Alone")),
+				Arc::new(track_info(id(1), "The Power of the Cross")),
+			],
+			skipped: Vec::new(),
+		});
+		let (callback, record) = FakeLoaderCallback::new();
+		loader().open(path, callback, &FakeAbort::new(false)).unwrap();
+		let record = record.lock().unwrap();
+		assert_eq!(record.entries[0].meta("TITLE"), ["In Christ Alone"]);
+		assert_eq!(record.entries.len(), 2);
 	}
 
 	#[test]

@@ -16,9 +16,11 @@ pub enum LinkKind {
 	Episode,
 	/// A podcast, with all its episodes.
 	Show,
+	/// An artist, with their popular tracks.
+	Artist,
 }
 
-/// A parsed Spotify track, album, playlist, episode or show link.
+/// A parsed Spotify track, album, playlist, episode, show or artist link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Link {
 	pub kind: LinkKind,
@@ -35,6 +37,7 @@ impl Link {
 			LinkKind::Playlist => SpotifyUri::Playlist { user: None, id },
 			LinkKind::Episode => SpotifyUri::Episode { id },
 			LinkKind::Show => SpotifyUri::Show { id },
+			LinkKind::Artist => SpotifyUri::Artist { id },
 		}
 	}
 
@@ -43,7 +46,7 @@ impl Link {
 		match self.kind {
 			LinkKind::Track => Some(ItemId::Track(self.id)),
 			LinkKind::Episode => Some(ItemId::Episode(self.id)),
-			LinkKind::Album | LinkKind::Playlist | LinkKind::Show => None,
+			LinkKind::Album | LinkKind::Playlist | LinkKind::Show | LinkKind::Artist => None,
 		}
 	}
 }
@@ -77,7 +80,7 @@ pub enum LinkError {
 	#[error("this is not a Spotify link")]
 	NotSpotify,
 	#[error(
-		"Spotify {kind} links can't be played; use a track, album, playlist, episode or show link"
+		"Spotify {kind} links can't be played; use a track, album, playlist, episode, show or artist link"
 	)]
 	Unsupported { kind: String },
 	#[error("this Spotify link has an invalid id")]
@@ -118,8 +121,11 @@ fn parse_uri(uri: &str) -> Result<Link, LinkError> {
 		SpotifyUri::Playlist { id, .. } => Ok(Link { kind: LinkKind::Playlist, id }),
 		SpotifyUri::Episode { id } => Ok(Link { kind: LinkKind::Episode, id }),
 		SpotifyUri::Show { id } => Ok(Link { kind: LinkKind::Show, id }),
+		SpotifyUri::Artist { id } => Ok(Link { kind: LinkKind::Artist, id }),
 		SpotifyUri::Local { .. } => Err(LinkError::Unsupported { kind: "local".to_owned() }),
-		other => Err(LinkError::Unsupported { kind: other.item_type().to_owned() }),
+		other @ SpotifyUri::Unknown { .. } => {
+			Err(LinkError::Unsupported { kind: other.item_type().to_owned() })
+		}
 	}
 }
 
@@ -149,6 +155,7 @@ fn parse_url(url: &str) -> Result<Link, LinkError> {
 		"playlist" => LinkKind::Playlist,
 		"episode" => LinkKind::Episode,
 		"show" => LinkKind::Show,
+		"artist" => LinkKind::Artist,
 		_ => return Err(LinkError::Unsupported { kind }),
 	};
 	let id = parts.next().ok_or(LinkError::InvalidId)?;
@@ -271,13 +278,22 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_artist_links_in_every_spelling() {
+		let artist = link(LinkKind::Artist, TRACK);
+		assert_eq!(parse_link(&format!("https://open.spotify.com/artist/{TRACK}")), Ok(artist));
+		assert_eq!(parse_link(&format!("spotify:artist:{TRACK}")), Ok(artist));
+		assert_eq!(parse_link(&format!("sptf://spotify:artist:{TRACK}")), Ok(artist));
+		// An artist names no single item to play.
+		assert_eq!(artist.item(), None);
+	}
+
+	#[test]
 	fn rejects_unsupported_kinds() {
 		let unsupported = |kind: &str| Err(LinkError::Unsupported { kind: kind.to_owned() });
 		assert_eq!(
-			parse_link(&format!("https://open.spotify.com/artist/{TRACK}")),
-			unsupported("artist")
+			parse_link(&format!("https://open.spotify.com/genre/{TRACK}")),
+			unsupported("genre")
 		);
-		assert_eq!(parse_link(&format!("spotify:artist:{TRACK}")), unsupported("artist"));
 		assert_eq!(parse_link("spotify:local:a:b:c:180"), unsupported("local"));
 	}
 

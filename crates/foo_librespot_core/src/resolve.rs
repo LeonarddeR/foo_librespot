@@ -12,7 +12,7 @@ use librespot_core::Session;
 use librespot_core::date::Date;
 use librespot_core::error::ErrorKind;
 use librespot_metadata::show::ShowConsumptionOrder;
-use librespot_metadata::{Album, Episode, Metadata, Playlist, Show, Track};
+use librespot_metadata::{Album, Artist, Episode, Metadata, Playlist, Show, Track};
 use librespot_protocol::extended_metadata::{
 	BatchedEntityRequest, BatchedExtensionResponse, EntityRequest, ExtensionQuery,
 };
@@ -103,6 +103,12 @@ pub trait MetadataSource: Send + Sync {
 		&self,
 		id: SpotifyId,
 	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send;
+
+	/// The artist name and their popular tracks in the account's country, in Spotify's order.
+	fn artist(
+		&self,
+		id: SpotifyId,
+	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send;
 }
 
 /// The info of one item.
@@ -147,6 +153,10 @@ pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resol
 		LinkKind::Show => {
 			let (name, ids) = source.show(link.id).await?;
 			(Some(name), ids.into_iter().map(|id| Entry::Item(ItemId::Episode(id))).collect())
+		}
+		LinkKind::Artist => {
+			let (name, ids) = source.artist(link.id).await?;
+			(Some(name), ids.into_iter().map(|id| Entry::Item(ItemId::Track(id))).collect())
 		}
 	};
 
@@ -374,6 +384,13 @@ impl<S: MetadataSource> MetadataSource for CachedSource<S> {
 	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send {
 		self.inner.show(id)
 	}
+
+	fn artist(
+		&self,
+		id: SpotifyId,
+	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send {
+		self.inner.artist(id)
+	}
 }
 
 /// Metadata straight from Spotify, through librespot.
@@ -582,6 +599,21 @@ impl MetadataSource for LibrespotMetadata {
 		let ids = show.episodes.0.iter().map(SpotifyId::try_from).collect::<Result<Vec<_>, _>>()?;
 		Ok((show.name, listening_order(ids, show.consumption_order)))
 	}
+
+	async fn artist(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
+		let uri = SpotifyUri::Artist { id };
+		let artist = retry_rate_limited(|| Artist::get(&self.session, &uri)).await?;
+		// librespot falls back to the worldwide list when the country has none.
+		let country = self.session.user_data().country;
+		let ids = artist
+			.top_tracks
+			.for_country(&country)
+			.0
+			.iter()
+			.map(SpotifyId::try_from)
+			.collect::<Result<Vec<_>, _>>()?;
+		Ok((artist.name, ids))
+	}
 }
 
 /// The raw values of the extensions Spotify sent for one item.
@@ -714,6 +746,7 @@ mod tests {
 		albums: HashMap<SpotifyId, Result<(String, Vec<SpotifyId>), &'static str>>,
 		playlists: HashMap<SpotifyId, (String, Vec<SpotifyUri>)>,
 		shows: HashMap<SpotifyId, (String, Vec<SpotifyId>)>,
+		artists: HashMap<SpotifyId, (String, Vec<SpotifyId>)>,
 		track_calls: AtomicUsize,
 		/// The size of each batch asked for, in the order asked.
 		batches: Mutex<Vec<usize>>,
@@ -773,10 +806,25 @@ mod tests {
 			tokio::task::yield_now().await;
 			Ok(self.shows.get(&id).expect("unknown show").clone())
 		}
+
+		async fn artist(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
+			tokio::task::yield_now().await;
+			Ok(self.artists.get(&id).expect("unknown artist").clone())
+		}
 	}
 
 	fn titles(tracks: &[Arc<TrackInfo>]) -> Vec<&str> {
 		tracks.iter().map(|track| track.title.as_str()).collect()
+	}
+
+	#[tokio::test]
+	async fn artist_link_adds_the_popular_tracks_in_order() {
+		let mut source = FakeSource::with_tracks(&[1, 2, 3]);
+		source.artists.insert(id(150), ("Keith & Kristyn Getty".to_owned(), vec![id(3), id(1)]));
+		let link = Link { kind: LinkKind::Artist, id: id(150) };
+		let resolved = resolve(&source, &link).await.unwrap();
+		assert_eq!(resolved.name.as_deref(), Some("Keith & Kristyn Getty"));
+		assert_eq!(titles(&resolved.tracks), ["Track 3", "Track 1"]);
 	}
 
 	#[tokio::test]
