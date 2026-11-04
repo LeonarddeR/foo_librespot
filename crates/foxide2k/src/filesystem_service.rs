@@ -23,7 +23,7 @@ use crate::component::Factory;
 use crate::cxx::ExceptionKind;
 use crate::error::Error;
 use crate::guid::Guid;
-use crate::service::{ServiceImpl, ServicePtr, new_service};
+use crate::service::{ServiceImpl, ServicePtr, free_from_release, new_service};
 use crate::strings::set_string;
 
 /// A component's filesystem. Foxide2k answers everything else the same way for every
@@ -265,7 +265,7 @@ unsafe extern "C-unwind" fn stub_release(this: *mut ServiceBase) -> i32 {
 	unsafe {
 		let remaining = stub(this).refs.fetch_sub(1, Ordering::AcqRel) - 1;
 		if remaining == 0 {
-			drop(Box::from_raw(this.cast::<StubFile>()));
+			free_from_release(this.cast::<StubFile>());
 			#[cfg(test)]
 			LIVE_STUB_FILES.fetch_sub(1, Ordering::SeqCst);
 		}

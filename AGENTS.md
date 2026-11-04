@@ -23,7 +23,7 @@ foo_librespot is a foobar2000 2.25+ x64 component, written entirely in Rust, tha
 - Target `x86_64-pc-windows-msvc` and foobar2000 2.25 and later only. The SDK target version stays 81, the newest the SDK defines.
 - No C or C++ anywhere in the build.
 - `foxide2k` is licensed `MIT AND BSD-Source-Code`. Every file transcribed from the foobar2000 SDK starts with the SDK notice. Other crates are MIT.
-- Every vtable slot is `unsafe extern "C-unwind" fn`, and every Rust-implemented slot runs inside `foxide2k::boundary::guard`.
+- Every vtable slot is `unsafe extern "C-unwind" fn`, and every Rust-implemented slot that can fail or panic runs inside `foxide2k::boundary::guard`. `service_release` slots are noexcept, so they free through `service::free_from_release`, which aborts on a panic instead of throwing. Slots that only return a constant or update a reference count need neither.
 - Never throw a C++ exception inside `catch_unwind`. Wrap every call into foobar2000 that can throw in `foxide2k::cxx::try_host`.
 - Tests are written first. Keep code that can only be tested by hand thin.
 - Commit subjects are sentence-case imperative with no prefix; the body explains why.

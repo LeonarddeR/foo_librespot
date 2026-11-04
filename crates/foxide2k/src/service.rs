@@ -132,15 +132,24 @@ unsafe extern "C-unwind" fn release<T: ServiceImpl>(this: *mut ServiceBase) -> i
 		}
 		let remaining = (*object).refs.fetch_sub(1, Ordering::AcqRel) - 1;
 		if remaining == 0 {
-			// service_release is noexcept: a panicking destructor must not unwind into foobar2000.
-			let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-				drop(Box::from_raw(object));
-			}));
-			if dropped.is_err() {
-				std::process::abort();
-			}
+			free_from_release(object);
 		}
 		remaining
+	}
+}
+
+/// Frees an object from a `service_release` slot. foobar2000 declares that slot noexcept, so
+/// it can't run inside [`crate::boundary::guard`], which reports a panic by throwing; a panicking
+/// destructor aborts the process instead of unwinding into foobar2000.
+///
+/// # Safety
+/// `object` must come from `Box::into_raw` and must not be used afterwards.
+pub(crate) unsafe fn free_from_release<T>(object: *mut T) {
+	let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		drop(unsafe { Box::from_raw(object) });
+	}));
+	if dropped.is_err() {
+		std::process::abort();
 	}
 }
 
@@ -215,9 +224,56 @@ mod tests {
 	use std::sync::Arc;
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
-	use super::{ServiceImpl, ServicePtr, Singleton, new_service};
+	use super::{ServiceImpl, ServicePtr, Singleton, free_from_release, new_service};
 	use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 	use crate::guid::Guid;
+
+	struct Counted(Arc<AtomicUsize>);
+
+	impl Drop for Counted {
+		fn drop(&mut self) {
+			self.0.fetch_add(1, Ordering::SeqCst);
+		}
+	}
+
+	#[test]
+	fn free_from_release_drops_the_object() {
+		let drops = Arc::new(AtomicUsize::new(0));
+		unsafe { free_from_release(Box::into_raw(Box::new(Counted(Arc::clone(&drops))))) };
+		assert_eq!(drops.load(Ordering::SeqCst), 1);
+	}
+
+	const PANIC_CHILD: &str = "FOXIDE2K_RELEASE_PANIC_CHILD";
+
+	#[test]
+	fn a_panicking_destructor_in_release_aborts_instead_of_unwinding() {
+		if std::env::var_os(PANIC_CHILD).is_some() {
+			struct Panics;
+			impl Drop for Panics {
+				fn drop(&mut self) {
+					panic!("destructor panicked");
+				}
+			}
+			unsafe { free_from_release(Box::into_raw(Box::new(Panics))) };
+			return;
+		}
+		// Run this test again in a child process, where the abort can't take the runner down.
+		let status = std::process::Command::new(std::env::current_exe().unwrap())
+			.args([
+				"--exact",
+				"service::tests::a_panicking_destructor_in_release_aborts_instead_of_unwinding",
+				"--nocapture",
+			])
+			.env(PANIC_CHILD, "1")
+			.stdout(std::process::Stdio::null())
+			.stderr(std::process::Stdio::null())
+			.status()
+			.unwrap();
+		// An unwound panic fails the test and the harness exits with 101; an abort doesn't get
+		// that far. Returning normally would mean the panic was swallowed.
+		assert!(!status.success(), "{status:?}");
+		assert_ne!(status.code(), Some(101), "{status:?}");
+	}
 
 	const IID_A: Guid = Guid::from_u128(0x11111111_0000_0000_0000_000000000001);
 	const IID_B: Guid = Guid::from_u128(0x22222222_0000_0000_0000_000000000002);
