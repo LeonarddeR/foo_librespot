@@ -17,3 +17,53 @@ accepted = [
 	"Unicode-3.0",
 	"Zlib",
 ]
+
+# Crates whose packages hold no licence file cargo-about can read. Without these entries their
+# notices would be the generic licence text, without the copyright line the licence asks for;
+# cargo xtask package fails when that happens.
+
+# librespot's crates have their licence only at the root of its repository (a git dependency).
+[librespot-audio.clarify]
+license = "MIT"
+[[librespot-audio.clarify.git]]
+path = "LICENSE"
+checksum = "b6e979ad38c429c5811e9eb6930040a984619786f55ebc60660db05df5325ed6"
+
+[librespot-core.clarify]
+license = "MIT"
+[[librespot-core.clarify.git]]
+path = "LICENSE"
+checksum = "b6e979ad38c429c5811e9eb6930040a984619786f55ebc60660db05df5325ed6"
+
+[librespot-metadata.clarify]
+license = "MIT"
+[[librespot-metadata.clarify.git]]
+path = "LICENSE"
+checksum = "b6e979ad38c429c5811e9eb6930040a984619786f55ebc60660db05df5325ed6"
+
+[librespot-oauth.clarify]
+license = "MIT"
+[[librespot-oauth.clarify.git]]
+path = "LICENSE"
+checksum = "b6e979ad38c429c5811e9eb6930040a984619786f55ebc60660db05df5325ed6"
+
+[librespot-protocol.clarify]
+license = "MIT"
+[[librespot-protocol.clarify.git]]
+path = "LICENSE"
+checksum = "b6e979ad38c429c5811e9eb6930040a984619786f55ebc60660db05df5325ed6"
+
+# governor's package has no licence file either, and cargo-about can't fetch the one in its
+# repository: it keeps the .git of the repository's address in the download link. about.hbs
+# prints governor's own licence text instead, as long as governor is the only crate on the
+# generic MIT text.
+
+# libm's LICENSE.txt holds the MIT text for libm as a whole, then the Apache-2.0 text for
+# contributions; the MIT part is the licence the crate is under.
+[libm.clarify]
+license = "MIT"
+[[libm.clarify.files]]
+path = "LICENSE.txt"
+start = "rust-lang/libm as a whole is available for use under the MIT license:"
+end = "SOFTWARE."
+checksum = "88abfa952aa119ec3671f35fa0dc52589721f7f93982bd90f9649528f8fd74f8"

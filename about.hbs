@@ -8,21 +8,47 @@
 <main>
 <h1>foo_librespot: third-party licences</h1>
 <p>foo_librespot is built on <a href="https://github.com/librespot-org/librespot">librespot</a>, an unofficial Spotify client, and on the Rust libraries below.
-They are used unmodified.
+They are used as published, except librespot, which comes from the branch of its pull request 1855 until that fix is released.
 The ones under the Mozilla Public License 2.0, such as Symphonia, have their source code at the repositories linked here.</p>
 <p>foo_librespot's own licence is in LICENSE.txt, next to this file.</p>
-<p>Each heading below is a licence. Under it, each group of libraries shares one copy of its text.</p>
+<p>Each second-level heading is a licence. Under it, each third-level heading is a group of libraries that share one copy of its text, named after the first of them.</p>
 {{#each overview}}
 <h2>{{name}}</h2>
 {{#each indices}}
 {{#with (lookup ../../licenses this)}}
-<h3>{{#each used_by}}{{#unless @first}}, {{/unless}}{{crate.name}}{{/each}}</h3>
+<h3>{{used_by.[0].crate.name}}{{#if used_by.[1]}} and others: {{len used_by}} libraries{{/if}}</h3>
 <ul>
 {{#each used_by}}
 <li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
 {{/each}}
 </ul>
+{{!-- governor's package has no licence file, so cargo-about only has the generic MIT text for it;
+      see about.toml. Its own text comes from its repository. --}}
+{{#if (and (eq used_by.[0].crate.name "governor") (not used_by.[1]))}}
+<pre>MIT License
+
+Copyright (c) 2023 Andreas Fuchs
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.</pre>
+{{else}}
 <pre>{{text}}</pre>
+{{/if}}
 {{/with}}
 {{/each}}
 {{/each}}

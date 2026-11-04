@@ -4,6 +4,7 @@
 
 mod component;
 mod notes;
+mod notices;
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -94,16 +95,28 @@ fn write_licenses(root: &Path, out: &Path) -> Result<()> {
 				.into(),
 		);
 	}
-	let manifest = root.join("crates").join("foo_librespot").join("Cargo.toml");
-	run(
-		cargo(root)
-			.args(["about", "generate", "--manifest-path"])
-			.arg(manifest)
-			.args(["--config", "about.toml", "--output-file"])
-			.arg(out)
-			.arg("about.hbs"),
-		"cargo about generate",
-	)
+	run(&mut about_command(root, out), "cargo about generate")?;
+	if let Some(placeholder) = notices::placeholder(&fs::read_to_string(out)?) {
+		return Err(format!(
+			"licenses.html has the generic licence text's {placeholder} instead of a copyright line: give the crate a clarify entry in about.toml"
+		)
+		.into());
+	}
+	Ok(())
+}
+
+/// `cargo about generate` for the DLL's dependencies, into `out`.
+fn about_command(root: &Path, out: &Path) -> Command {
+	let mut command = cargo(root);
+	command
+		.args(["about", "generate", "--manifest-path"])
+		.arg(root.join("crates").join("foo_librespot").join("Cargo.toml"))
+		.args(["--config", "about.toml", "--locked", "--output-file"])
+		.arg(out)
+		// A crate whose licence can't be found would otherwise be left out with a warning.
+		.arg("--fail")
+		.arg("about.hbs");
+	command
 }
 
 fn print_release_notes(version: &str) -> Result<()> {
@@ -112,4 +125,22 @@ fn print_release_notes(version: &str) -> Result<()> {
 		.ok_or_else(|| format!("CHANGELOG.md has no section for version {version}"))?;
 	println!("{notes}");
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use std::path::Path;
+
+	use super::about_command;
+
+	#[test]
+	fn cargo_about_fails_on_unlisted_licences_and_uses_the_lockfile() {
+		let command = about_command(Path::new("repo"), Path::new("out/licenses.html"));
+		let args: Vec<_> =
+			command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+		assert_eq!(&args[..2], ["about", "generate"]);
+		assert!(args.iter().any(|arg| arg == "--fail"), "{args:?}");
+		assert!(args.iter().any(|arg| arg == "--locked"), "{args:?}");
+		assert_eq!(args.last().map(String::as_str), Some("about.hbs"));
+	}
 }
