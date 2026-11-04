@@ -11,6 +11,10 @@ It uses [librespot](https://github.com/librespot-org/librespot) to talk to Spoti
 
 Early development. Nothing is released yet.
 
+- `crates/oxibar`: the Rust layer that talks to foobar2000. It is proven in a real foobar2000 by the `foo_oxitone` test-tone component.
+- `crates/foo_librespot_core`: the Spotify side, built on librespot, with no foobar2000 knowledge. It logs in, turns links into track lists with metadata, and plays tracks as seekable PCM. Its `spotify_dev` example tries it against a real account.
+- `crates/foo_librespot`, the component itself, is next.
+
 ## Requirements
 
 - foobar2000 2.x, 64-bit.

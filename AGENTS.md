@@ -24,6 +24,9 @@ foo_librespot is a foobar2000 2.x x64 component, written entirely in Rust, that 
 - Tests are written first. Keep code that can only be tested by hand thin.
 - Commit subjects are sentence-case imperative with no prefix; the body explains why.
 - Lint workflows with the kjanat actionlint fork (latest release), never `rhysd/actionlint`.
+- `foo_librespot_core` must not depend on `oxibar` or know about foobar2000. The plugin talks to it only through `foo_librespot_core::Core`.
+- In `foo_librespot_core`, blocking reads of Spotify audio never run on a tokio worker: `fetch_track` only awaits, and `FetchedTrack::open` and `SpotifyTrack::read` run on the caller's thread. `CoreRuntime::block_on` is never called from async code.
+- Spotify credentials are never logged and never written in plain text; `Profile` stores them encrypted with DPAPI.
 
 ## Settled design decisions
 

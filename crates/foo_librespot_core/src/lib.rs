@@ -24,7 +24,9 @@ pub mod profile;
 pub mod resolve;
 pub mod runtime;
 pub mod session;
+pub mod spotify;
 
 pub use error::{CoreError, Result};
 pub use librespot_core::authentication::Credentials;
 pub use librespot_core::{FileId, SpotifyId, SpotifyUri};
+pub use spotify::{Core, LoginHandle};

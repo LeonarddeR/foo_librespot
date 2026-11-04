@@ -62,3 +62,23 @@ pwsh tools/fb2k-portable.ps1 -Run /add oxitone://440
 ```
 
 Each milestone has a manual checklist in `docs/checklists/`, starting with [the phase 1 gate](docs/checklists/phase-1-oxibar-gate.md).
+
+## Testing `foo_librespot_core`
+
+The unit tests need no network and no Spotify account.
+librespot sits behind small traits (`Connector`, `Authorizer`, `MetadataSource`) that the tests replace with fakes, and the audio tests decode the Ogg Vorbis files in `crates/foo_librespot_core/tests/fixtures`.
+That folder's README has the ffmpeg commands that made them.
+
+To try the crate against a real Spotify Premium account, use the `spotify_dev` example.
+It keeps its login in `.spotify-dev`, which git ignores:
+
+```
+cargo run -p foo_librespot_core --example spotify_dev -- login
+cargo run -p foo_librespot_core --example spotify_dev -- resolve https://open.spotify.com/album/<id>
+cargo run -p foo_librespot_core --example spotify_dev -- decode https://open.spotify.com/track/<id> 10 .spotify-dev/track.wav
+cargo run -p foo_librespot_core --example spotify_dev -- decode https://open.spotify.com/track/<id> 10 .spotify-dev/seek.wav --seek 60
+```
+
+`login` prints a page and a code; open the page, confirm, and the login is stored encrypted for your Windows account.
+Set `SPOTIFY_DEV_LOG=debug` to see what librespot does.
+The phase 2 checklist is in [docs/checklists/phase-2-core.md](docs/checklists/phase-2-core.md).
