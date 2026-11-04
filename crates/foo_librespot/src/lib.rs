@@ -28,11 +28,9 @@ use foxide2k::playlist_loader::playlist_loader_factory;
 use foxide2k::preferences::preferences_page_factory;
 use foxide2k::service::Singleton;
 
-const ABOUT: &str = "Plays Spotify tracks, albums, playlists and podcasts in foobar2000. Paste or drag a Spotify link to add them. Needs Spotify Premium.
+const ABOUT: &str = "Plays Spotify tracks, albums, playlists and podcasts. Paste or drag a Spotify link to add them. Needs Spotify Premium.
 
-Built on librespot (MIT licence), an unofficial Spotify client: Spotify can change its service at any time in a way that stops it working.
-
-Contains interface definitions from the foobar2000 SDK, copyright (c) Peter Pawlowski, used under the SDK licence.";
+Built on librespot (MIT licence), an unofficial Spotify client: Spotify can change its service at any time in a way that stops it working.";
 
 struct Startup;
 
