@@ -3,7 +3,7 @@
 use std::ffi::CString;
 
 use crate::abi::file::FileStats;
-use crate::abi::filesystem::{FilesystemVtblPrefix, IID};
+use crate::abi::filesystem::{FilesystemVtbl, IID};
 use crate::abort::Abort;
 use crate::cxx::{ExceptionKind, try_host};
 use crate::error::{Error, Result};
@@ -17,7 +17,7 @@ pub fn get_stats(path: &str, abort: &Abort) -> Result<FileStats> {
 		.map_err(|_| Error::new(ExceptionKind::IoNoHandlerForPath, "path contains NUL"))?;
 	for filesystem in host().enumerate(&IID) {
 		let raw = filesystem.as_raw();
-		let vtbl = unsafe { &*(*raw).vtbl.cast::<FilesystemVtblPrefix>() };
+		let vtbl = unsafe { &*(*raw).vtbl.cast::<FilesystemVtbl>() };
 		if !try_host(|| unsafe { (vtbl.is_our_path)(raw, c_path.as_ptr()) })? {
 			continue;
 		}

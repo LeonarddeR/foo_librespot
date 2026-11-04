@@ -24,7 +24,7 @@
 //! `foobar2000_io::filesystem` (`SDK\filesystem.h:44` onwards): the handler for one family of
 //! paths, such as `file://`.
 
-use std::ffi::c_char;
+use std::ffi::{c_char, c_void};
 
 use crate::abi::abort_callback::AbortCallback;
 use crate::abi::file::FileStats;
@@ -34,10 +34,10 @@ use crate::guid::Guid;
 
 pub const IID: Guid = Guid::from_u128(0x2fbce1e5_902e_49e0_b9cf_ce0fba765348);
 
-/// The first slots of `filesystem`, up to `get_stats`. OxiBar only calls these, so the later
-/// slots are not declared; do not implement a filesystem with this struct.
+/// `filesystem` (v1), all 16 slots (`SDK\filesystem.h:60-115`). The two-argument `get_stats`
+/// overload is not virtual and takes no slot.
 #[repr(C)]
-pub struct FilesystemVtblPrefix {
+pub struct FilesystemVtbl {
 	pub base: ServiceBaseVtbl,
 	pub get_canonical_path: unsafe extern "C-unwind" fn(
 		this: *mut ServiceBase,
@@ -79,17 +79,45 @@ pub struct FilesystemVtblPrefix {
 		is_writeable: *mut bool,
 		abort: *mut AbortCallback,
 	),
+	pub relative_path_create: unsafe extern "C-unwind" fn(
+		this: *mut ServiceBase,
+		file_path: *const c_char,
+		playlist_path: *const c_char,
+		out: *mut StringBase,
+	) -> bool,
+	pub relative_path_parse: unsafe extern "C-unwind" fn(
+		this: *mut ServiceBase,
+		relative_path: *const c_char,
+		playlist_path: *const c_char,
+		out: *mut StringBase,
+	) -> bool,
+	pub create_directory: unsafe extern "C-unwind" fn(
+		this: *mut ServiceBase,
+		path: *const c_char,
+		abort: *mut AbortCallback,
+	),
+	/// `callback` is a `directory_callback &`, opaque here.
+	pub list_directory: unsafe extern "C-unwind" fn(
+		this: *mut ServiceBase,
+		path: *const c_char,
+		callback: *mut c_void,
+		abort: *mut AbortCallback,
+	),
+	pub supports_content_types: unsafe extern "C-unwind" fn(this: *mut ServiceBase) -> bool,
 }
 
 #[cfg(test)]
 mod tests {
 	use std::mem::offset_of;
 
-	use super::FilesystemVtblPrefix;
+	use super::FilesystemVtbl;
 
 	#[test]
-	fn get_stats_is_slot_10() {
-		assert_eq!(offset_of!(FilesystemVtblPrefix, is_our_path), 4 * 8);
-		assert_eq!(offset_of!(FilesystemVtblPrefix, get_stats), 10 * 8);
+	fn filesystem_vtbl_has_16_slots() {
+		assert_eq!(size_of::<FilesystemVtbl>(), 16 * 8);
+		assert_eq!(offset_of!(FilesystemVtbl, get_canonical_path), 3 * 8);
+		assert_eq!(offset_of!(FilesystemVtbl, get_stats), 10 * 8);
+		assert_eq!(offset_of!(FilesystemVtbl, list_directory), 14 * 8);
+		assert_eq!(offset_of!(FilesystemVtbl, supports_content_types), 15 * 8);
 	}
 }

@@ -11,7 +11,7 @@ use crate::abi::component::{Api, ApiVtbl, ServiceClassRef};
 use crate::abi::componentversion::ComponentVersionVtbl;
 use crate::abi::console::{self, ConsoleReceiverVtbl};
 use crate::abi::file::FileStats;
-use crate::abi::filesystem::{self, FilesystemVtblPrefix};
+use crate::abi::filesystem::{self, FilesystemVtbl};
 use crate::abi::initquit::InitQuitVtbl;
 use crate::abi::input::{DecoderVtbl, InputEntryVtbl};
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
@@ -509,9 +509,9 @@ impl FakeFilesystem {
 }
 
 unsafe impl ServiceImpl for FakeFilesystem {
-	type Vtbl = FilesystemVtblPrefix;
+	type Vtbl = FilesystemVtbl;
 	const IIDS: &'static [Guid] = &[filesystem::IID];
-	const VTBL: &'static FilesystemVtblPrefix = &FilesystemVtblPrefix {
+	const VTBL: &'static FilesystemVtbl = &FilesystemVtbl {
 		base: ServiceBaseVtbl::new::<Self>(),
 		get_canonical_path: filesystem_no_path,
 		is_our_path: filesystem_is_our_path,
@@ -521,7 +521,33 @@ unsafe impl ServiceImpl for FakeFilesystem {
 		move_file: filesystem_move,
 		is_remote: filesystem_is_remote,
 		get_stats: filesystem_get_stats,
+		relative_path_create: filesystem_no_relative_path,
+		relative_path_parse: filesystem_no_relative_path,
+		create_directory: filesystem_remove,
+		list_directory: filesystem_list_directory,
+		supports_content_types: filesystem_no_content_types,
 	};
+}
+
+unsafe extern "C-unwind" fn filesystem_no_relative_path(
+	_this: *mut ServiceBase,
+	_first: *const c_char,
+	_second: *const c_char,
+	_out: *mut StringBase,
+) -> bool {
+	false
+}
+
+unsafe extern "C-unwind" fn filesystem_list_directory(
+	_this: *mut ServiceBase,
+	_path: *const c_char,
+	_callback: *mut c_void,
+	_abort: *mut AbortCallback,
+) {
+}
+
+unsafe extern "C-unwind" fn filesystem_no_content_types(_this: *mut ServiceBase) -> bool {
+	false
 }
 
 unsafe extern "C-unwind" fn filesystem_no_path(
