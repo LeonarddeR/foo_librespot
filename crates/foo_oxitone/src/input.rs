@@ -13,7 +13,9 @@ use foxide2k::guid::Guid;
 use foxide2k::host::host;
 use foxide2k::input::{Input, OpenReason};
 
-use crate::tone::{CHUNK_FRAMES, DURATION_SECONDS, SAMPLE_RATE, Tone, ToneSpec, has_scheme, parse};
+use crate::tone::{
+	CHANNELS, CHUNK_FRAMES, DURATION_SECONDS, SAMPLE_RATE, Tone, ToneSpec, has_scheme, parse,
+};
 
 /// Makes foobar2000 throw one of its own C++ exceptions, by asking its filesystem about a file
 /// that does not exist, and returns it as the error to throw back: proof that Foxide2k can catch
@@ -35,8 +37,9 @@ fn host_check(abort: &Abort) -> Error {
 	}
 }
 
-/// The bitrate shown while a tone plays: that of CD audio, as the tone plays at 44.1 kHz stereo.
-const KBPS: &str = "1411";
+/// The bitrate shown while a tone plays: that of CD audio, 16-bit samples at the tone's rate
+/// and channels, 1411 kbit/s.
+const KBPS: u32 = SAMPLE_RATE * CHANNELS * 16 / 1000;
 
 /// One opened `oxitone://` track.
 pub struct ToneInput {
@@ -55,9 +58,10 @@ impl Input for ToneInput {
 
 	fn open(path: &str, _reason: OpenReason, abort: &Abort) -> Result<Self> {
 		match parse(path) {
-			Some(ToneSpec::Sine { hz }) => {
-				Ok(Self { tone: Tone::new(hz), buffer: Vec::with_capacity(CHUNK_FRAMES * 2) })
-			}
+			Some(ToneSpec::Sine { hz }) => Ok(Self {
+				tone: Tone::new(hz),
+				buffer: Vec::with_capacity(CHUNK_FRAMES * CHANNELS as usize),
+			}),
 			Some(ToneSpec::HostCheck) => Err(host_check(abort)),
 			#[cfg(feature = "test-panic")]
 			Some(ToneSpec::Panic) => panic!("oxitone://panic was opened"),
@@ -70,7 +74,7 @@ impl Input for ToneInput {
 		info.meta_set("artist", "foo_oxitone")?;
 		info.set_length(f64::from(DURATION_SECONDS))?;
 		info.info_set_int("samplerate", i64::from(SAMPLE_RATE))?;
-		info.info_set_int("channels", 2)?;
+		info.info_set_int("channels", i64::from(CHANNELS))?;
 		info.info_set("codec", "Sine")?;
 		info.info_set("encoding", "lossless")
 	}
@@ -86,7 +90,7 @@ impl Input for ToneInput {
 		if frames == 0 {
 			return Ok(false);
 		}
-		chunk.set_data(&self.buffer, frames, SAMPLE_RATE, 2, CHANNEL_MASK_STEREO)?;
+		chunk.set_data(&self.buffer, frames, SAMPLE_RATE, CHANNELS, CHANNEL_MASK_STEREO)?;
 		Ok(true)
 	}
 
@@ -103,6 +107,6 @@ impl Input for ToneInput {
 	/// Proves live info in a real foobar2000: the status bar shows the bitrate while a tone
 	/// plays, also after a seek.
 	fn live_info(&self) -> Vec<(String, String)> {
-		vec![("bitrate".to_owned(), KBPS.to_owned())]
+		vec![("bitrate".to_owned(), KBPS.to_string())]
 	}
 }

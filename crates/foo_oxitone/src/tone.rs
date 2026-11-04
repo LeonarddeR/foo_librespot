@@ -4,14 +4,16 @@ use std::f64::consts::PI;
 
 pub const SCHEME: &str = "oxitone://";
 pub const SAMPLE_RATE: u32 = 44_100;
+/// Stereo: every frame holds the same sample for left and right.
+pub const CHANNELS: u32 = 2;
 pub const DURATION_SECONDS: u32 = 10;
-pub const TOTAL_FRAMES: usize = 441_000;
+pub const TOTAL_FRAMES: usize = (SAMPLE_RATE * DURATION_SECONDS) as usize;
 /// -12 dBFS: clearly audible, never loud.
 pub const AMPLITUDE: f64 = 0.25;
 /// A tenth of a second per `decode_run`.
-pub const CHUNK_FRAMES: usize = 4_410;
+pub const CHUNK_FRAMES: usize = (SAMPLE_RATE / 10) as usize;
 /// The highest frequency below the Nyquist limit of 44.1 kHz.
-pub const MAX_HZ: u32 = 22_049;
+pub const MAX_HZ: u32 = SAMPLE_RATE / 2 - 1;
 
 /// What an `oxitone://` path asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,8 +76,7 @@ impl Tone {
 		for frame in self.next_frame..self.next_frame + frames {
 			#[allow(clippy::cast_precision_loss)]
 			let sample = AMPLITUDE * (step * frame as f64).sin();
-			out.push(sample);
-			out.push(sample);
+			out.extend(std::iter::repeat_n(sample, CHANNELS as usize));
 		}
 		self.next_frame += frames;
 		frames
