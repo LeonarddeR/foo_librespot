@@ -1357,6 +1357,16 @@ mod loader {
 			.with_file_name(format!("{name}.dll"))
 	}
 
+	/// Fails unless nextest runs this test, in its own process. A loaded component keeps one host
+	/// for the whole process, so tests that `cargo test` runs side by side as threads would
+	/// overwrite each other's fake foobar2000 and fail at random.
+	pub fn require_own_process() {
+		assert!(
+			std::env::var_os("NEXTEST").is_some(),
+			"the DLL tests need cargo nextest, which runs each test in its own process"
+		);
+	}
+
 	/// A component DLL loaded into a [`FakeApi`], as foobar2000 loads it.
 	pub struct LoadedComponent {
 		client: *mut Client,
@@ -1366,6 +1376,7 @@ mod loader {
 		/// Loads the component `name` this test build made (see [`built_dll`]) into a fresh
 		/// [`FakeApi`].
 		pub fn load_built(name: &str, override_var: &str) -> (&'static FakeApi, Self) {
+			require_own_process();
 			let dll = built_dll(name, override_var);
 			assert!(dll.exists(), "{} is missing", dll.display());
 			let api = FakeApi::new();
@@ -1448,6 +1459,14 @@ mod loader {
 
 	#[cfg(test)]
 	mod tests {
+		#[test]
+		#[should_panic(expected = "cargo nextest")]
+		fn loading_a_component_outside_nextest_says_why_it_cant() {
+			// SAFETY: nextest runs this test alone in its own process.
+			unsafe { std::env::remove_var("NEXTEST") };
+			super::require_own_process();
+		}
+
 		#[test]
 		fn the_built_dll_is_the_one_next_to_the_test_program() {
 			let exe = std::env::current_exe().unwrap();
