@@ -174,7 +174,7 @@ mod tests {
 		pump_messages();
 		assert!(!dialog.is_alive());
 		assert!(current().is_none());
-		assert_eq!(controller().state(), LoginState::LoggedIn(Some("Keith Getty".to_owned())));
+		assert_eq!(controller().state(), LoginState::LoggedIn("Keith Getty".to_owned()));
 	}
 
 	#[test]

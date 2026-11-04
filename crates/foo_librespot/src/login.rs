@@ -24,8 +24,8 @@ pub enum LoginState {
 	Asking,
 	/// Waiting for the user to confirm `DeviceCode` in a browser.
 	Confirming(DeviceCode),
-	/// The Spotify username, when the stored login has one.
-	LoggedIn(Option<String>),
+	/// Logged in, with the Spotify username; librespot always stores one with the login.
+	LoggedIn(String),
 	/// Why the last login didn't work.
 	Failed(String),
 	/// The user cancelled the last login. Shown as logged out, but playing doesn't ask again
@@ -72,15 +72,12 @@ pub fn view(state: &LoginState) -> LoginView {
 			code.user_code.clone(),
 			code.url.clone(),
 		),
-		LoginState::LoggedIn(Some(name)) => (
+		LoginState::LoggedIn(name) => (
 			"Log &out",
 			format!("Logged in to Spotify as {name}."),
 			NO_LOGIN.to_owned(),
 			String::new(),
 		),
-		LoginState::LoggedIn(None) => {
-			("Log &out", "Logged in to Spotify.".to_owned(), NO_LOGIN.to_owned(), String::new())
-		}
 		LoginState::Failed(message) => {
 			("&Log in", format!("Login failed: {message}."), NO_LOGIN.to_owned(), String::new())
 		}
@@ -172,7 +169,7 @@ impl LoginController {
 			return;
 		}
 		let state = match (&inner.state, username) {
-			(_, Ok(Some(name))) => LoginState::LoggedIn(Some(name)),
+			(_, Ok(Some(name))) => LoginState::LoggedIn(name),
 			// Shown at once, rather than "Not logged in" until the user presses Log in.
 			(_, Err(error)) => LoginState::Failed(error.to_string()),
 			(LoginState::Failed(_) | LoginState::Cancelled, Ok(None)) => return,
@@ -233,7 +230,7 @@ impl LoginController {
 				if inner.generation == generation && inner.state.is_running() {
 					inner.task = None;
 					let state = match result {
-						Ok(name) => LoginState::LoggedIn(Some(name)),
+						Ok(name) => LoginState::LoggedIn(name),
 						Err(error) => LoginState::Failed(error.to_string()),
 					};
 					shared.set(inner, state);
@@ -303,7 +300,7 @@ impl LoginController {
 			// Another number means `login` was cancelled, perhaps replaced by another since.
 			let ours = inner.generation == login;
 			match &inner.state {
-				LoginState::LoggedIn(name) => return Ok(name.clone().unwrap_or_default()),
+				LoginState::LoggedIn(name) => return Ok(name.clone()),
 				LoginState::Failed(message) if ours => {
 					return Err(CoreError::Login(LoginError::Failed(message.clone())));
 				}
@@ -432,11 +429,10 @@ mod tests {
 		assert_eq!(confirming.page, "https://spotify.com/pair?code=KKGT-2024");
 		assert!(confirming.confirming);
 
-		let named = view(&LoginState::LoggedIn(Some("Keith Getty".to_owned())));
+		let named = view(&LoginState::LoggedIn("Keith Getty".to_owned()));
 		assert_eq!(named.button, "Log &out");
 		assert_eq!(named.status, "Logged in to Spotify as Keith Getty.");
 		assert_eq!(named.code, "No login in progress.");
-		assert_eq!(view(&LoginState::LoggedIn(None)).status, "Logged in to Spotify.");
 
 		let failed = view(&LoginState::Failed("the login was declined in the browser".to_owned()));
 		assert_eq!(failed.button, "&Log in");
@@ -484,7 +480,7 @@ mod tests {
 		controller.press();
 		fake.send_code(code());
 		fake.finish_login(Ok("Keith Getty".to_owned()));
-		assert_eq!(controller.state(), LoginState::LoggedIn(Some("Keith Getty".to_owned())));
+		assert_eq!(controller.state(), LoginState::LoggedIn("Keith Getty".to_owned()));
 		assert_eq!(view(&controller.state()).status, "Logged in to Spotify as Keith Getty.");
 	}
 
@@ -539,7 +535,7 @@ mod tests {
 			user.finish_login(Ok("Keith Getty".to_owned()));
 		});
 		controller.refresh();
-		assert_eq!(controller.state(), LoginState::LoggedIn(Some("Keith Getty".to_owned())));
+		assert_eq!(controller.state(), LoginState::LoggedIn("Keith Getty".to_owned()));
 	}
 
 	#[test]
@@ -572,7 +568,7 @@ mod tests {
 		assert_eq!(controller.state(), LoginState::LoggedOut);
 		fake.set_username(Some("Kristyn Getty"));
 		controller.refresh();
-		assert_eq!(controller.state(), LoginState::LoggedIn(Some("Kristyn Getty".to_owned())));
+		assert_eq!(controller.state(), LoginState::LoggedIn("Kristyn Getty".to_owned()));
 	}
 
 	#[test]
@@ -582,7 +578,7 @@ mod tests {
 		controller.start();
 		fake.store_login_before_answering("Keith Getty");
 		controller.cancel();
-		assert_eq!(controller.state(), LoginState::LoggedIn(Some("Keith Getty".to_owned())));
+		assert_eq!(controller.state(), LoginState::LoggedIn("Keith Getty".to_owned()));
 	}
 
 	#[test]
@@ -746,7 +742,7 @@ mod tests {
 		controller.unsubscribe(id);
 		fake.send_code(code());
 		fake.finish_login(Ok("Keith Getty".to_owned()));
-		assert_eq!(controller.state(), LoginState::LoggedIn(Some("Keith Getty".to_owned())));
+		assert_eq!(controller.state(), LoginState::LoggedIn("Keith Getty".to_owned()));
 	}
 
 	#[test]
