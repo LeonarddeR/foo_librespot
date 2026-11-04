@@ -13,7 +13,6 @@ use crate::cxx::try_host;
 use crate::error::Result;
 use crate::file_info::FileInfo;
 use crate::guid::Guid;
-use crate::input::release_by_value;
 use crate::service::{ServiceImpl, ServiceObject, new_service};
 
 #[cfg(test)]
@@ -60,7 +59,7 @@ unsafe extern "C-unwind" fn apply_filter(
 ) -> bool {
 	unsafe {
 		// Released first, so a failure below can't leak the caller's track.
-		release_by_value(location);
+		drop(location);
 		guard(|| {
 			let mut info = FileInfo::from_raw(info);
 			for (name, value) in &ServiceObject::<InfoFilter>::value(this).fields {

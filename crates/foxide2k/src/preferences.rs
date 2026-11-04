@@ -146,9 +146,8 @@ unsafe extern "C-unwind" fn instantiate<T: PreferencesPage>(
 ) -> *mut *mut ServiceBase {
 	unsafe {
 		guard(|| {
-			// Passed by value: keep a reference of our own, then destroy the caller's temporary.
-			let kept = ServicePtr::from_raw_add_ref(*callback);
-			drop(ServicePtr::from_raw_owned(*callback));
+			// Passed by value: the reference is ours to keep.
+			let kept = callback.into_ptr();
 			let changed = PageChanged(kept.ok_or_else(|| {
 				crate::error::Error::new(
 					crate::cxx::ExceptionKind::InvalidParams,

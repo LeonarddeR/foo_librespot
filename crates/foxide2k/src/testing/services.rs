@@ -167,12 +167,9 @@ unsafe impl ServiceImpl for FakeMainThread {
 
 unsafe extern "C-unwind" fn main_thread_add(this: *mut ServiceBase, callback: ByValueServicePtr) {
 	let state = &unsafe { ServiceObject::<FakeMainThread>::value(this) }.0;
-	unsafe {
-		// Keep a reference of our own, then destroy the caller's temporary, as a callee must.
-		if let Some(kept) = ServicePtr::from_raw_add_ref(*callback) {
-			state.main_thread.lock().unwrap_or_else(PoisonError::into_inner).push(kept);
-		}
-		drop(ServicePtr::from_raw_owned(*callback));
+	// Passed by value: the reference is ours to keep, as a callee's.
+	if let Some(kept) = callback.into_ptr() {
+		state.main_thread.lock().unwrap_or_else(PoisonError::into_inner).push(kept);
 	}
 }
 

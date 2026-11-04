@@ -63,7 +63,7 @@ pub const INFO_WRITER: Guid = Guid::from_u128(0xfe40ff66_64c9_4234_b639_028dc806
 
 /// `service_ptr_t<T>` passed by value: MSVC passes a pointer to a temporary the caller owns, and
 /// the callee destroys it, which here means releasing the pointer it holds.
-pub type ByValueServicePtr = *mut *mut ServiceBase;
+pub use crate::service::ByValueServicePtr;
 
 /// `input_entry_v4` (`SDK\input.h:232-337, 615`). `input_entry_v3` re-declares the three
 /// `open_for_*` methods as overrides, which adds no slots.

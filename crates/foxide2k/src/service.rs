@@ -153,6 +153,42 @@ pub(crate) unsafe fn free_from_release<T>(object: *mut T) {
 	}
 }
 
+/// A `service_ptr_t` passed by value. MSVC passes a pointer to a temporary the caller owns, and the
+/// callee destroys it, which here means releasing the reference it holds. Dropping this does that,
+/// so a slot that takes one releases it on every path, and [`Self::into_ptr`] takes the reference
+/// over instead. A caller moves it into foobar2000's call, and foobar2000 destroys it.
+#[repr(transparent)]
+pub struct ByValueServicePtr(*mut *mut ServiceBase);
+
+impl ByValueServicePtr {
+	/// # Safety
+	/// `temporary` must point to a `service_ptr_t` holding one reference or null, which the callee
+	/// is meant to destroy.
+	pub const unsafe fn for_callee(temporary: *mut *mut ServiceBase) -> Self {
+		Self(temporary)
+	}
+
+	/// The reference, which the caller now owns; `None` when the pointer is null.
+	pub fn into_ptr(self) -> Option<ServicePtr> {
+		let this = std::mem::ManuallyDrop::new(self);
+		this.take()
+	}
+
+	fn take(&self) -> Option<ServicePtr> {
+		if self.0.is_null() {
+			return None;
+		}
+		// SAFETY: `for_callee`'s contract; the temporary is left null, so it is released once.
+		unsafe { ServicePtr::from_raw_owned(std::mem::replace(&mut *self.0, std::ptr::null_mut())) }
+	}
+}
+
+impl Drop for ByValueServicePtr {
+	fn drop(&mut self) {
+		drop(self.take());
+	}
+}
+
 unsafe extern "C-unwind" fn add_ref<T: ServiceImpl>(this: *mut ServiceBase) -> i32 {
 	let object = this.cast::<ServiceObject<T>>();
 	unsafe {
@@ -224,7 +260,9 @@ mod tests {
 	use std::sync::Arc;
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
-	use super::{ServiceImpl, ServicePtr, Singleton, free_from_release, new_service};
+	use super::{
+		ByValueServicePtr, ServiceImpl, ServicePtr, Singleton, free_from_release, new_service,
+	};
 	use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 	use crate::guid::Guid;
 
@@ -295,6 +333,30 @@ mod tests {
 		type Vtbl = ServiceBaseVtbl;
 		const IIDS: &'static [Guid] = &[IID_A];
 		const VTBL: &'static ServiceBaseVtbl = &ServiceBaseVtbl::new::<Self>();
+	}
+
+	#[test]
+	fn a_by_value_argument_releases_its_reference_when_dropped() {
+		let drops = Arc::new(AtomicUsize::new(0));
+		let mut temporary = new_service(ServiceA { drops: Arc::clone(&drops) }).into_raw();
+		drop(unsafe { ByValueServicePtr::for_callee(&raw mut temporary) });
+		assert_eq!(drops.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
+	fn into_ptr_hands_the_reference_to_the_slot() {
+		let drops = Arc::new(AtomicUsize::new(0));
+		let mut temporary = new_service(ServiceA { drops: Arc::clone(&drops) }).into_raw();
+		let owned = unsafe { ByValueServicePtr::for_callee(&raw mut temporary) }.into_ptr();
+		assert_eq!(drops.load(Ordering::SeqCst), 0);
+		drop(owned);
+		assert_eq!(drops.load(Ordering::SeqCst), 1);
+	}
+
+	#[test]
+	fn a_null_by_value_argument_holds_nothing() {
+		let mut temporary = std::ptr::null_mut();
+		assert!(unsafe { ByValueServicePtr::for_callee(&raw mut temporary) }.into_ptr().is_none());
 	}
 
 	struct ServiceB {

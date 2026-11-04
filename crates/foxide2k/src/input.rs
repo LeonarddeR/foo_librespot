@@ -73,13 +73,6 @@ pub fn entry_service<T: Input>() -> ServicePtr {
 	new_service(InputEntry::<T>(PhantomData))
 }
 
-/// Releases a `service_ptr_t` that foobar2000 passed by value, as the callee must under MSVC.
-pub(crate) unsafe fn release_by_value(slot: ByValueServicePtr) {
-	if !slot.is_null() {
-		unsafe { drop(ServicePtr::from_raw_owned(*slot)) };
-	}
-}
-
 unsafe fn path_of<'a>(path: *const c_char) -> &'a str {
 	if path.is_null() { "" } else { unsafe { CStr::from_ptr(path) }.to_str().unwrap_or("") }
 }
@@ -148,7 +141,7 @@ unsafe extern "C-unwind" fn open_for<T: Input, const WHAT: u8>(
 	abort: *mut AbortCallback,
 ) {
 	unsafe {
-		release_by_value(file_hint);
+		drop(file_hint);
 		guard(|| {
 			let what_for = match WHAT {
 				0 => DECODER,
@@ -170,7 +163,7 @@ unsafe extern "C-unwind" fn get_extended_data(
 	_out: *mut c_void,
 	_abort: *mut AbortCallback,
 ) {
-	unsafe { release_by_value(file_hint) };
+	drop(file_hint);
 }
 
 unsafe extern "C-unwind" fn get_flags(_this: *mut ServiceBase) -> u32 {
@@ -211,8 +204,8 @@ unsafe extern "C-unwind" fn open_v3<T: Input>(
 	abort: *mut AbortCallback,
 ) -> *mut *mut ServiceBase {
 	unsafe {
-		release_by_value(hint);
-		release_by_value(logger);
+		drop(hint);
+		drop(logger);
 		let service = guard(|| open::<T>(&*what_for, path, abort));
 		// The hidden return slot is uninitialised: write, don't release what was there.
 		ret.write(service.into_raw());
@@ -395,7 +388,7 @@ unsafe extern "C-unwind" fn run_raw(
 }
 
 unsafe extern "C-unwind" fn set_logger(_this: *mut ServiceBase, logger: ByValueServicePtr) {
-	unsafe { release_by_value(logger) };
+	drop(logger);
 }
 
 unsafe extern "C-unwind" fn set_pause(_this: *mut ServiceBase, _paused: bool) {}

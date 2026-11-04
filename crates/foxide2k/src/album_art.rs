@@ -101,9 +101,7 @@ unsafe extern "C-unwind" fn open<T: AlbumArt>(
 	unsafe {
 		guard(|| {
 			// Passed by value: ours to release. Spotify paths aren't files, so it is unused.
-			if !file.is_null() {
-				drop(ServicePtr::from_raw_owned(*file));
-			}
+			drop(file);
 			let instance =
 				new_service(Instance::<T> { path: text_of(path).to_owned(), _art: PhantomData });
 			// The hidden return slot is uninitialized storage for a service_ptr_t.

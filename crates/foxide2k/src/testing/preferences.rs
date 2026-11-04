@@ -11,7 +11,7 @@ use crate::abi::preferences::{
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 use crate::cxx::try_host;
 use crate::guid::Guid;
-use crate::service::{ServiceImpl, ServiceObject, ServicePtr, new_service};
+use crate::service::{ByValueServicePtr, ServiceImpl, ServiceObject, ServicePtr, new_service};
 
 /// A `preferences_page_callback` that counts `on_state_changed` calls.
 pub struct FakePageCallback {
@@ -117,7 +117,7 @@ impl PreferencesHandle {
 				self.0.as_raw(),
 				&raw mut out,
 				parent as *mut c_void,
-				&raw mut temporary,
+				ByValueServicePtr::for_callee(&raw mut temporary),
 			);
 		})
 		.expect("instantiate threw");

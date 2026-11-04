@@ -74,7 +74,7 @@ unsafe extern "C-unwind" fn open<T: PlaylistLoader>(
 	unsafe {
 		guard(|| {
 			// Passed by value: this reference is ours to release, whatever happens.
-			let callback = ServicePtr::from_raw_owned(*callback).ok_or_else(|| {
+			let callback = callback.into_ptr().ok_or_else(|| {
 				Error::new(ExceptionKind::InvalidParams, "no playlist_loader_callback")
 			})?;
 			let abort = Abort::from_raw(abort);

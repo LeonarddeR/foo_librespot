@@ -7,7 +7,7 @@ use crate::abi::live_info::{FileInfoFilterVtbl, InputLiveInfo};
 use crate::abi::pfc_list::{ListBase, ListBaseConst, ListBaseVtbl};
 use crate::abi::service::ServiceBase;
 use crate::cxx::{HostException, try_host};
-use crate::service::ServicePtr;
+use crate::service::{ByValueServicePtr, ServicePtr};
 use crate::testing::FakeFileInfo;
 
 /// A `pfc::list_base_t<input_live_info_t>`. Like pfc's own lists, it copies the items it is
@@ -41,7 +41,12 @@ impl FakeLiveInfoList {
 		let mut location: *mut ServiceBase = std::ptr::null_mut();
 		let stats = FileStats::INVALID;
 		try_host(|| unsafe {
-			(vtbl.apply_filter)(payload, &raw mut location, &raw const stats, info.as_raw())
+			(vtbl.apply_filter)(
+				payload,
+				ByValueServicePtr::for_callee(&raw mut location),
+				&raw const stats,
+				info.as_raw(),
+			)
 		})
 	}
 }

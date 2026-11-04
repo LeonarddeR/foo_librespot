@@ -24,7 +24,7 @@ use crate::abi::string_base::StringBase;
 use crate::cxx::{ExceptionKind, HostException, try_host};
 use crate::guid::Guid;
 use crate::host;
-use crate::service::{ServiceImpl, ServiceObject, ServicePtr, new_service};
+use crate::service::{ByValueServicePtr, ServiceImpl, ServiceObject, ServicePtr, new_service};
 
 #[cfg(feature = "testing")]
 pub use loader::{LoadedComponent, built_dll};
@@ -611,9 +611,9 @@ impl InputEntryHandle {
 				self.0.as_raw(),
 				ret.as_mut_ptr(),
 				what_for,
-				&raw mut hint,
+				ByValueServicePtr::for_callee(&raw mut hint),
 				path.as_ptr(),
-				&raw mut logger,
+				ByValueServicePtr::for_callee(&raw mut logger),
 				abort.as_raw(),
 			);
 		})?;
@@ -635,7 +635,7 @@ impl InputEntryHandle {
 			(self.vtbl().open_for_decoding)(
 				self.0.as_raw(),
 				&raw mut out,
-				&raw mut hint,
+				ByValueServicePtr::for_callee(&raw mut hint),
 				path.as_ptr(),
 				abort.as_raw(),
 			);
@@ -776,8 +776,13 @@ impl DecoderHandle {
 	/// `set_logger`, passing `logger` by value: the decoder must release it.
 	pub fn set_logger(&self, logger: ServicePtr) {
 		let mut logger = logger.into_raw();
-		try_host(|| unsafe { (self.vtbl().set_logger)(self.0.as_raw(), &raw mut logger) })
-			.expect("set_logger threw");
+		try_host(|| unsafe {
+			(self.vtbl().set_logger)(
+				self.0.as_raw(),
+				ByValueServicePtr::for_callee(&raw mut logger),
+			);
+		})
+		.expect("set_logger threw");
 	}
 }
 
@@ -1219,7 +1224,13 @@ impl PlaylistLoaderHandle {
 		let mut callback = callback.into_raw();
 		let callback_slot = &raw mut callback;
 		try_host(|| unsafe {
-			(self.vtbl().open)(raw, path.as_ptr(), &raw const file, callback_slot, abort.as_raw());
+			(self.vtbl().open)(
+				raw,
+				path.as_ptr(),
+				&raw const file,
+				ByValueServicePtr::for_callee(callback_slot),
+				abort.as_raw(),
+			);
 		})
 	}
 
@@ -1286,7 +1297,13 @@ impl AlbumArtHandle {
 		let mut out: *mut ServiceBase = std::ptr::null_mut();
 		let out_slot = &raw mut out;
 		try_host(|| unsafe {
-			(self.vtbl().open)(raw, out_slot, hint_slot, path.as_ptr(), abort.as_raw());
+			(self.vtbl().open)(
+				raw,
+				out_slot,
+				ByValueServicePtr::for_callee(hint_slot),
+				path.as_ptr(),
+				abort.as_raw(),
+			);
 		})?;
 		Ok(AlbumArtInstanceHandle(
 			unsafe { ServicePtr::from_raw_owned(out) }.expect("open gave no instance"),

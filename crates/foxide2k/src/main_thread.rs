@@ -15,7 +15,7 @@ use crate::cxx::{ExceptionKind, try_host};
 use crate::error::{Error, Result};
 use crate::guid::Guid;
 use crate::host::host;
-use crate::service::{ServiceImpl, ServiceObject, new_service};
+use crate::service::{ByValueServicePtr, ServiceImpl, ServiceObject, new_service};
 
 type Work = Box<dyn FnOnce() + Send>;
 
@@ -59,7 +59,7 @@ pub fn run(work: Work) -> Result<()> {
 	let mut temporary = new_service(MainThreadWork(Mutex::new(Some(work)))).into_raw();
 	try_host(|| unsafe {
 		let vtbl = &*(*raw).vtbl.cast::<MainThreadCallbackManagerVtbl>();
-		(vtbl.add_callback)(raw, &raw mut temporary);
+		(vtbl.add_callback)(raw, ByValueServicePtr::for_callee(&raw mut temporary));
 	})?;
 	Ok(())
 }
