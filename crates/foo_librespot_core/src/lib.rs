@@ -19,6 +19,7 @@ pub mod link;
 pub mod login;
 pub mod metadata;
 pub mod profile;
+pub mod resolve;
 pub mod runtime;
 pub mod session;
 
