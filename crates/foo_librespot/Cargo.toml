@@ -28,7 +28,7 @@ workspace = true
 pre-release-hook = [
 	"cmd",
 	"/c",
-	"cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo build --workspace --all-features && cargo nextest run --workspace --all-features",
+	"cargo fmt --all -- --check && cargo lint && cargo build --workspace --all-features && cargo nextest run --workspace --all-features",
 ]
 pre-release-replacements = [
 	{ file = "../../CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}", exactly = 1 },
