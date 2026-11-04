@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use foo_librespot_core::audio::decoder::PcmDecoder;
+use foo_librespot_core::audio::format::FileFormat;
 use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
@@ -91,6 +92,8 @@ struct State {
 	logouts: AtomicUsize,
 	/// While set, Spotify calls fail with `NotLoggedIn` until a login is stored.
 	require_login: AtomicBool,
+	/// Runs once, during the next read of the stored login, after the value was read.
+	during_username_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// A login the test answers itself, with [`FakeBackend::send_code`] and
@@ -144,6 +147,12 @@ impl FakeBackend {
 	/// Spotify calls fail with `NotLoggedIn` until a login is stored, as for a new user.
 	pub fn require_login(&self) {
 		self.0.require_login.store(true, Ordering::SeqCst);
+	}
+
+	/// Runs `action` once, during the next read of the stored login, as another thread could.
+	pub fn during_username_read(&self, action: impl FnOnce() + Send + 'static) {
+		*self.0.during_username_read.lock().unwrap_or_else(PoisonError::into_inner) =
+			Some(Box::new(action));
 	}
 
 	/// The stored login's username, as if a login had happened before.
@@ -274,7 +283,13 @@ impl Backend for FakeBackend {
 	}
 
 	fn username(&self) -> Option<String> {
-		self.0.username.lock().unwrap_or_else(PoisonError::into_inner).clone()
+		let username = self.0.username.lock().unwrap_or_else(PoisonError::into_inner).clone();
+		let during =
+			self.0.during_username_read.lock().unwrap_or_else(PoisonError::into_inner).take();
+		if let Some(action) = during {
+			action();
+		}
+		username
 	}
 }
 
@@ -306,13 +321,9 @@ impl PcmTrack for FixtureTrack {
 		self.decoder.seek(frame)
 	}
 
-	fn codec(&self) -> &'static str {
-		"Vorbis"
-	}
-
-	/// Not the preferred 320, so tests see the file's own bitrate.
-	fn kbps(&self) -> Option<u32> {
-		Some(160)
+	/// Not the preferred 320 kbit/s, so tests see the file's own bitrate.
+	fn file_format(&self) -> FileFormat {
+		FileFormat { codec: "Vorbis", kbps: Some(160) }
 	}
 }
 
@@ -358,10 +369,12 @@ pub fn device_code() -> DeviceCode {
 	}
 }
 
-/// Plays the user: once `logins` logins have started, confirms the latest in the browser.
-pub fn confirm_login_when_started(
+/// Runs `action` on another thread once `logins` logins have started, as the user or Spotify
+/// would answer them.
+fn once_logins_started(
 	fake: &FakeBackend,
 	logins: usize,
+	action: impl FnOnce(&FakeBackend) + Send + 'static,
 ) -> std::thread::JoinHandle<()> {
 	let fake = fake.clone();
 	std::thread::spawn(move || {
@@ -370,22 +383,32 @@ pub fn confirm_login_when_started(
 			assert!(std::time::Instant::now() < deadline, "no login started");
 			std::thread::sleep(std::time::Duration::from_millis(5));
 		}
+		action(&fake);
+	})
+}
+
+/// Plays the user: once `logins` logins have started, confirms the latest in the browser.
+pub fn confirm_login_when_started(
+	fake: &FakeBackend,
+	logins: usize,
+) -> std::thread::JoinHandle<()> {
+	once_logins_started(fake, logins, |fake| {
 		fake.send_code(device_code());
 		fake.finish_login(Ok("Keith Getty".to_owned()));
 	})
 }
 
+/// Plays Spotify: once a login has started, fails it, as a login declined in the browser does.
+pub fn fail_login_when_started(fake: &FakeBackend) -> std::thread::JoinHandle<()> {
+	once_logins_started(fake, 1, |fake| {
+		let declined = foo_librespot_core::login::LoginError::Failed("declined".to_owned());
+		fake.finish_login(Err(CoreError::Login(declined)));
+	})
+}
+
 /// Plays the user: once a login has started, cancels it, as Close in the login window does.
 pub fn cancel_login_when_started(fake: &FakeBackend) -> std::thread::JoinHandle<()> {
-	let fake = fake.clone();
-	std::thread::spawn(move || {
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		while fake.logins_started() == 0 {
-			assert!(std::time::Instant::now() < deadline, "no login started");
-			std::thread::sleep(std::time::Duration::from_millis(5));
-		}
-		crate::login::controller().cancel();
-	})
+	once_logins_started(fake, 1, |_| crate::login::controller().cancel())
 }
 
 /// Lets another thread press Stop on a `FakeAbort` the test keeps alive.

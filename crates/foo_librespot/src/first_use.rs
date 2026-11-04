@@ -9,7 +9,7 @@ use foxide2k::console;
 use foxide2k::host::host;
 use foxide2k::main_thread;
 
-use crate::login::controller;
+use crate::login::{LoginState, controller};
 use crate::login_window;
 
 /// Shows the login window. Called from any thread.
@@ -52,29 +52,23 @@ pub fn install_prompt(prompt: Box<dyn LoginPrompt>) {
 	assert!(PROMPT.set(prompt).is_ok(), "a prompt was already in use");
 }
 
-/// Starts a login, unless one is running, and shows the login window. Returns the login.
-pub fn prompt_login() -> u64 {
-	let login = controller().start();
-	prompt().show();
-	login
-}
-
 /// Starts a login and waits until the user confirms it, cancels it, or foobar2000 aborts.
 /// On the main thread it only shows the window: waiting there would freeze the window it waits
 /// for.
 pub fn login_on_first_use(is_aborting: &dyn Fn() -> bool) -> Result<(), CoreError> {
-	let login = prompt_login();
+	let login = controller().start();
+	prompt().show();
 	if host().is_main_thread() {
 		return Err(CoreError::NotLoggedIn);
 	}
 	controller().wait(login, is_aborting).map(drop)
 }
 
-/// [`login_on_first_use`] for a play that found the user logged out. Once the user has
-/// cancelled a login, playing fails without asking again, so a playlist doesn't reopen the
+/// [`login_on_first_use`] for a play that found the user logged out. Once a login was
+/// cancelled or failed, playing fails without asking again, so a playlist doesn't reopen the
 /// window for each of its tracks; adding a link or pressing Log in asks again.
 pub fn login_to_play(is_aborting: &dyn Fn() -> bool) -> Result<(), CoreError> {
-	if controller().declined() {
+	if matches!(controller().state(), LoginState::Cancelled | LoginState::Failed(_)) {
 		return Err(CoreError::NotLoggedIn);
 	}
 	login_on_first_use(is_aborting)

@@ -16,7 +16,7 @@ use foxide2k::dialog::notify::IDCANCEL;
 use foxide2k::dialog::style::{
 	DS_CENTER, DS_MODALFRAME, WS_CAPTION, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
 };
-use foxide2k::dialog::template::{ControlClass, DialogTemplate};
+use foxide2k::dialog::template::{ControlClass, DialogTemplate, shell_font};
 use foxide2k::error::Result;
 use foxide2k::main_thread::{add_modeless, remove_modeless};
 
@@ -31,7 +31,7 @@ pub fn window_template() -> DialogTemplate {
 		title: "Log in to Spotify".to_owned(),
 		cx: 260,
 		cy: 130,
-		font: (8, "MS Shell Dlg".to_owned()),
+		font: shell_font(),
 		items,
 	}
 }
@@ -206,7 +206,7 @@ mod tests {
 		let dialog = open(hidden_window()).unwrap();
 		send_close(&dialog);
 		pump_messages();
-		assert_eq!(controller().state(), LoginState::LoggedOut);
+		assert_eq!(controller().state(), LoginState::Cancelled);
 		assert!(fake.last_login_cancelled());
 		assert!(!dialog.is_alive());
 		assert!(current().is_none());

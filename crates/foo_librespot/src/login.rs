@@ -28,6 +28,9 @@ pub enum LoginState {
 	LoggedIn(Option<String>),
 	/// Why the last login didn't work.
 	Failed(String),
+	/// The user cancelled the last login. Shown as logged out, but playing doesn't ask again
+	/// until a login starts.
+	Cancelled,
 }
 
 impl LoginState {
@@ -52,37 +55,37 @@ pub struct LoginView {
 const NO_LOGIN: &str = "No login in progress.";
 
 pub fn view(state: &LoginState) -> LoginView {
-	if let LoginState::Confirming(code) = state {
-		return LoginView {
-			button: "&Cancel login",
-			status:
-				"Press Open browser, or open the page below yourself, and confirm the code there."
-					.to_owned(),
-			code: code.user_code.clone(),
-			page: code.url.clone(),
-			confirming: true,
-		};
-	}
-	let (button, status, code) = match state {
-		LoginState::LoggedOut => {
-			("&Log in", "Not logged in to Spotify.".to_owned(), NO_LOGIN.to_owned())
+	let (button, status, code, page) = match state {
+		LoginState::LoggedOut | LoginState::Cancelled => {
+			("&Log in", "Not logged in to Spotify.".to_owned(), NO_LOGIN.to_owned(), String::new())
 		}
-		LoginState::Asking | LoginState::Confirming(_) => (
+		LoginState::Asking => (
 			"&Cancel login",
 			"Asking Spotify for a login code…".to_owned(),
 			"Waiting for Spotify's code…".to_owned(),
+			String::new(),
 		),
-		LoginState::LoggedIn(Some(name)) => {
-			("Log &out", format!("Logged in to Spotify as {name}."), NO_LOGIN.to_owned())
-		}
+		LoginState::Confirming(code) => (
+			"&Cancel login",
+			"Press Open browser, or open the page below yourself, and confirm the code there."
+				.to_owned(),
+			code.user_code.clone(),
+			code.url.clone(),
+		),
+		LoginState::LoggedIn(Some(name)) => (
+			"Log &out",
+			format!("Logged in to Spotify as {name}."),
+			NO_LOGIN.to_owned(),
+			String::new(),
+		),
 		LoginState::LoggedIn(None) => {
-			("Log &out", "Logged in to Spotify.".to_owned(), NO_LOGIN.to_owned())
+			("Log &out", "Logged in to Spotify.".to_owned(), NO_LOGIN.to_owned(), String::new())
 		}
 		LoginState::Failed(message) => {
-			("&Log in", format!("Login failed: {message}."), NO_LOGIN.to_owned())
+			("&Log in", format!("Login failed: {message}."), NO_LOGIN.to_owned(), String::new())
 		}
 	};
-	LoginView { button, status, code, page: String::new(), confirming: false }
+	LoginView { button, status, code, page, confirming: matches!(state, LoginState::Confirming(_)) }
 }
 
 type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -95,8 +98,8 @@ struct Inner {
 	generation: u64,
 	subscribers: Vec<(u64, Notify)>,
 	next_subscriber: u64,
-	/// Set when the user cancels a login, until another starts.
-	declined: bool,
+	/// Counts state changes, so a read made outside the lock can tell it went stale.
+	changes: u64,
 }
 
 struct Shared {
@@ -115,6 +118,7 @@ impl Shared {
 	fn set(&self, mut inner: MutexGuard<'_, Inner>, state: LoginState) {
 		let ended = inner.state.is_running() && !state.is_running();
 		inner.state = state;
+		inner.changes += 1;
 		let subscribers: Vec<Notify> =
 			inner.subscribers.iter().map(|(_, notify)| Arc::clone(notify)).collect();
 		drop(inner);
@@ -140,7 +144,7 @@ impl LoginController {
 				generation: 0,
 				subscribers: Vec::new(),
 				next_subscriber: 0,
-				declined: false,
+				changes: 0,
 			}),
 			ended: Condvar::new(),
 			open_url,
@@ -151,15 +155,25 @@ impl LoginController {
 		self.0.lock().state.clone()
 	}
 
-	/// Reads the stored login, unless a login is running. A failure stays shown until a login
-	/// is stored.
+	/// Reads the stored login, unless a login is running. A failure or a cancel stays shown
+	/// until a login is stored.
 	pub fn refresh(&self) {
+		let changes = {
+			let inner = self.0.lock();
+			if inner.state.is_running() {
+				return;
+			}
+			inner.changes
+		};
+		// Read without the lock: a login may end meanwhile, and then the read is stale.
 		let username = backend().username();
 		let inner = self.0.lock();
+		if inner.changes != changes {
+			return;
+		}
 		let state = match (&inner.state, username) {
-			(running, _) if running.is_running() => return,
 			(_, Some(name)) => LoginState::LoggedIn(Some(name)),
-			(LoginState::Failed(_), None) => return,
+			(LoginState::Failed(_) | LoginState::Cancelled, None) => return,
 			(_, None) => LoginState::LoggedOut,
 		};
 		if inner.state != state {
@@ -171,7 +185,7 @@ impl LoginController {
 	pub fn press(&self) {
 		let state = self.state();
 		match state {
-			LoginState::LoggedOut | LoginState::Failed(_) => {
+			LoginState::LoggedOut | LoginState::Failed(_) | LoginState::Cancelled => {
 				self.begin();
 			}
 			LoginState::Asking | LoginState::Confirming(_) => self.cancel(),
@@ -183,23 +197,20 @@ impl LoginController {
 	/// [`Self::wait`] for: the one it started, or else the one running or just ended.
 	pub fn start(&self) -> u64 {
 		self.refresh();
-		if matches!(self.state(), LoginState::LoggedOut | LoginState::Failed(_))
-			&& let Some(login) = self.begin()
-		{
-			return login;
+		match self.state() {
+			LoginState::LoggedOut | LoginState::Failed(_) | LoginState::Cancelled => self.begin(),
+			_ => self.0.lock().generation,
 		}
-		self.0.lock().generation
 	}
 
-	/// Starts a login unless one is running, and returns it.
-	fn begin(&self) -> Option<u64> {
+	/// Starts a login unless one is running, and returns the one that runs.
+	fn begin(&self) -> u64 {
 		let generation = {
 			let mut inner = self.0.lock();
 			if inner.state.is_running() {
-				return None;
+				return inner.generation;
 			}
 			inner.generation += 1;
-			inner.declined = false;
 			let generation = inner.generation;
 			self.0.set(inner, LoginState::Asking);
 			generation
@@ -244,7 +255,7 @@ impl LoginController {
 			}
 			Err(_) => {}
 		}
-		Some(generation)
+		generation
 	}
 
 	/// Cancels a running login; otherwise does nothing.
@@ -254,9 +265,8 @@ impl LoginController {
 			return;
 		}
 		inner.generation += 1;
-		inner.declined = true;
 		let task = inner.task.take();
-		self.0.set(inner, LoginState::LoggedOut);
+		self.0.set(inner, LoginState::Cancelled);
 		if let Some(task) = task {
 			task.cancel();
 		}
@@ -269,12 +279,6 @@ impl LoginController {
 		};
 		let inner = self.0.lock();
 		self.0.set(inner, state);
-	}
-
-	/// Whether the user cancelled the last login, so playing shouldn't ask again; adding a
-	/// link or pressing Log in starts a new one.
-	pub fn declined(&self) -> bool {
-		self.0.lock().declined
 	}
 
 	/// Opens Spotify's page for the code being confirmed. Does nothing in any other state.
@@ -291,20 +295,15 @@ impl LoginController {
 	pub fn wait(&self, login: u64, is_aborting: &dyn Fn() -> bool) -> Result<String, CoreError> {
 		let mut inner = self.0.lock();
 		loop {
-			if inner.generation != login {
-				// Cancelled, and perhaps replaced by a login of someone else's since.
-				return match &inner.state {
-					LoginState::LoggedIn(name) => Ok(name.clone().unwrap_or_default()),
-					_ => Err(CoreError::NotLoggedIn),
-				};
-			}
+			// Another number means `login` was cancelled, perhaps replaced by another since.
+			let ours = inner.generation == login;
 			match &inner.state {
 				LoginState::LoggedIn(name) => return Ok(name.clone().unwrap_or_default()),
-				LoginState::Failed(message) => {
+				LoginState::Failed(message) if ours => {
 					return Err(CoreError::Login(LoginError::Failed(message.clone())));
 				}
-				LoginState::LoggedOut => return Err(CoreError::NotLoggedIn),
-				LoginState::Asking | LoginState::Confirming(_) => {}
+				LoginState::Asking | LoginState::Confirming(_) if ours => {}
+				_ => return Err(CoreError::NotLoggedIn),
 			}
 			if is_aborting() {
 				return Err(CoreError::Aborted);
@@ -507,19 +506,35 @@ mod tests {
 		controller.press();
 		controller.press();
 		assert!(fake.last_login_cancelled());
-		assert_eq!(controller.state(), LoginState::LoggedOut);
+		assert_eq!(controller.state(), LoginState::Cancelled);
 	}
 
 	#[test]
-	fn a_cancel_is_remembered_until_the_next_login_starts() {
+	fn a_cancelled_login_looks_logged_out_and_is_remembered_until_the_next_one() {
 		let _fake = installed();
 		let (controller, _opened) = controller();
-		assert!(!controller.declined());
 		controller.press();
 		controller.cancel();
-		assert!(controller.declined());
+		assert_eq!(controller.state(), LoginState::Cancelled);
+		assert_eq!(view(&LoginState::Cancelled), view(&LoginState::LoggedOut));
+		controller.refresh();
+		assert_eq!(controller.state(), LoginState::Cancelled);
 		controller.start();
-		assert!(!controller.declined());
+		assert_eq!(controller.state(), LoginState::Asking);
+	}
+
+	#[test]
+	fn a_login_that_ends_while_the_stored_login_is_read_is_kept() {
+		let fake = installed();
+		let (controller, _opened) = controller();
+		let (racer, user) = (Arc::clone(&controller), fake.clone());
+		fake.during_username_read(move || {
+			racer.press();
+			user.send_code(code());
+			user.finish_login(Ok("Keith Getty".to_owned()));
+		});
+		controller.refresh();
+		assert_eq!(controller.state(), LoginState::LoggedIn(Some("Keith Getty".to_owned())));
 	}
 
 	#[test]
@@ -530,7 +545,7 @@ mod tests {
 		controller.cancel();
 		fake.send_code(code());
 		fake.finish_login(Ok("Keith Getty".to_owned()));
-		assert_eq!(controller.state(), LoginState::LoggedOut);
+		assert_eq!(controller.state(), LoginState::Cancelled);
 	}
 
 	#[test]

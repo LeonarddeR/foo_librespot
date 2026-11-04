@@ -69,7 +69,7 @@ mod tests {
 	use super::{announce, make_live_region};
 	use crate::dialog::host::tests::hidden_parent;
 	use crate::dialog::host::{create_child_dialog, destroy};
-	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate};
+	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
 
 	struct Nothing;
 
@@ -91,7 +91,7 @@ mod tests {
 			title: String::new(),
 			cx: 100,
 			cy: 30,
-			font: (8, "MS Shell Dlg".to_owned()),
+			font: shell_font(),
 			items: vec![DialogItem {
 				id: 101,
 				class: ControlClass::Static,

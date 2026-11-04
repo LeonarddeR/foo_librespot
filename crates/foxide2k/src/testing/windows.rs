@@ -8,7 +8,7 @@ use crate::bindings::Windows::Win32::{
 };
 use crate::dialog::host::{Dialog, DialogHandler, create_modeless_dialog};
 use crate::dialog::style::WS_POPUP;
-use crate::dialog::template::DialogTemplate;
+use crate::dialog::template::{DialogTemplate, shell_font};
 
 /// The owner's handler, which does nothing.
 struct Owner;
@@ -36,7 +36,7 @@ pub fn hidden_window() -> isize {
 		title: String::new(),
 		cx: 100,
 		cy: 100,
-		font: (8, "MS Shell Dlg".to_owned()),
+		font: shell_font(),
 		items: Vec::new(),
 	};
 	create_modeless_dialog(0, &template, Box::new(Owner)).expect("a hidden owner dialog").hwnd()

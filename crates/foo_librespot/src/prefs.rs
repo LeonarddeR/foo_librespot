@@ -10,7 +10,7 @@ use foxide2k::dialog::notify::CBN_SELCHANGE;
 use foxide2k::dialog::style::{
 	BS_GROUPBOX, CBS_DROPDOWNLIST, DS_CONTROL, WS_CHILD, WS_TABSTOP, WS_VSCROLL,
 };
-use foxide2k::dialog::template::{ControlClass, DialogTemplate};
+use foxide2k::dialog::template::{ControlClass, DialogTemplate, shell_font};
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
 use foxide2k::preferences::{PageChanged, PageInstance, PreferencesPage};
@@ -47,7 +47,7 @@ pub fn page_template() -> DialogTemplate {
 		title: String::new(),
 		cx: 332,
 		cy: 170,
-		font: (8, "MS Shell Dlg".to_owned()),
+		font: shell_font(),
 		items,
 	}
 }

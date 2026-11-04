@@ -9,6 +9,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
 use foo_librespot_core::CoreError;
+use foo_librespot_core::audio::format::FileFormat;
 
 use crate::backend::PcmTrack;
 
@@ -32,15 +33,14 @@ pub struct AbortableTrack {
 	/// Set once a call was abandoned: its reply may still arrive, so later replies can't be
 	/// matched to their requests. foobar2000 drops a decoder it has aborted anyway.
 	abandoned: bool,
-	codec: &'static str,
-	kbps: Option<u32>,
+	file_format: FileFormat,
 }
 
 impl AbortableTrack {
 	/// Moves `track` to a new decoder thread. The thread ends, dropping the track and stopping
 	/// its download, once this value is dropped and any call in progress has returned.
 	pub fn new(mut track: Box<dyn PcmTrack>) -> Result<Self, CoreError> {
-		let (codec, kbps) = (track.codec(), track.kbps());
+		let file_format = track.file_format();
 		let (requests, incoming) = mpsc::channel::<Request>();
 		let (outgoing, replies) = mpsc::channel::<Reply>();
 		std::thread::Builder::new().name("foo_librespot decoder".to_owned()).spawn(move || {
@@ -56,17 +56,12 @@ impl AbortableTrack {
 				}
 			}
 		})?;
-		Ok(Self { requests, replies, abandoned: false, codec, kbps })
+		Ok(Self { requests, replies, abandoned: false, file_format })
 	}
 
-	/// See [`PcmTrack::codec`].
-	pub const fn codec(&self) -> &'static str {
-		self.codec
-	}
-
-	/// See [`PcmTrack::kbps`].
-	pub const fn kbps(&self) -> Option<u32> {
-		self.kbps
+	/// See [`PcmTrack::file_format`].
+	pub const fn file_format(&self) -> FileFormat {
+		self.file_format
 	}
 
 	/// See [`PcmTrack::read`].

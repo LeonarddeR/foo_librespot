@@ -987,6 +987,11 @@ pub struct LoaderRecord {
 }
 
 impl LoaderRecord {
+	/// The path of every entry added, in order.
+	pub fn paths(&self) -> Vec<String> {
+		self.entries.iter().map(|entry| entry.path.clone()).collect()
+	}
+
 	/// Handles created by `handle_create` that nobody has released yet.
 	pub fn live_handles(&self) -> usize {
 		self.handles_created - self.handles_released.load(Ordering::SeqCst)

@@ -3,7 +3,8 @@
 //! Links reach the playlist loader two ways. foobar2000 asks services in an order that changes
 //! every time it starts, so either can come first:
 //! - our filesystem claims `sptf://` paths, `spotify:` URIs and `open.spotify.com` links. Its
-//!   stub file for an album or playlist carries [`CONTENT_TYPE`], which only our loader takes.
+//!   stub file for an album, playlist, show or episode carries [`CONTENT_TYPE`], which only our
+//!   loader takes.
 //! - foobar2000's own HTTP filesystem fetches an `open.spotify.com` page and reports
 //!   `text/html`, as it did for foo_spotify. Our loader takes that too, and turns away every other
 //!   web page before any Spotify call. A loader asked first, such as `foo_youtube`'s, can take the
@@ -46,7 +47,7 @@ impl Filesystem for SpotifyFilesystem {
 	fn is_our_path(path: &str) -> bool {
 		starts_with_ignore_case(path, PATH_SCHEME)
 			|| starts_with_ignore_case(path, "spotify:")
-			// Only links that name a track, album or playlist: every other web page stays with
+			// Only links that parse as Spotify links: every other web page stays with
 			// foobar2000's own HTTP filesystem.
 			|| (starts_with_ignore_case(path, "http") && parse_link(path).is_ok())
 	}
@@ -96,7 +97,7 @@ fn skipped_message(added: usize, source: &str, skipped: &[Skipped]) -> String {
 	message
 }
 
-/// Expands Spotify track, album and playlist links into one entry per track.
+/// Expands Spotify links into one entry per track or episode.
 pub struct SpotifyLoader;
 
 impl PlaylistLoader for SpotifyLoader {
@@ -311,7 +312,7 @@ mod tests {
 		let path = format!("sptf://spotify:episode:{}", id(2).to_base62());
 		loader().open(&path, callback, &FakeAbort::new(false)).unwrap();
 		let record = record.lock().unwrap();
-		let paths: Vec<String> = record.entries.iter().map(|entry| entry.path.clone()).collect();
+		let paths = record.paths();
 		assert_eq!(paths, ["https://podcasts.example/12.mp3"]);
 	}
 
@@ -331,7 +332,7 @@ mod tests {
 			.open("sptf://spotify:show:5CfCWKI5pZ28U0uOzXkDHe", callback, &FakeAbort::new(false))
 			.unwrap();
 		let record = record.lock().unwrap();
-		let paths: Vec<String> = record.entries.iter().map(|entry| entry.path.clone()).collect();
+		let paths = record.paths();
 		assert_eq!(
 			paths,
 			[
@@ -372,7 +373,7 @@ mod tests {
 		let path = format!("https://open.spotify.com/album/{ALBUM}");
 		loader().open(&path, callback, &FakeAbort::new(false)).unwrap();
 		let record = record.lock().unwrap();
-		let paths: Vec<String> = record.entries.iter().map(|entry| entry.path.clone()).collect();
+		let paths = record.paths();
 		let expected: Vec<String> =
 			(1..=3).map(|byte| format!("sptf://spotify:track:{}", id(byte).to_base62())).collect();
 		assert_eq!(paths, expected);

@@ -64,6 +64,19 @@ pub fn bytes_per_second(format: AudioFileFormat) -> usize {
 	}
 }
 
+/// What foobar2000 shows about an audio file: its codec and nominal bitrate in kbit/s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileFormat {
+	pub codec: &'static str,
+	pub kbps: Option<u32>,
+}
+
+impl From<AudioFileFormat> for FileFormat {
+	fn from(format: AudioFileFormat) -> Self {
+		Self { codec: codec_name(format), kbps: kbps(format) }
+	}
+}
+
 /// The nominal bitrate in kbit/s, as the format's name gives it; `None` for lossless FLAC.
 pub const fn kbps(format: AudioFileFormat) -> Option<u32> {
 	use AudioFileFormat as F;

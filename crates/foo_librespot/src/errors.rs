@@ -40,7 +40,7 @@ pub fn host_error(error: CoreError) -> Error {
 }
 
 /// What to do when `foo_youtube` is loaded: its host filter takes every web link by default,
-/// `open.spotify.com` included, so foobar2000 never asks foo_librespot about them.
+/// `open.spotify.com` included, so in some sessions it gets them before foo_librespot does.
 pub fn youtube_hint(components: &[String]) -> Option<String> {
 	components.iter().any(|name| name.eq_ignore_ascii_case("foo_youtube")).then(|| {
 		"foo_youtube may take open.spotify.com links before foo_librespot sees them. Add the line \"deny spotify.com\" to foo_youtube's host filter in its preferences; spotify: links work either way.".to_owned()

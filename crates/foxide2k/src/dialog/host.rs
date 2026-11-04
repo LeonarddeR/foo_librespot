@@ -384,7 +384,7 @@ pub(crate) mod tests {
 		GetWindowTextW, HWND, LPARAM, SendMessageW, WM_CLOSE, WM_COMMAND, WPARAM, WS_CAPTION,
 		WS_CHILD, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
 	};
-	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate};
+	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
 	use crate::testing::wants_all_keys;
 
 	/// A hidden top-level window to own the dialogs under test. Also initialises COM for the
@@ -419,7 +419,7 @@ pub(crate) mod tests {
 			title: "Log in to Spotify".to_owned(),
 			cx: 200,
 			cy: 140,
-			font: (8, "MS Shell Dlg".to_owned()),
+			font: shell_font(),
 			items: vec![
 				item(101, ControlClass::Static, "Not logged in to Spotify.", 0),
 				item(102, ControlClass::Button, "&Log in", WS_TABSTOP),

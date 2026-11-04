@@ -37,6 +37,11 @@ pub struct DialogItem {
 	pub cy: i16,
 }
 
+/// The font of Windows' own dialogs: 8 point "MS Shell Dlg".
+pub fn shell_font() -> (u16, String) {
+	(8, "MS Shell Dlg".to_owned())
+}
+
 /// A whole dialog. `DS_SETFONT` is always added to `style`; `font` is the point size and face.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DialogTemplate {
@@ -96,7 +101,7 @@ impl DialogTemplate {
 
 #[cfg(test)]
 mod tests {
-	use super::{ControlClass, DialogItem, DialogTemplate};
+	use super::{ControlClass, DialogItem, DialogTemplate, shell_font};
 	use crate::bindings::Windows::Win32::{DS_SETFONT, WS_CHILD, WS_TABSTOP, WS_VISIBLE};
 
 	fn item(id: u16, class: ControlClass, text: &str) -> DialogItem {
@@ -109,7 +114,7 @@ mod tests {
 			title: "Log in to Spotify".to_owned(),
 			cx: 260,
 			cy: 130,
-			font: (8, "MS Shell Dlg".to_owned()),
+			font: shell_font(),
 			items,
 		}
 	}

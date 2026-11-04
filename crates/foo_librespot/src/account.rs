@@ -27,8 +27,9 @@ pub const PAGE_LABEL: u16 = 109;
 /// The page to confirm the code on, read-only like the code.
 pub const PAGE: u16 = 110;
 
-/// The code and the page, with their labels.
-const CODE_FIELDS: [u16; 4] = [CODE_LABEL, CODE, PAGE_LABEL, PAGE];
+/// The controls that come and go with a login: the code and the page with their labels, and
+/// "Open browser".
+const LOGIN_CONTROLS: [u16; 5] = [CODE_LABEL, CODE, PAGE_LABEL, PAGE, BROWSER];
 
 /// A read-only field on one line: a multi-line edit would keep Escape and Enter from the
 /// dialog it is in.
@@ -124,23 +125,22 @@ impl AccountPanel {
 	fn render(&mut self, dialog: Dialog) {
 		let shown = view(&controller().state());
 		let fields = self.controls == LoginControls::Always || shown.confirming;
-		// A hidden control can't keep focus; the account button replaced what was pressed.
-		let loses_focus = |id| match id {
-			CODE | PAGE => !fields,
-			BROWSER => !shown.confirming,
-			_ => false,
+		let visible = |id| match id {
+			CODE_LABEL | CODE | PAGE_LABEL | PAGE => fields,
+			BROWSER => shown.confirming,
+			_ => true,
 		};
-		if dialog.focused().is_some_and(loses_focus) {
+		// A hidden control can't keep focus; the account button replaced what was pressed.
+		if dialog.focused().is_some_and(|id| !visible(id)) {
 			dialog.focus(ACCOUNT);
 		}
 		dialog.set_text(STATUS, &shown.status);
 		dialog.set_text(ACCOUNT, shown.button);
 		dialog.set_text(CODE, &shown.code);
 		dialog.set_text(PAGE, &shown.page);
-		for id in CODE_FIELDS {
-			dialog.set_visible(id, fields);
+		for id in LOGIN_CONTROLS {
+			dialog.set_visible(id, visible(id));
 		}
-		dialog.set_visible(BROWSER, shown.confirming);
 		self.status = shown.status;
 	}
 }

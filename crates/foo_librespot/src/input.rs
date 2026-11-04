@@ -118,8 +118,9 @@ impl Input for SpotifyInput {
 	/// on which files Spotify has, so the status bar learns it here.
 	fn live_info(&self) -> Vec<(String, String)> {
 		let Some(track) = &self.track else { return Vec::new() };
-		let mut fields = vec![("codec".to_owned(), track.codec().to_owned())];
-		if let Some(kbps) = track.kbps() {
+		let format = track.file_format();
+		let mut fields = vec![("codec".to_owned(), format.codec.to_owned())];
+		if let Some(kbps) = format.kbps {
 			fields.push(("bitrate".to_owned(), kbps.to_string()));
 		}
 		fields
@@ -142,7 +143,7 @@ mod tests {
 	use crate::backend;
 	use crate::testing::{
 		EPISODE_ID, FakeBackend, TRACK_ID, cancel_login_when_started, confirm_login_when_started,
-		fixture_samples, installed_prompt, stop_after,
+		fail_login_when_started, fixture_samples, installed_prompt, stop_after,
 	};
 
 	fn path() -> String {
@@ -314,6 +315,22 @@ mod tests {
 		let second = entry().open_for_decoding(&path(), &abort).unwrap();
 		let error = second.initialize(0, 0, &abort).unwrap_err();
 		assert_eq!(error.kind, ExceptionKind::Io);
+		assert_eq!(prompt.shown(), 1);
+		assert_eq!(fake.logins_started(), 1);
+	}
+
+	#[test]
+	fn after_a_failed_login_playing_fails_without_asking_again() {
+		let fake = installed();
+		let prompt = installed_prompt();
+		fake.require_login();
+		let spotify = fail_login_when_started(&fake);
+		let abort = FakeAbort::new(false);
+		let first = entry().open_for_decoding(&path(), &abort).unwrap();
+		assert!(first.initialize(0, 0, &abort).is_err());
+		spotify.join().unwrap();
+		let second = entry().open_for_decoding(&path(), &abort).unwrap();
+		assert!(second.initialize(0, 0, &abort).is_err());
 		assert_eq!(prompt.shown(), 1);
 		assert_eq!(fake.logins_started(), 1);
 	}
