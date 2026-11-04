@@ -26,6 +26,7 @@ use crate::file_info::FileInfo;
 use crate::guid::Guid;
 use crate::live_info;
 use crate::service::{ServiceImpl, ServiceObject, ServicePtr, new_service};
+use crate::strings::str_of;
 
 /// Why foobar2000 opens a path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,10 +74,6 @@ pub fn entry_service<T: Input>() -> ServicePtr {
 	new_service(InputEntry::<T>(PhantomData))
 }
 
-unsafe fn path_of<'a>(path: *const c_char) -> &'a str {
-	if path.is_null() { "" } else { unsafe { CStr::from_ptr(path) }.to_str().unwrap_or("") }
-}
-
 struct InputEntry<T>(PhantomData<fn() -> T>);
 
 unsafe impl<T: Input> ServiceImpl for InputEntry<T> {
@@ -112,7 +109,7 @@ unsafe extern "C-unwind" fn is_our_path<T: Input>(
 	path: *const c_char,
 	_extension: *const c_char,
 ) -> bool {
-	unsafe { guard(|| Ok(T::is_our_path(path_of(path)))) }
+	unsafe { guard(|| Ok(T::is_our_path(str_of(path)))) }
 }
 
 fn open<T: Input>(
@@ -127,7 +124,7 @@ fn open<T: Input>(
 		_ => return Err(Error::not_implemented()),
 	};
 	let abort = unsafe { Abort::from_raw(abort) };
-	let input = T::open(unsafe { path_of(path) }, reason, &abort)?;
+	let input = T::open(unsafe { str_of(path) }, reason, &abort)?;
 	Ok(new_service(Decoder { input: Mutex::new(input), reported: Mutex::new(Vec::new()) }))
 }
 

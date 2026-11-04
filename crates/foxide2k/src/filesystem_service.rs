@@ -6,7 +6,7 @@
 //! claims them and hands out stub files, as the SDK's `file_streamstub` does. foo_spotify did
 //! the same for `sptf://`.
 
-use std::ffi::{CStr, CString, c_char, c_void};
+use std::ffi::{CString, c_char, c_void};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -24,7 +24,7 @@ use crate::cxx::ExceptionKind;
 use crate::error::Error;
 use crate::guid::Guid;
 use crate::service::{ServiceImpl, ServicePtr, free_from_release, new_service};
-use crate::strings::set_string;
+use crate::strings::{set_string, str_of};
 
 /// A component's filesystem. Foxide2k answers everything else the same way for every
 /// implementation: paths open as read-only stub files that read nothing, everything else that
@@ -73,10 +73,6 @@ unsafe impl<T: Filesystem> ServiceImpl for FilesystemService<T> {
 	};
 }
 
-unsafe fn path_of<'a>(path: *const c_char) -> &'a str {
-	if path.is_null() { "" } else { unsafe { CStr::from_ptr(path) }.to_str().unwrap_or("") }
-}
-
 fn denied() -> Error {
 	Error::new(ExceptionKind::IoDenied, "this path can't be written to")
 }
@@ -87,7 +83,7 @@ unsafe extern "C-unwind" fn canonical_path<T: Filesystem>(
 	out: *mut StringBase,
 ) -> bool {
 	unsafe {
-		guard(|| match T::canonical_path(path_of(path)) {
+		guard(|| match T::canonical_path(str_of(path)) {
 			Some(canonical) => set_string(out, &canonical).map(|()| true),
 			None => Ok(false),
 		})
@@ -98,7 +94,7 @@ unsafe extern "C-unwind" fn is_our_path<T: Filesystem>(
 	_this: *mut ServiceBase,
 	path: *const c_char,
 ) -> bool {
-	unsafe { guard(|| Ok(T::is_our_path(path_of(path)))) }
+	unsafe { guard(|| Ok(T::is_our_path(str_of(path)))) }
 }
 
 unsafe extern "C-unwind" fn display_path<T: Filesystem>(
@@ -107,7 +103,7 @@ unsafe extern "C-unwind" fn display_path<T: Filesystem>(
 	out: *mut StringBase,
 ) -> bool {
 	unsafe {
-		guard(|| match T::display_path(path_of(path)) {
+		guard(|| match T::display_path(str_of(path)) {
 			Some(display) => set_string(out, &display).map(|()| true),
 			None => Ok(false),
 		})
@@ -126,7 +122,7 @@ unsafe extern "C-unwind" fn open<T: Filesystem>(
 			if mode & OPEN_MODE_MASK != OPEN_MODE_READ {
 				return Err(denied());
 			}
-			let file = new_stub_file(T::content_type(path_of(path)));
+			let file = new_stub_file(T::content_type(str_of(path)));
 			// `out` is a `service_ptr_t<file> &`: replace whatever it held.
 			if let Some(previous) = ServicePtr::from_raw_owned(*out) {
 				drop(previous);

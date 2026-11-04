@@ -47,6 +47,14 @@ pub(crate) fn wide(text: &str) -> Vec<u16> {
 	text.encode_utf16().chain([0]).collect()
 }
 
+/// A NUL-terminated string foobar2000 passed in. Null, or text that isn't UTF-8, reads as empty.
+///
+/// # Safety
+/// `text` must be null or point to a NUL-terminated string that outlives the result.
+pub(crate) unsafe fn str_of<'a>(text: *const c_char) -> &'a str {
+	if text.is_null() { "" } else { unsafe { CStr::from_ptr(text) }.to_str().unwrap_or("") }
+}
+
 /// Bytes up to the NUL terminator, or up to `length` if that comes first, as pfc reads strings.
 pub(crate) unsafe fn bytes_of<'a>(text: *const c_char, length: usize) -> &'a [u8] {
 	if text.is_null() {
@@ -166,9 +174,16 @@ pub unsafe fn get_string(string: *const StringBase) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-	use super::{OwnedString, get_string, set_string};
+	use super::{OwnedString, get_string, set_string, str_of};
 	use crate::cxx::try_host;
 	use crate::testing::FakeString;
+
+	#[test]
+	fn str_of_reads_foobar2000s_text_and_treats_null_and_bad_utf8_as_empty() {
+		assert_eq!(unsafe { str_of(c"In Christ Alone".as_ptr()) }, "In Christ Alone");
+		assert_eq!(unsafe { str_of(std::ptr::null()) }, "");
+		assert_eq!(unsafe { str_of(c"\xff\xfe".as_ptr()) }, "");
+	}
 
 	#[test]
 	fn string_out_sets_exact_bytes() {

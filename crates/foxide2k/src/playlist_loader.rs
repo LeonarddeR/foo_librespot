@@ -5,7 +5,7 @@
 //! extension, which these loaders don't use). A loader that doesn't handle the path throws
 //! `exception_io_unsupported_format`, and foobar2000 tries the next one.
 
-use std::ffi::{CStr, CString, c_char, c_void};
+use std::ffi::{CString, c_char, c_void};
 use std::marker::PhantomData;
 
 use crate::abi::abort_callback::AbortCallback;
@@ -24,6 +24,7 @@ use crate::error::{Error, Result};
 use crate::file_info_impl::FileInfoImpl;
 use crate::guid::Guid;
 use crate::service::{ServiceImpl, ServicePtr, new_service};
+use crate::strings::str_of;
 
 /// A component's playlist loader.
 pub trait PlaylistLoader: 'static {
@@ -60,10 +61,6 @@ unsafe impl<T: PlaylistLoader> ServiceImpl for LoaderService<T> {
 	};
 }
 
-unsafe fn text_of<'a>(text: *const c_char) -> &'a str {
-	if text.is_null() { "" } else { unsafe { CStr::from_ptr(text) }.to_str().unwrap_or("") }
-}
-
 unsafe extern "C-unwind" fn open<T: PlaylistLoader>(
 	_this: *mut ServiceBase,
 	path: *const c_char,
@@ -79,7 +76,7 @@ unsafe extern "C-unwind" fn open<T: PlaylistLoader>(
 			})?;
 			let abort = Abort::from_raw(abort);
 			let mut callback = LoaderCallback::from_raw(callback.as_raw());
-			T::open(text_of(path), &mut callback, &abort)
+			T::open(str_of(path), &mut callback, &abort)
 		});
 	}
 }
@@ -107,7 +104,7 @@ unsafe extern "C-unwind" fn is_our_content_type<T: PlaylistLoader>(
 	_this: *mut ServiceBase,
 	content_type: *const c_char,
 ) -> bool {
-	unsafe { guard(|| Ok(T::is_our_content_type(text_of(content_type)))) }
+	unsafe { guard(|| Ok(T::is_our_content_type(str_of(content_type)))) }
 }
 
 /// The `playlist_loader_callback` foobar2000 passed to `open`.

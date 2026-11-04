@@ -11,6 +11,7 @@ use crate::boundary::guard;
 use crate::cxx::try_host;
 use crate::error::Result;
 use crate::file_info::FileInfo;
+use crate::strings::bytes_of;
 
 /// The SDK's "not set" ReplayGain: gains of `gain_invalid` (-1000) and peaks of `peak_invalid`
 /// (-1), as in `SDK\file_info.h`.
@@ -134,17 +135,6 @@ unsafe fn state<'a>(this: *const RawFileInfo) -> &'a mut FileInfoImpl {
 }
 
 /// Bytes up to the NUL terminator, or up to `length` if that comes first, as pfc reads strings.
-unsafe fn bytes_of<'a>(text: *const c_char, length: usize) -> &'a [u8] {
-	if text.is_null() {
-		return &[];
-	}
-	let mut len = 0;
-	while len < length && unsafe { *text.add(len) } != 0 {
-		len += 1;
-	}
-	unsafe { std::slice::from_raw_parts(text.cast(), len) }
-}
-
 unsafe fn owned(text: *const c_char, length: usize) -> CString {
 	// `bytes_of` stops at the first NUL, so this cannot fail.
 	CString::new(unsafe { bytes_of(text, length) }).unwrap_or_default()

@@ -4,7 +4,7 @@
 //! that plays a path, gets an instance for that path and asks it for each kind of picture it
 //! wants to show.
 
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{c_char, c_void};
 use std::marker::PhantomData;
 
 use crate::abi::abort_callback::AbortCallback;
@@ -21,6 +21,7 @@ use crate::cxx::ExceptionKind;
 use crate::error::{Error, Result};
 use crate::guid::Guid;
 use crate::service::{ServiceImpl, ServiceObject, ServicePtr, new_service};
+use crate::strings::str_of;
 
 /// Which picture foobar2000 wants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,16 +80,12 @@ unsafe impl<T: AlbumArt> ServiceImpl for Extractor<T> {
 	};
 }
 
-unsafe fn text_of<'a>(text: *const c_char) -> &'a str {
-	if text.is_null() { "" } else { unsafe { CStr::from_ptr(text) }.to_str().unwrap_or("") }
-}
-
 unsafe extern "C-unwind" fn is_our_path<T: AlbumArt>(
 	_this: *mut ServiceBase,
 	path: *const c_char,
 	extension: *const c_char,
 ) -> bool {
-	unsafe { guard(|| Ok(T::is_our_path(text_of(path), text_of(extension)))) }
+	unsafe { guard(|| Ok(T::is_our_path(str_of(path), str_of(extension)))) }
 }
 
 unsafe extern "C-unwind" fn open<T: AlbumArt>(
@@ -103,7 +100,7 @@ unsafe extern "C-unwind" fn open<T: AlbumArt>(
 			// Passed by value: ours to release. Spotify paths aren't files, so it is unused.
 			drop(file);
 			let instance =
-				new_service(Instance::<T> { path: text_of(path).to_owned(), _art: PhantomData });
+				new_service(Instance::<T> { path: str_of(path).to_owned(), _art: PhantomData });
 			// The hidden return slot is uninitialized storage for a service_ptr_t.
 			ret.write(instance.into_raw());
 			Ok(ret)
