@@ -308,6 +308,14 @@ fn handle(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> isize {
 	}
 }
 
+/// Runs `create`, which may claim a slot through `WM_INITDIALOG`, and returns what it claimed. A
+/// dialog that a handler's init creates meanwhile claims its own slot without touching this one.
+fn claiming<R>(create: impl FnOnce() -> R) -> (R, usize) {
+	let outer = CLAIMED.replace(0);
+	let result = create();
+	(result, CLAIMED.replace(outer))
+}
+
 fn create(
 	parent: isize,
 	template: &DialogTemplate,
@@ -325,9 +333,8 @@ fn create(
 		destroyed: Cell::new(false),
 		refresh_pending: Cell::new(false),
 	}));
-	CLAIMED.set(0);
 	let parent = (parent != 0).then_some(HWND(parent as _));
-	let window = unsafe {
+	let (window, claimed) = claiming(|| unsafe {
 		CreateDialogIndirectParamW(
 			None,
 			aligned.as_ptr().cast(),
@@ -335,10 +342,10 @@ fn create(
 			Some(dialog_proc),
 			LPARAM(slot as isize),
 		)
-	};
+	});
 	if window.0.is_null() {
 		let error = std::io::Error::last_os_error();
-		if CLAIMED.get() != slot as usize {
+		if claimed != slot as usize {
 			drop(unsafe { Box::from_raw(slot) });
 		}
 		return Err(Error::new(ExceptionKind::Std, format!("can't create a dialog: {error}")));
@@ -386,6 +393,17 @@ pub(crate) mod tests {
 	};
 	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
 	use crate::testing::wants_all_keys;
+
+	#[test]
+	fn a_dialog_created_during_another_ones_creation_keeps_its_own_claim() {
+		let ((), outer) = super::claiming(|| {
+			// The outer dialog's WM_INITDIALOG claims its slot, then its init creates another.
+			super::CLAIMED.set(1);
+			let ((), inner) = super::claiming(|| super::CLAIMED.set(2));
+			assert_eq!(inner, 2);
+		});
+		assert_eq!(outer, 1);
+	}
 
 	/// A hidden top-level window to own the dialogs under test. Also initialises COM for the
 	/// live-region tests, as foobar2000's main thread has it.
