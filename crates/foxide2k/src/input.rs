@@ -418,7 +418,9 @@ unsafe extern "C-unwind" fn poll_live_info<T: Input>(
 			// The input is unlocked again before foobar2000's list is called.
 			let fields = decoder.input()?.live_info();
 			let mut reported = decoder.reported();
-			if fields.is_empty() || *reported == fields {
+			// Live info that went away is reported too: the empty filter replaces the last one, so
+			// foobar2000 falls back to the track's stored info.
+			if *reported == fields {
 				return Ok(());
 			}
 			live_info::add_info_change(ret, fields.clone())?;
@@ -451,6 +453,8 @@ mod tests {
 
 	thread_local! {
 		static SEEKED_TO: Cell<Option<f64>> = const { Cell::new(None) };
+		/// While set, the test input reports no live info, as a stream whose info went away.
+		static LIVE_INFO_GONE: Cell<bool> = const { Cell::new(false) };
 	}
 
 	struct TestInput {
@@ -503,6 +507,9 @@ mod tests {
 
 		/// A variable bitrate: 320 kbit/s in the first chunk, 256 after.
 		fn live_info(&self) -> Vec<(String, String)> {
+			if LIVE_INFO_GONE.get() {
+				return Vec::new();
+			}
 			let kbps = match self.runs {
 				0 => return Vec::new(),
 				1 => "320",
@@ -693,6 +700,20 @@ mod tests {
 		decoder.run(&mut FakeAudioChunk::new(), &FakeAbort::new(false)).unwrap();
 		assert_eq!(bitrate(&decoder).as_deref(), Some("256"));
 		assert_eq!(bitrate(&decoder), None);
+	}
+
+	#[test]
+	fn live_info_that_goes_away_is_reported_as_a_change_that_sets_nothing() {
+		let decoder = playing();
+		assert!(bitrate(&decoder).is_some());
+		LIVE_INFO_GONE.set(true);
+		let list = FakeLiveInfoList::new();
+		decoder.poll_live_info(&list, &FakeAbort::new(false)).unwrap();
+		// A new filter replaces the old one, so foobar2000 falls back to the stored info.
+		assert_eq!(list.scopes(), [SCOPE_INFO]);
+		let mut info = FakeFileInfo::new();
+		list.apply(0, &mut info).unwrap();
+		assert_eq!(info.info("bitrate"), None);
 	}
 
 	#[test]
