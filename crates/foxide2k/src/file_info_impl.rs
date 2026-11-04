@@ -262,13 +262,11 @@ unsafe extern "C-unwind" fn meta_insert_value_ex(
 
 /// Keeps the items whose index `mask` doesn't mark.
 unsafe fn retain_unmarked<T>(items: &mut Vec<T>, mask: *const c_void) -> Result<()> {
-	let mut kept = Vec::with_capacity(items.len());
-	for (index, item) in std::mem::take(items).into_iter().enumerate() {
-		if !unsafe { bit(mask, index) }? {
-			kept.push(item);
-		}
-	}
-	*items = kept;
+	// Every mark is read first, so a mask that throws leaves the items as they were.
+	let marked =
+		(0..items.len()).map(|index| unsafe { bit(mask, index) }).collect::<Result<Vec<bool>>>()?;
+	let mut marks = marked.into_iter();
+	items.retain(|_| !marks.next().unwrap_or(false));
 	Ok(())
 }
 
@@ -561,6 +559,33 @@ mod tests {
 		// ARTIST is now at index 0.
 		unsafe { (vtbl.meta_remove_values)(raw, 0, (&raw const values).cast::<c_void>()) };
 		assert_eq!(info.meta("ARTIST"), ["a2"]);
+		assert_eq!(info.meta("ALBUM"), ["b"]);
+	}
+
+	unsafe extern "C-unwind" fn throwing_get(_this: *const BitArray, index: usize) -> bool {
+		if index == 1 {
+			unsafe { crate::cxx::throw(crate::cxx::ExceptionKind::BugCheck, "bad mask") }
+		}
+		index == 0
+	}
+
+	static THROWING_VTBL: BitArrayVtbl = BitArrayVtbl { get: throwing_get };
+
+	#[test]
+	fn a_mask_that_throws_removes_nothing() {
+		let mut info = FileInfoImpl::new();
+		for (name, value) in [("TITLE", "t"), ("ARTIST", "a"), ("ALBUM", "b")] {
+			info.file_info().meta_set(name, value).unwrap();
+		}
+		let raw = info.as_raw();
+		let vtbl = unsafe { &*(*raw).vtbl };
+		let throwing = BitArray { vtbl: &raw const THROWING_VTBL, marked: Vec::new() };
+		let result = crate::cxx::try_host(|| unsafe {
+			(vtbl.meta_remove_mask)(raw, (&raw const throwing).cast::<c_void>());
+		});
+		assert!(result.is_err());
+		assert_eq!(info.meta("TITLE"), ["t"]);
+		assert_eq!(info.meta("ARTIST"), ["a"]);
 		assert_eq!(info.meta("ALBUM"), ["b"]);
 	}
 
