@@ -5,6 +5,7 @@ use std::ffi::CStr;
 use foo_librespot_core::CoreError;
 use foo_librespot_core::audio::decoder::{CHANNELS, SAMPLE_RATE};
 use foo_librespot_core::link::{ItemId, parse_item};
+use foxide2k::abi::input::INPUT_FLAG_PLAYBACK;
 use foxide2k::abort::Abort;
 use foxide2k::audio_chunk::{AudioChunk, CHANNEL_MASK_STEREO};
 use foxide2k::cxx::ExceptionKind;
@@ -18,6 +19,9 @@ use crate::errors::host_error;
 use crate::fields::fill_info;
 use crate::first_use::login_to_play;
 use crate::worker::AbortableTrack;
+
+/// Why anything but playback is refused.
+const NOT_FOR_PLAYBACK: &str = "Spotify audio can only be played: foo_librespot doesn't hand it to the Converter or other tools.";
 
 /// A tenth of a second per `decode_run`, as foobar2000's own inputs deliver.
 const CHUNK_FRAMES: usize = 4410;
@@ -68,7 +72,12 @@ impl Input for SpotifyInput {
 		fill_info(info, &track)
 	}
 
-	fn decode_initialize(&mut self, _flags: u32, abort: &Abort) -> Result<()> {
+	fn decode_initialize(&mut self, flags: u32, abort: &Abort) -> Result<()> {
+		// Decrypted Spotify audio never reaches a file: only foobar2000's player gets it, as with
+		// foo_spotify. The Converter, the ReplayGain scanner and the like are refused.
+		if flags & INPUT_FLAG_PLAYBACK == 0 {
+			return Err(Error::new(ExceptionKind::IoDenied, NOT_FOR_PLAYBACK));
+		}
 		let is_aborting = || abort.is_aborting();
 		let track = match backend().open_track(self.id, &is_aborting) {
 			// The user pressed Play while logged out: log in, then try once more. Info reads in
@@ -132,7 +141,9 @@ mod tests {
 	use std::time::{Duration, Instant};
 
 	use foo_librespot_core::CoreError;
-	use foxide2k::abi::input::INFO_READER;
+	use foxide2k::abi::input::{
+		INFO_READER, INPUT_FLAG_PLAYBACK, INPUT_FLAG_SIMPLEDECODE, INPUT_FLAG_TESTING_INTEGRITY,
+	};
 	use foxide2k::audio_chunk::CHANNEL_MASK_STEREO;
 	use foxide2k::cxx::ExceptionKind;
 	use foxide2k::file_info_impl::FileInfoImpl;
@@ -187,7 +198,7 @@ mod tests {
 	fn decode_all(chunk_frames: &mut Vec<usize>) -> Vec<f64> {
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
-		decoder.initialize(0, 0, &abort).unwrap();
+		decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap();
 		let mut samples = Vec::new();
 		let mut chunk = FakeAudioChunk::new();
 		while decoder.run(&mut chunk, &abort).unwrap() {
@@ -214,7 +225,7 @@ mod tests {
 		installed();
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
-		decoder.initialize(0, 0, &abort).unwrap();
+		decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap();
 		decoder.seek(1.0, &abort).unwrap();
 		let mut chunk = FakeAudioChunk::new();
 		assert!(decoder.run(&mut chunk, &abort).unwrap());
@@ -239,7 +250,7 @@ mod tests {
 		installed();
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
-		decoder.initialize(0, 0, &abort).unwrap();
+		decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap();
 		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
 		assert_eq!(shown_after_poll(&decoder), Some(shown("Vorbis", "160")));
 		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
@@ -251,12 +262,28 @@ mod tests {
 		installed();
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
-		decoder.initialize(0, 0, &abort).unwrap();
+		decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap();
 		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
 		assert!(shown_after_poll(&decoder).is_some());
 		decoder.seek(1.0, &abort).unwrap();
 		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
 		assert_eq!(shown_after_poll(&decoder), Some(shown("Vorbis", "160")));
+	}
+
+	#[test]
+	fn decoding_for_anything_but_playback_is_denied() {
+		let fake = installed();
+		let abort = FakeAbort::new(false);
+		for flags in [0, INPUT_FLAG_SIMPLEDECODE, INPUT_FLAG_TESTING_INTEGRITY] {
+			let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
+			let error = decoder.initialize(0, flags, &abort).unwrap_err();
+			assert_eq!(error.kind, ExceptionKind::IoDenied, "flags {flags}");
+			assert_eq!(
+				error.message,
+				"Spotify audio can only be played: foo_librespot doesn't hand it to the Converter or other tools."
+			);
+		}
+		assert_eq!(fake.open_calls(), 0);
 	}
 
 	#[test]
@@ -278,7 +305,7 @@ mod tests {
 		let user = confirm_login_when_started(&fake, 1);
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
-		decoder.initialize(0, 0, &abort).unwrap();
+		decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap();
 		user.join().unwrap();
 		assert!(decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap());
 		assert_eq!(prompt.shown(), 1);
@@ -293,7 +320,7 @@ mod tests {
 		let user = cancel_login_when_started(&fake);
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
-		let error = decoder.initialize(0, 0, &abort).unwrap_err();
+		let error = decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap_err();
 		user.join().unwrap();
 		assert_eq!(error.kind, ExceptionKind::Io);
 		assert_eq!(
@@ -310,10 +337,10 @@ mod tests {
 		let user = cancel_login_when_started(&fake);
 		let abort = FakeAbort::new(false);
 		let first = entry().open_for_decoding(&path(), &abort).unwrap();
-		assert!(first.initialize(0, 0, &abort).is_err());
+		assert!(first.initialize(0, INPUT_FLAG_PLAYBACK, &abort).is_err());
 		user.join().unwrap();
 		let second = entry().open_for_decoding(&path(), &abort).unwrap();
-		let error = second.initialize(0, 0, &abort).unwrap_err();
+		let error = second.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap_err();
 		assert_eq!(error.kind, ExceptionKind::Io);
 		assert_eq!(prompt.shown(), 1);
 		assert_eq!(fake.logins_started(), 1);
@@ -327,10 +354,10 @@ mod tests {
 		let spotify = fail_login_when_started(&fake);
 		let abort = FakeAbort::new(false);
 		let first = entry().open_for_decoding(&path(), &abort).unwrap();
-		assert!(first.initialize(0, 0, &abort).is_err());
+		assert!(first.initialize(0, INPUT_FLAG_PLAYBACK, &abort).is_err());
 		spotify.join().unwrap();
 		let second = entry().open_for_decoding(&path(), &abort).unwrap();
-		assert!(second.initialize(0, 0, &abort).is_err());
+		assert!(second.initialize(0, INPUT_FLAG_PLAYBACK, &abort).is_err());
 		assert_eq!(prompt.shown(), 1);
 		assert_eq!(fake.logins_started(), 1);
 	}
@@ -344,7 +371,7 @@ mod tests {
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
 		let stopper = stop_after(&abort, Duration::from_millis(100));
 		let started = Instant::now();
-		let error = decoder.initialize(0, 0, &abort).unwrap_err();
+		let error = decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap_err();
 		stopper.join().unwrap();
 		assert_eq!(error.kind, ExceptionKind::Aborted);
 		assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
@@ -368,7 +395,7 @@ mod tests {
 		fake.fail_with(|| CoreError::Aborted);
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
-		let error = decoder.initialize(0, 0, &abort).unwrap_err();
+		let error = decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap_err();
 		assert_eq!(error.kind, ExceptionKind::Aborted);
 	}
 
@@ -377,7 +404,7 @@ mod tests {
 		let fake = installed();
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
-		decoder.initialize(0, 0, &abort).unwrap();
+		decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap();
 		fake.stall(true);
 		let stopper = stop_after(&abort, Duration::from_millis(100));
 		let started = Instant::now();
@@ -393,7 +420,7 @@ mod tests {
 		let fake = installed();
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
-		decoder.initialize(0, 0, &abort).unwrap();
+		decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap();
 		fake.stall(true);
 		let stopper = stop_after(&abort, Duration::from_millis(100));
 		let started = Instant::now();

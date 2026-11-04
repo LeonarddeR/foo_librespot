@@ -43,6 +43,18 @@ pub const INPUT_ENTRY_V4: Guid = Guid::from_u128(0x09630c70_03c7_4a66_a936_217d8
 pub const INFO_READER: Guid = Guid::from_u128(0x8e9bb1d4_a52b_4df6_a929_1aae4075388a);
 pub const INFO_READER_V2: Guid = Guid::from_u128(0x42486bca_0d37_4e02_b772_4d30d6f850be);
 pub const DECODER: Guid = Guid::from_u128(0x7eb442cd_fad7_4a26_ad7e_16f6fc89207b);
+
+// The `input_flag_*` hints `input_decoder::initialize` gets (`SDK\input.h:10-29`).
+/// The decoder will not be asked to seek.
+pub const INPUT_FLAG_NO_SEEKING: u32 = 1 << 0;
+/// The decoder should not loop a track that has a loop point.
+pub const INPUT_FLAG_NO_LOOPING: u32 = 1 << 1;
+/// Decoding for playback, not for conversion, scanning or anything else.
+pub const INPUT_FLAG_PLAYBACK: u32 = 1 << 2;
+/// Testing integrity: perform additional checks and report errors.
+pub const INPUT_FLAG_TESTING_INTEGRITY: u32 = 1 << 3;
+/// Decoding straight through once, as converters and scanners do.
+pub const INPUT_FLAG_SIMPLEDECODE: u32 = INPUT_FLAG_NO_SEEKING | INPUT_FLAG_NO_LOOPING;
 pub const DECODER_V2: Guid = Guid::from_u128(0x2c5489eb_d3c1_4ad4_bea3_cf408e161b9b);
 pub const DECODER_V3: Guid = Guid::from_u128(0x953c71ed_d3a2_43f4_a33a_5594d67396e5);
 pub const DECODER_V4: Guid = Guid::from_u128(0x7bbf10b5_2064_4da2_8a72_eb4ce9b3a0b4);
@@ -201,7 +213,19 @@ pub struct DecoderVtbl {
 
 #[cfg(test)]
 mod tests {
-	use super::{DecoderVtbl, InputEntryVtbl};
+	use super::{
+		DecoderVtbl, INPUT_FLAG_NO_LOOPING, INPUT_FLAG_NO_SEEKING, INPUT_FLAG_PLAYBACK,
+		INPUT_FLAG_SIMPLEDECODE, INPUT_FLAG_TESTING_INTEGRITY, InputEntryVtbl,
+	};
+
+	#[test]
+	fn decode_flags_have_the_sdk_values() {
+		assert_eq!(INPUT_FLAG_NO_SEEKING, 1);
+		assert_eq!(INPUT_FLAG_NO_LOOPING, 2);
+		assert_eq!(INPUT_FLAG_PLAYBACK, 4);
+		assert_eq!(INPUT_FLAG_TESTING_INTEGRITY, 8);
+		assert_eq!(INPUT_FLAG_SIMPLEDECODE, 3);
+	}
 
 	#[test]
 	fn input_entry_vtable_has_16_slots() {
