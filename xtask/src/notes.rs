@@ -7,13 +7,7 @@ pub fn release_notes(changelog: &str, version: &str) -> Option<String> {
 	let mut lines = changelog.lines().skip_while(|line| !line.starts_with(&heading));
 	lines.next()?;
 	let section: Vec<&str> = lines.take_while(|line| !line.starts_with("## [")).collect();
-	let notes = section
-		.join(
-			"
-",
-		)
-		.trim()
-		.to_owned();
+	let notes = section.join("\n").trim().to_owned();
 	(!notes.is_empty()).then_some(notes)
 }
 
