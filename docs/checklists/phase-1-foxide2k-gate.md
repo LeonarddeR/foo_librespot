@@ -31,13 +31,13 @@ No filesystem claims `oxitone://`; foo_librespot will register one for `sptf://`
 
 ## Still to check by hand
 
-- [ ] Preferences > Components lists foo_oxitone 0.1.0, and its About text mentions `oxitone://`.
+- [ ] Preferences > Components lists "Test tone (Foxide2k example)" 0.1.0, and its About text mentions `oxitone://`. (2026-11-04: it was listed as "foo_oxitone", a file name instead of a readable one like the other components have; now renamed. The About text is still to be found.)
 - [x] Playing "Test tone 440 Hz" gives a steady, clean tone for 10 seconds, then playback moves on or stops. (Checked by ear on 2026-11-04: 440 Hz and 880 Hz play at the right pitch, confirmed by a listener with perfect pitch.)
 - [x] Clicking the seek bar at about 0:05 continues the tone from there, without clicks or a crash.
-- [ ] Pressing Stop during playback stops it without an error or a crash.
-- [ ] Playing `oxitone://abc` reports that the file can't be played, and foobar2000 keeps running.
-- [ ] Playing `oxitone://hostcheck` logs the `foo_oxitone: caught .?AVexception_io_not_found@foobar2000_io@@ from foobar2000: …` line again, reports the error for that entry, and keeps running.
-- [ ] Closing foobar2000 from the window gives no crash and no error dialog.
+- [x] Pressing Stop during playback stops it without an error or a crash.
+- [ ] Playing `oxitone://abc` reports that the file can't be played, and foobar2000 keeps running. (2026-11-04: it doesn't play, and the report is only in the console, not in a window.)
+- [x] Playing `oxitone://hostcheck` logs the `foo_oxitone: caught .?AVexception_io_not_found@foobar2000_io@@ from foobar2000: …` line again, reports the error for that entry, and keeps running.
+- [x] Closing foobar2000 from the window gives no crash and no error dialog.
 
 ## Result
 

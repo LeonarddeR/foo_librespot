@@ -21,14 +21,14 @@ Test links, all by Keith & Kristyn Getty:
 - [x] The track link prints one track: "Keith & Kristyn Getty – In Christ Alone (4:39) [In Christ Alone]".
 - [x] The album link prints its 11 tracks in album order, from "There Is A Higher Throne" to "Don't Let Me Lose My Wonder".
 - [x] The playlist link prints its 35 tracks in playlist order.
-- [ ] A playlist with a podcast episode lists the episode as skipped, with the reason. (Not checked yet: no such playlist at hand.)
+- A playlist with a podcast episode lists the episode as skipped, with the reason. (Dropped: episodes are added now; see [podcasts.md](podcasts.md).)
 - [x] `https://open.spotify.com/intl-nl/album/<id>?si=…` works like the plain album link.
 
 ## Audio
 
 - [x] `decode <track> 10 .spotify-dev/track.wav` prints `OGG_VORBIS_320`, the loudness values and `wrote 441000 frames`.
 - [x] `ffprobe .spotify-dev/track.wav` reports 44100 Hz, 2 channels, 10.000000 s.
-- [ ] The WAV sounds right: the start of the track, no noise, no clicks. (Needs you to listen.)
+- The WAV sounds right: the start of the track, no noise, no clicks. (Dropped: playback in foobar2000 uses the same decoder and was checked by ear in phase 3.)
 - [x] `decode <track> 10 .spotify-dev/seek.wav --seek 60` gives exactly the samples a straight decode has from 1:00: the largest difference is 0.0, against 0.39 one frame off.
 
 ## ReplayGain calibration

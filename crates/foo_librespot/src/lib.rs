@@ -53,7 +53,7 @@ impl InitQuit for Startup {
 static STARTUP: Singleton<InitQuitService<Startup>> = Singleton::new(InitQuitService::new(Startup));
 
 foxide2k::component! {
-	name: "foo_librespot",
+	name: "Spotify integration using librespot",
 	version: env!("CARGO_PKG_VERSION"),
 	about: ABOUT,
 	services: [

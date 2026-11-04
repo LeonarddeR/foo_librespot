@@ -19,7 +19,7 @@ impl InitQuit for Startup {
 static STARTUP: Singleton<InitQuitService<Startup>> = Singleton::new(InitQuitService::new(Startup));
 
 foxide2k::component! {
-	name: "foo_oxitone",
+	name: "Test tone (Foxide2k example)",
 	version: env!("CARGO_PKG_VERSION"),
 	about: "Test tone component built with Foxide2k.\nPlays oxitone://<Hz> paths.",
 	services: [Factory::init_quit(&STARTUP), input_factory::<input::ToneInput>()],

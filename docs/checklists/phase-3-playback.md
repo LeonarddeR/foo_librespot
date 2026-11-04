@@ -33,18 +33,18 @@ Checked by starting the portable foobar2000 from the command line and reading it
 
 ## Still to check by hand
 
-- [ ] The console (View > Console) shows `foo_librespot: loaded`, `foo_librespot: added 11 tracks from In Christ Alone` and `added 35 tracks from Give Us This Day Our Daily Hymns`, and no errors.
+- [x] The console (View > Console) shows `foo_librespot: loaded`, `foo_librespot: added 11 tracks from In Christ Alone` and `added 35 tracks from Give Us This Day Our Daily Hymns`, and no errors.
 - [x] Playing "In Christ Alone" sounds right: clean, no noise, no clicks, correct speed. (2026-11-04: plays.)
-- [ ] Seeking with the seek bar continues from there, without a crash.
-- [ ] Next and Previous move between Spotify tracks, and the next track starts without a long gap.
-- [ ] Stop during playback stops at once.
+- [x] Seeking with the seek bar continues from there, without a crash.
+- [x] Next and Previous move between Spotify tracks, and the next track starts without a long gap.
+- [x] Stop during playback stops at once.
 - [x] foobar2000 shows the album cover: Properties > Artwork of "In Christ Alone" lists the front cover (the album picture, 636×640 JPEG, 119 KB), with back cover and artist "not present". (Checked from a window capture on 2026-11-04.)
 - [x] Properties > ReplayGain of "In Christ Alone" shows track gain -6.62 dB, track peak 1.012673, album gain -8.51 dB, album peak 1.072389, without the track having been played. (Checked from a window capture on 2026-11-04.)
-- [ ] With ReplayGain enabled in Playback preferences, Spotify tracks play at the same loudness as your own music.
-- [ ] Ctrl+V of an `open.spotify.com` link copied from the browser adds its tracks.
-- [ ] Dragging a link from the browser onto the playlist adds its tracks.
-- [ ] After closing and reopening foobar2000, the entries are still there and play.
-- [ ] Closing foobar2000 from the window gives no crash and no error dialog.
+- [x] With ReplayGain enabled in Playback preferences, Spotify tracks play at the same loudness as your own music. (2026-11-04, Track mode with Apply gain and both preamps at 0 dB.)
+- [x] Ctrl+V of an `open.spotify.com` link copied from the browser adds its tracks.
+- [ ] Dragging a link from the browser onto the playlist adds its tracks. (Needs a sighted tester: dragging can't be done with a screen reader.)
+- [x] After closing and reopening foobar2000, the entries are still there and play.
+- [x] Closing foobar2000 from the window gives no crash and no error dialog.
 
 ## Found
 

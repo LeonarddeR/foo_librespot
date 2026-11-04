@@ -26,7 +26,7 @@ fn componentversion_reports_name_version_about() {
 	let service =
 		component.create_all(&COMPONENTVERSION).pop().expect("a componentversion service");
 	let strings = component_version_strings(&service);
-	assert_eq!(strings.name, "foo_oxitone");
+	assert_eq!(strings.name, "Test tone (Foxide2k example)");
 	assert_eq!(strings.version, "0.1.0");
 	assert!(strings.about.contains("oxitone://"), "{}", strings.about);
 	assert_eq!(strings.file_name, "foo_oxitone");
