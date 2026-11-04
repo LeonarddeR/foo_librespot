@@ -30,6 +30,8 @@ use crate::abi::abort_callback::AbortCallback;
 use crate::abi::audio_chunk::AudioChunk;
 use crate::abi::file::FileStats;
 use crate::abi::file_info::FileInfo;
+use crate::abi::live_info::InputLiveInfo;
+use crate::abi::pfc_list::ListBase;
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 use crate::guid::Guid;
 
@@ -189,10 +191,10 @@ pub struct DecoderVtbl {
 		arg2: *mut c_void,
 		arg2_size: usize,
 	) -> usize,
-	// input_decoder_v5; `ret` is a pfc::list_base_t<input_live_info_t>.
+	// input_decoder_v5: adds what changed since the last call to `ret`, which is blank on entry.
 	pub poll_live_info: unsafe extern "C-unwind" fn(
 		this: *mut ServiceBase,
-		ret: *mut c_void,
+		ret: *mut ListBase<InputLiveInfo>,
 		abort: *mut AbortCallback,
 	),
 }

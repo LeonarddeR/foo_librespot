@@ -117,7 +117,10 @@ impl Input for SpotifyInput {
 			reason = "clamped to 0 and up"
 		)]
 		let frame = (seconds.max(0.0) * f64::from(SAMPLE_RATE)).round() as u64;
-		self.track()?.seek(frame, &|| abort.is_aborting()).map_err(host_error)
+		self.track()?.seek(frame, &|| abort.is_aborting()).map_err(host_error)?;
+		// foobar2000 forgets live info on a seek.
+		self.reported = false;
+		Ok(())
 	}
 
 	fn can_seek(&self) -> bool {
@@ -125,17 +128,18 @@ impl Input for SpotifyInput {
 	}
 
 	/// The stored info can't know which file plays: that depends on the preferred bitrate and
-	/// on which files Spotify has, so the status bar learns it here.
-	fn get_dynamic_info(&mut self, info: &mut FileInfo<'_>) -> Result<bool> {
+	/// on which files Spotify has, so the status bar learns it here, after the first chunk and
+	/// after each seek.
+	fn live_info(&mut self) -> Vec<(String, String)> {
 		let Some(track) = self.track.as_ref().filter(|_| !self.reported) else {
-			return Ok(false);
+			return Vec::new();
 		};
-		info.info_set("codec", track.codec())?;
+		let mut fields = vec![("codec".to_owned(), track.codec().to_owned())];
 		if let Some(kbps) = track.kbps() {
-			info.info_set_int("bitrate", i64::from(kbps))?;
+			fields.push(("bitrate".to_owned(), kbps.to_string()));
 		}
 		self.reported = true;
-		Ok(true)
+		fields
 	}
 }
 
@@ -145,11 +149,14 @@ mod tests {
 
 	use foo_librespot_core::CoreError;
 	use oxibar::abi::input::INFO_READER;
+	use oxibar::abi::live_info::SCOPE_INFO;
 	use oxibar::audio_chunk::CHANNEL_MASK_STEREO;
 	use oxibar::cxx::ExceptionKind;
 	use oxibar::file_info_impl::FileInfoImpl;
 	use oxibar::input::entry_service;
-	use oxibar::testing::{FakeAbort, FakeAudioChunk, InputEntryHandle};
+	use oxibar::testing::{
+		DecoderHandle, FakeAbort, FakeAudioChunk, FakeLiveInfoList, InputEntryHandle,
+	};
 
 	use super::SpotifyInput;
 	use crate::backend;
@@ -233,6 +240,22 @@ mod tests {
 		}
 	}
 
+	/// What foobar2000 shows after polling the decoder's live info once.
+	fn shown_after_poll(decoder: &DecoderHandle) -> Option<(String, String)> {
+		let list = FakeLiveInfoList::new();
+		decoder.poll_live_info(&list, &FakeAbort::new(false)).unwrap();
+		if list.scopes() != [SCOPE_INFO] {
+			return None;
+		}
+		let mut info = FileInfoImpl::new();
+		assert!(list.apply(0, &mut info).unwrap());
+		Some((info.info("codec")?, info.info("bitrate")?))
+	}
+
+	fn shown(codec: &str, bitrate: &str) -> (String, String) {
+		(codec.to_owned(), bitrate.to_owned())
+	}
+
 	#[test]
 	fn playing_reports_the_codec_and_bitrate_of_the_file_spotify_sent_once() {
 		installed();
@@ -240,12 +263,22 @@ mod tests {
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
 		decoder.initialize(0, 0, &abort).unwrap();
 		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
-		let mut info = FileInfoImpl::new();
-		assert_eq!(decoder.dynamic_info(&mut info).unwrap(), Some(0.0));
-		assert_eq!(info.info("bitrate").as_deref(), Some("160"));
-		assert_eq!(info.info("codec").as_deref(), Some("Vorbis"));
+		assert_eq!(shown_after_poll(&decoder), Some(shown("Vorbis", "160")));
 		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
-		assert_eq!(decoder.dynamic_info(&mut FileInfoImpl::new()).unwrap(), None);
+		assert_eq!(shown_after_poll(&decoder), None);
+	}
+
+	#[test]
+	fn seeking_reports_the_codec_and_bitrate_again() {
+		installed();
+		let abort = FakeAbort::new(false);
+		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
+		decoder.initialize(0, 0, &abort).unwrap();
+		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
+		assert!(shown_after_poll(&decoder).is_some());
+		decoder.seek(1.0, &abort).unwrap();
+		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
+		assert_eq!(shown_after_poll(&decoder), Some(shown("Vorbis", "160")));
 	}
 
 	#[test]

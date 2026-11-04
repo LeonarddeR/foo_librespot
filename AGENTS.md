@@ -1,6 +1,6 @@
 # Agent notes
 
-foo_librespot is a foobar2000 2.x x64 component, written entirely in Rust, that plays Spotify links through librespot.
+foo_librespot is a foobar2000 2.25+ x64 component, written entirely in Rust, that plays Spotify links through librespot.
 
 ## Commands
 
@@ -16,7 +16,7 @@ foo_librespot is a foobar2000 2.x x64 component, written entirely in Rust, that 
 
 ## Conventions
 
-- Target `x86_64-pc-windows-msvc` and foobar2000 2.x (SDK target version 81) only.
+- Target `x86_64-pc-windows-msvc` and foobar2000 2.25 and later only. The SDK target version stays 81, the newest the SDK defines.
 - No C or C++ anywhere in the build.
 - `oxibar` is licensed `MIT AND BSD-Source-Code`. Every file transcribed from the foobar2000 SDK starts with the SDK notice. Other crates are MIT.
 - Every vtable slot is `unsafe extern "C-unwind" fn`, and every Rust-implemented slot runs inside `oxibar::boundary::guard`.
@@ -42,6 +42,7 @@ Do not re-litigate these without new evidence.
 - ReplayGain comes from Spotify's `AUDIO_FILES` extended metadata (integrated loudness and true peak), fetched in the same request as the track's other metadata, so tracks have it as soon as they are imported. The gains in the audio file's header, plus 1.5 dB, are only a fallback.
 - `panic = "unwind"`, never `abort`: a panic must reach foobar2000 as a C++ exception.
 - The dynamic CRT, as foobar2000 itself uses. No `+crt-static`.
+- foobar2000 2.25 and later only (the maintainer's decision). OxiBar uses the interfaces 2.25 introduced, such as `input_decoder_v5::poll_live_info`, and leaves the ones they replace, such as `get_dynamic_info`, unanswered.
 
 ## Win32 bindings
 

@@ -6,7 +6,9 @@ use std::f64::consts::PI;
 
 use oxibar::abi::input::{DECODER, INFO_READER, INPUT_ENTRY};
 use oxibar::cxx::ExceptionKind;
-use oxibar::testing::{FakeAbort, FakeAudioChunk, FakeFileInfo, InputEntryHandle};
+use oxibar::testing::{
+	DecoderHandle, FakeAbort, FakeAudioChunk, FakeFileInfo, FakeLiveInfoList, InputEntryHandle,
+};
 
 fn sine(hz: f64, frame: f64) -> f64 {
 	0.25 * (2.0 * PI * hz * frame / 44_100.0).sin()
@@ -15,6 +17,32 @@ fn sine(hz: f64, frame: f64) -> f64 {
 fn entry() -> InputEntryHandle {
 	let (_, component) = common::load();
 	InputEntryHandle::new(component.create_all(&INPUT_ENTRY).pop().expect("an input_entry service"))
+}
+
+/// The bitrate foobar2000 shows after polling the decoder's live info, if it changed.
+fn live_bitrate(decoder: &DecoderHandle) -> Option<String> {
+	let list = FakeLiveInfoList::new();
+	decoder.poll_live_info(&list, &FakeAbort::new(false)).unwrap();
+	if list.scopes().is_empty() {
+		return None;
+	}
+	let mut info = FakeFileInfo::new();
+	assert!(list.apply(0, &mut info).unwrap());
+	info.info("bitrate")
+}
+
+#[test]
+fn bitrate_shows_live_after_the_first_chunk_and_again_after_a_seek() {
+	let abort = FakeAbort::new(false);
+	let decoder = entry().open_v3(&DECODER, "oxitone://440", None, None, &abort).unwrap();
+	decoder.initialize(0, 0, &abort).unwrap();
+	decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
+	assert_eq!(live_bitrate(&decoder).as_deref(), Some("1411"));
+	decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
+	assert_eq!(live_bitrate(&decoder), None);
+	decoder.seek(5.0, &abort).unwrap();
+	decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
+	assert_eq!(live_bitrate(&decoder).as_deref(), Some("1411"));
 }
 
 #[test]

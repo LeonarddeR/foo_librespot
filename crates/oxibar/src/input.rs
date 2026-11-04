@@ -13,6 +13,8 @@ use crate::abi::input::{
 	INFO_READER, INFO_WRITER, INPUT_ENTRY, INPUT_ENTRY_V2, INPUT_ENTRY_V3, INPUT_ENTRY_V4,
 	InputEntryVtbl,
 };
+use crate::abi::live_info::InputLiveInfo;
+use crate::abi::pfc_list::ListBase;
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 use crate::abort::Abort;
 use crate::audio_chunk::AudioChunk;
@@ -22,6 +24,7 @@ use crate::cxx::ExceptionKind;
 use crate::error::{Error, Result};
 use crate::file_info::FileInfo;
 use crate::guid::Guid;
+use crate::live_info;
 use crate::service::{ServiceImpl, ServiceObject, ServicePtr, new_service};
 
 /// Why foobar2000 opens a path.
@@ -50,11 +53,11 @@ pub trait Input: Sized + Send + 'static {
 	/// Seeking past the end must succeed; the next `decode_run` then returns false.
 	fn decode_seek(&mut self, seconds: f64, abort: &Abort) -> Result<()>;
 	fn can_seek(&self) -> bool;
-	/// Called after each `decode_run` and `decode_seek`. Returns true when it wrote changed
-	/// technical info, such as the bitrate, into `info`; foobar2000 shows it while the track
-	/// plays, from the start of the last chunk.
-	fn get_dynamic_info(&mut self, _info: &mut FileInfo<'_>) -> Result<bool> {
-		Ok(false)
+	/// Technical info that changed since the last call, as field names and values, such as the
+	/// bitrate once a file is chosen. foobar2000 asks after each `decode_run`, shows the change
+	/// from the start of the last chunk, and forgets it when the track seeks.
+	fn live_info(&mut self) -> Vec<(String, String)> {
+		Vec::new()
 	}
 }
 
@@ -69,7 +72,7 @@ pub fn entry_service<T: Input>() -> ServicePtr {
 }
 
 /// Releases a `service_ptr_t` that foobar2000 passed by value, as the callee must under MSVC.
-unsafe fn release_by_value(slot: ByValueServicePtr) {
+pub(crate) unsafe fn release_by_value(slot: ByValueServicePtr) {
 	if !slot.is_null() {
 		unsafe { drop(ServicePtr::from_raw_owned(*slot)) };
 	}
@@ -268,15 +271,15 @@ unsafe impl<T: Input> ServiceImpl for Decoder<T> {
 		run: run::<T>,
 		seek: seek::<T>,
 		can_seek: can_seek::<T>,
-		get_dynamic_info: get_dynamic_info::<T>,
-		get_dynamic_info_track,
+		get_dynamic_info,
+		get_dynamic_info_track: get_dynamic_info,
 		on_idle,
 		run_raw,
 		set_logger,
 		set_pause,
 		flush_on_pause,
 		extended_param,
-		poll_live_info,
+		poll_live_info: poll_live_info::<T>,
 	};
 }
 
@@ -355,25 +358,8 @@ unsafe extern "C-unwind" fn can_seek<T: Input>(this: *mut ServiceBase) -> bool {
 	unsafe { guard(|| Ok(Decoder::<T>::of(this).input()?.can_seek())) }
 }
 
-unsafe extern "C-unwind" fn get_dynamic_info<T: Input>(
-	this: *mut ServiceBase,
-	out: *mut RawFileInfo,
-	timestamp_delta: *mut f64,
-) -> bool {
-	unsafe {
-		guard(|| {
-			let changed =
-				Decoder::<T>::of(this).input()?.get_dynamic_info(&mut FileInfo::from_raw(out))?;
-			if changed {
-				timestamp_delta.write(0.0);
-			}
-			Ok(changed)
-		})
-	}
-}
-
-/// Only for streams whose track changes while they play, such as internet radio.
-unsafe extern "C-unwind" fn get_dynamic_info_track(
+/// Replaced by `poll_live_info` in foobar2000 2.25, the oldest version OxiBar supports.
+unsafe extern "C-unwind" fn get_dynamic_info(
 	_this: *mut ServiceBase,
 	_out: *mut RawFileInfo,
 	_timestamp_delta: *mut f64,
@@ -412,11 +398,18 @@ unsafe extern "C-unwind" fn extended_param(
 	0
 }
 
-unsafe extern "C-unwind" fn poll_live_info(
-	_this: *mut ServiceBase,
-	_ret: *mut c_void,
+unsafe extern "C-unwind" fn poll_live_info<T: Input>(
+	this: *mut ServiceBase,
+	ret: *mut ListBase<InputLiveInfo>,
 	_abort: *mut AbortCallback,
 ) {
+	unsafe {
+		guard(|| {
+			// The decoder is unlocked again before foobar2000's list is called.
+			let fields = Decoder::<T>::of(this).input()?.live_info();
+			if fields.is_empty() { Ok(()) } else { live_info::add_info_change(ret, fields) }
+		});
+	}
 }
 
 #[cfg(test)]
@@ -426,6 +419,7 @@ mod tests {
 
 	use super::{Input, OpenReason, entry_service};
 	use crate::abi::input::{DECODER, DECODER_V5, INFO_READER, INFO_READER_V2, INFO_WRITER};
+	use crate::abi::live_info::SCOPE_INFO;
 	use crate::abort::Abort;
 	use crate::audio_chunk::{AudioChunk, CHANNEL_MASK_STEREO};
 	use crate::cxx::ExceptionKind;
@@ -433,7 +427,8 @@ mod tests {
 	use crate::file_info::FileInfo;
 	use crate::guid::Guid;
 	use crate::testing::{
-		CountedService, FakeAbort, FakeAudioChunk, FakeFileInfo, InputEntryHandle,
+		CountedService, DecoderHandle, FakeAbort, FakeAudioChunk, FakeFileInfo, FakeLiveInfoList,
+		InputEntryHandle,
 	};
 
 	const TEST_GUID: Guid = Guid::from_u128(0x0b6e2f5a_1c3d_4e7f_8a9b_0c1d2e3f4a5b);
@@ -491,13 +486,12 @@ mod tests {
 			true
 		}
 
-		fn get_dynamic_info(&mut self, info: &mut FileInfo<'_>) -> Result<bool> {
+		fn live_info(&mut self) -> Vec<(String, String)> {
 			if self.runs != 1 || self.reported {
-				return Ok(false);
+				return Vec::new();
 			}
 			self.reported = true;
-			info.info_set_int("bitrate", 320)?;
-			Ok(true)
+			vec![("bitrate".to_owned(), "320".to_owned())]
 		}
 	}
 
@@ -651,26 +645,45 @@ mod tests {
 		assert_eq!(SEEKED_TO.get(), Some(2.5));
 	}
 
-	#[test]
-	fn dynamic_info_reports_what_the_input_changed_once() {
+	fn playing() -> DecoderHandle {
 		let abort = FakeAbort::new(false);
 		let decoder = entry().open_v3(&DECODER, "test://ok", None, None, &abort).unwrap();
 		decoder.initialize(0, 0, &abort).unwrap();
-		let mut info = FakeFileInfo::new();
-		assert_eq!(decoder.dynamic_info(&mut info).unwrap(), None);
 		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
-		assert_eq!(decoder.dynamic_info(&mut info).unwrap(), Some(0.0));
-		assert_eq!(info.info("bitrate").as_deref(), Some("320"));
-		assert_eq!(decoder.dynamic_info(&mut info).unwrap(), None);
+		decoder
 	}
 
 	#[test]
-	fn dynamic_track_info_is_never_reported() {
-		let abort = FakeAbort::new(false);
-		let decoder = entry().open_v3(&DECODER, "test://ok", None, None, &abort).unwrap();
-		decoder.initialize(0, 0, &abort).unwrap();
-		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
+	fn live_info_reaches_foobar2000_as_a_file_info_filter_once() {
+		let decoder = playing();
+		let list = FakeLiveInfoList::new();
+		decoder.poll_live_info(&list, &FakeAbort::new(false)).unwrap();
+		assert_eq!(list.scopes(), [SCOPE_INFO]);
 		let mut info = FakeFileInfo::new();
+		assert!(list.apply(0, &mut info).unwrap());
+		assert_eq!(info.info("bitrate").as_deref(), Some("320"));
+		let again = FakeLiveInfoList::new();
+		decoder.poll_live_info(&again, &FakeAbort::new(false)).unwrap();
+		assert_eq!(again.scopes(), []);
+	}
+
+	#[test]
+	fn the_filter_outlives_the_decoder_and_goes_with_the_list() {
+		let decoder = playing();
+		let list = FakeLiveInfoList::new();
+		decoder.poll_live_info(&list, &FakeAbort::new(false)).unwrap();
+		drop(decoder);
+		assert!(list.apply(0, &mut FakeFileInfo::new()).unwrap());
+		assert_eq!(crate::live_info::filters_alive(), 1);
+		drop(list);
+		assert_eq!(crate::live_info::filters_alive(), 0);
+	}
+
+	#[test]
+	fn the_old_dynamic_info_slots_report_nothing() {
+		let decoder = playing();
+		let mut info = FakeFileInfo::new();
+		assert_eq!(decoder.dynamic_info(&mut info).unwrap(), None);
 		assert_eq!(decoder.dynamic_track_info(&mut info).unwrap(), None);
 	}
 

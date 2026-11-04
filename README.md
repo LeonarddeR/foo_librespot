@@ -17,7 +17,7 @@ Early development. Nothing is released yet.
 
 ## Requirements
 
-- foobar2000 2.x, 64-bit.
+- foobar2000 2.25 or later, 64-bit.
 - A Spotify Premium account. librespot does not work with free accounts.
 
 ## Logging in

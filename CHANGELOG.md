@@ -19,3 +19,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `foo_librespot`: the status bar shows the codec and bitrate of the file that plays.
 - `foo_librespot`: one popup per import lists the items that were skipped and why, and the console explains how to stop foo_youtube from taking Spotify links.
 - `oxibar`: preferences pages, dialogs built from in-memory templates with live regions, popups, foobar2000's settings store and main-thread callbacks.
+- `oxibar`: inputs report technical info that changes while a track plays, such as the bitrate, through foobar2000 2.25's live info. `foo_oxitone` uses it to show its bitrate.

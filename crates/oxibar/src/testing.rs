@@ -40,10 +40,12 @@ pub struct FakeApi {
 	state: Arc<services::FakeState>,
 }
 
+mod live_info;
 mod preferences;
 mod services;
 mod windows;
 
+pub use live_info::FakeLiveInfoList;
 pub use preferences::{FakePageCallback, PageInstanceHandle, PreferencesHandle};
 pub use windows::{hidden_window, pump_messages, send_close, send_command, wants_all_keys};
 
@@ -740,6 +742,17 @@ impl DecoderHandle {
 			(self.vtbl().get_dynamic_info_track)(self.0.as_raw(), info.as_raw(), &raw mut delta)
 		})?;
 		Ok(changed.then_some(delta))
+	}
+
+	/// `poll_live_info`, as foobar2000 2.25 and later call it after each `run`.
+	pub fn poll_live_info(
+		&self,
+		list: &FakeLiveInfoList,
+		abort: &FakeAbort,
+	) -> Result<(), HostException> {
+		try_host(|| unsafe {
+			(self.vtbl().poll_live_info)(self.0.as_raw(), list.as_raw(), abort.as_raw());
+		})
 	}
 
 	/// `set_logger`, passing `logger` by value: the decoder must release it.
