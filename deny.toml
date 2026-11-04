@@ -1,5 +1,7 @@
 [graph]
 all-features = true
+# The component only ships for 64-bit Windows; dependencies for other platforms never reach it.
+targets = ["x86_64-pc-windows-msvc"]
 
 [advisories]
 yanked = "deny"
