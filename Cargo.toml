@@ -11,7 +11,6 @@ repository = "https://github.com/LeonarddeR/foo_librespot"
 
 [workspace.dependencies]
 futures-util = { version = "0.3.34", default-features = false }
-hound = "3.5.1"
 libloading = "0.9"
 # librespot is pinned to PR #1855's branch; see [patch.crates-io] below.
 librespot-audio = { version = "0.8.0", default-features = false, features = ["native-tls"] }

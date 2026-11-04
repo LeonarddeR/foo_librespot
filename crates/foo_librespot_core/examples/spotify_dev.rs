@@ -3,7 +3,7 @@
 //! ```text
 //! cargo run -p foo_librespot_core --example spotify_dev -- login
 //! cargo run -p foo_librespot_core --example spotify_dev -- resolve <link>
-//! cargo run -p foo_librespot_core --example spotify_dev -- decode <track link> <seconds> <out.wav> [--seek <seconds>]
+//! cargo run -p foo_librespot_core --example spotify_dev -- decode <track link> <seconds> [--seek <seconds>]
 //! cargo run -p foo_librespot_core --example spotify_dev -- logout
 //! ```
 //!
@@ -14,12 +14,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::mpsc;
 
-use foo_librespot_core::audio::decoder::{CHANNELS, SAMPLE_RATE};
+use foo_librespot_core::audio::decoder::SAMPLE_RATE;
 use foo_librespot_core::audio::format::Bitrate;
 use foo_librespot_core::link::parse_link;
 use foo_librespot_core::{Core, CoreError};
 
-const USAGE: &str = "usage: spotify_dev [--profile <folder>] login | logout | resolve <link> | decode <track link> <seconds> <out.wav> [--seek <seconds>]";
+const USAGE: &str = "usage: spotify_dev [--profile <folder>] login | logout | resolve <link> | decode <track link> <seconds> [--seek <seconds>]";
 
 fn main() -> ExitCode {
 	init_logger();
@@ -39,7 +39,7 @@ fn main() -> ExitCode {
 		["login"] => login(&core),
 		["logout"] => core.logout().map(|()| println!("Logged out.")),
 		["resolve", link] => resolve(&core, link),
-		["decode", link, seconds, out] => decode(&core, link, seconds, out, seek.as_deref()),
+		["decode", link, seconds] => decode(&core, link, seconds, seek.as_deref()),
 		_ => {
 			eprintln!("{USAGE}");
 			core.shutdown();
@@ -110,13 +110,11 @@ fn resolve(core: &Core, link: &str) -> Result<(), CoreError> {
 	Ok(())
 }
 
-fn decode(
-	core: &Core,
-	link: &str,
-	seconds: &str,
-	out: &str,
-	seek: Option<&str>,
-) -> Result<(), CoreError> {
+/// Decodes `seconds` of a track and prints, for each whole second, a fingerprint of its samples
+/// and its peak. Nothing is written to a file: decrypted Spotify audio never leaves memory. A
+/// decode with `--seek 60` prints the same fingerprints from 1:00 as one from the start does when
+/// the seek is sample-exact.
+fn decode(core: &Core, link: &str, seconds: &str, seek: Option<&str>) -> Result<(), CoreError> {
 	let Some(item) = parse_link(link)?.item() else {
 		return Err(CoreError::Unavailable("decode needs a track or episode link".to_owned()));
 	};
@@ -128,36 +126,77 @@ fn decode(
 	println!("format: {:?}", track.format());
 	println!("total frames: {:?}", track.total_frames());
 	println!("replay gain from the file header: {:?}", track.replay_gain());
+	let mut position = 0;
 	if let Some(seek) = seek {
 		let seek: f64 =
 			seek.parse().map_err(|_| CoreError::Unavailable(format!("not a number: {seek}")))?;
-		track.seek(frames(seek))?;
+		position = frames(seek);
+		track.seek(position)?;
 	}
-	let spec = hound::WavSpec {
-		channels: u16::try_from(CHANNELS).expect("two channels"),
-		sample_rate: SAMPLE_RATE,
-		bits_per_sample: 32,
-		sample_format: hound::SampleFormat::Float,
-	};
-	let mut writer = hound::WavWriter::create(out, spec).map_err(std::io::Error::other)?;
+	let second = u64::from(SAMPLE_RATE);
 	let wanted = frames(seconds);
-	let mut written = 0u64;
+	let mut decoded = 0u64;
 	let mut buffer = Vec::new();
-	while written < wanted {
-		let chunk = usize::try_from((wanted - written).min(4096)).expect("small");
+	let mut block = Fingerprint::default();
+	let started = std::time::Instant::now();
+	while decoded < wanted {
+		// Never past the end of the current second, so each block covers exactly one second.
+		let left_in_second = second - position % second;
+		let chunk =
+			usize::try_from((wanted - decoded).min(left_in_second).min(4096)).expect("small");
 		let read = track.read(&mut buffer, chunk)?;
 		if read == 0 {
 			break;
 		}
-		for sample in &buffer {
-			#[allow(clippy::cast_possible_truncation, reason = "WAV output is 32-bit float")]
-			writer.write_sample(*sample as f32).map_err(std::io::Error::other)?;
+		block.add(&buffer);
+		position += read as u64;
+		decoded += read as u64;
+		if position % second == 0 {
+			println!("{}: {}", clock(position / second - 1), block.finish());
 		}
-		written += read as u64;
 	}
-	writer.finalize().map_err(std::io::Error::other)?;
-	println!("wrote {written} frames ({:.3} s) to {out}", written as f64 / f64::from(SAMPLE_RATE));
+	if !block.is_empty() {
+		println!("{} (part): {}", clock(position / second), block.finish());
+	}
+	println!(
+		"decoded {decoded} frames ({:.3} s) in {:.2?}",
+		decoded as f64 / f64::from(SAMPLE_RATE),
+		started.elapsed()
+	);
 	Ok(())
+}
+
+/// An FNV-1a hash of a block's samples, and its peak.
+#[derive(Default)]
+struct Fingerprint {
+	hash: Option<u64>,
+	peak: f64,
+}
+
+impl Fingerprint {
+	fn add(&mut self, samples: &[f64]) {
+		let mut hash = self.hash.unwrap_or(0xcbf2_9ce4_8422_2325);
+		for sample in samples {
+			for byte in sample.to_bits().to_le_bytes() {
+				hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+			}
+			self.peak = self.peak.max(sample.abs());
+		}
+		self.hash = Some(hash);
+	}
+
+	const fn is_empty(&self) -> bool {
+		self.hash.is_none()
+	}
+
+	fn finish(&mut self) -> String {
+		let done = std::mem::take(self);
+		format!("fingerprint {:016x}, peak {:.3}", done.hash.unwrap_or_default(), done.peak)
+	}
+}
+
+fn clock(second: u64) -> String {
+	format!("{}:{:02}", second / 60, second % 60)
 }
 
 #[allow(

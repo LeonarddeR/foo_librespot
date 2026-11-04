@@ -83,11 +83,12 @@ It keeps its login in `.spotify-dev`, which git ignores:
 ```
 cargo run -p foo_librespot_core --example spotify_dev -- login
 cargo run -p foo_librespot_core --example spotify_dev -- resolve https://open.spotify.com/album/<id>
-cargo run -p foo_librespot_core --example spotify_dev -- decode https://open.spotify.com/track/<id> 10 .spotify-dev/track.wav
-cargo run -p foo_librespot_core --example spotify_dev -- decode https://open.spotify.com/track/<id> 10 .spotify-dev/seek.wav --seek 60
+cargo run -p foo_librespot_core --example spotify_dev -- decode https://open.spotify.com/track/<id> 70
+cargo run -p foo_librespot_core --example spotify_dev -- decode https://open.spotify.com/track/<id> 10 --seek 60
 ```
 
 `login` prints a page and a code; open the page, confirm, and the login is stored encrypted for your Windows account.
+`decode` writes nothing to disk, because decrypted Spotify audio never reaches a file. It prints a fingerprint and the peak of each second it decodes, so a seek is sample-exact when the second command's lines match the first command's lines from 1:00.
 Set `SPOTIFY_DEV_LOG=debug` to see what librespot does.
 The phase 2 checklist is in [docs/checklists/phase-2-core.md](docs/checklists/phase-2-core.md).
 
