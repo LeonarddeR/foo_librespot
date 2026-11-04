@@ -15,7 +15,7 @@ fn component_loads_and_reports_its_version() {
 		component.create_all(&COMPONENTVERSION).pop().expect("a componentversion service");
 	let strings = component_version_strings(&service);
 	assert_eq!(strings.name, "Spotify integration using librespot");
-	assert_eq!(strings.version, "0.1.0");
+	assert_eq!(strings.version, env!("CARGO_PKG_VERSION"));
 	assert!(
 		strings.about.starts_with(
 			"Plays Spotify tracks, albums, playlists and podcasts. Paste or drag a Spotify link to add them."
@@ -36,7 +36,9 @@ fn on_init_prints_loaded_line() {
 	let initquit = component.create_all(&INITQUIT).pop().expect("an initquit service");
 	on_init(&initquit);
 	assert!(
-		api.console_lines().iter().any(|line| line == "foo_librespot: loaded (Foxide2k 0.1.0)"),
+		api.console_lines()
+			.iter()
+			.any(|line| *line == format!("foo_librespot: loaded (Foxide2k {})", foxide2k::VERSION)),
 		"{:?}",
 		api.console_lines()
 	);

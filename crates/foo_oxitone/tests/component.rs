@@ -27,7 +27,7 @@ fn componentversion_reports_name_version_about() {
 		component.create_all(&COMPONENTVERSION).pop().expect("a componentversion service");
 	let strings = component_version_strings(&service);
 	assert_eq!(strings.name, "Test tone (Foxide2k example)");
-	assert_eq!(strings.version, "0.1.0");
+	assert_eq!(strings.version, env!("CARGO_PKG_VERSION"));
 	assert!(strings.about.contains("oxitone://"), "{}", strings.about);
 	assert_eq!(strings.file_name, "foo_oxitone");
 }
@@ -38,7 +38,9 @@ fn on_init_prints_loaded_line() {
 	let initquit = component.create_all(&INITQUIT).pop().expect("an initquit service");
 	on_init(&initquit);
 	assert!(
-		api.console_lines().iter().any(|line| line == "foo_oxitone: loaded (Foxide2k 0.1.0)"),
+		api.console_lines()
+			.iter()
+			.any(|line| *line == format!("foo_oxitone: loaded (Foxide2k {})", foxide2k::VERSION)),
 		"{:?}",
 		api.console_lines()
 	);
