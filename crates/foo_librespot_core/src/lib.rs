@@ -18,6 +18,7 @@ pub mod error;
 pub mod link;
 pub mod profile;
 pub mod runtime;
+pub mod session;
 
 pub use error::{CoreError, Result};
 pub use librespot_core::authentication::Credentials;
