@@ -179,8 +179,7 @@ fn about_command(root: &Path, out: &Path) -> Command {
 
 fn print_release_notes(version: &str) -> Result<()> {
 	let changelog = read_text(&root().join("CHANGELOG.md"))?;
-	let notes = notes::release_notes(&changelog, version)
-		.ok_or_else(|| format!("CHANGELOG.md has no section for version {version}"))?;
+	let notes = notes::release_notes(&changelog, version)?;
 	println!("{notes}");
 	Ok(())
 }
