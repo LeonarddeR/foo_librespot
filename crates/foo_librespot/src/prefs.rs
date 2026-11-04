@@ -83,8 +83,8 @@ impl DialogHandler for PageHandler {
 		None
 	}
 
-	fn command(&mut self, _dialog: &Dialog, id: u16, notification: u16) {
-		if AccountPanel::command(id, notification) {
+	fn command(&mut self, dialog: &Dialog, id: u16, notification: u16) {
+		if AccountPanel::command(*dialog, id, notification) {
 			return;
 		}
 		if id == BITRATE && notification == CBN_SELCHANGE {
@@ -257,15 +257,15 @@ mod tests {
 	}
 
 	#[test]
-	fn open_browser_is_enabled_only_while_confirming_and_opens_on_press() {
+	fn open_browser_shows_only_while_confirming_and_opens_on_press() {
 		let setup = open_page();
-		assert!(!setup.dialog.is_enabled(BROWSER));
+		assert!(!setup.dialog.is_visible(BROWSER));
 		send_command(&setup.dialog, ACCOUNT, BN_CLICKED);
 		pump_messages();
-		assert!(!setup.dialog.is_enabled(BROWSER));
+		assert!(!setup.dialog.is_visible(BROWSER));
 		setup.fake.send_code(code());
 		pump_messages();
-		assert!(setup.dialog.is_enabled(BROWSER));
+		assert!(setup.dialog.is_visible(BROWSER));
 		assert!(setup.opened.lock().unwrap().is_empty(), "the browser opened by itself");
 		send_command(&setup.dialog, BROWSER, BN_CLICKED);
 		assert_eq!(*setup.opened.lock().unwrap(), ["https://spotify.com/pair?code=KKGT-2024"]);
@@ -297,6 +297,29 @@ mod tests {
 		pump_messages();
 		assert!(!setup.dialog.is_visible(BROWSER));
 		assert_eq!(setup.dialog.focused(), Some(ACCOUNT));
+	}
+
+	/// Ends a login while foobar2000 is in the background, as it is while the user confirms in
+	/// the browser, then gives focus back to `id`, as Windows does when the Preferences window
+	/// is activated again with `id` as its saved focus.
+	fn focus_returns_after_the_login_to(id: u16) -> Option<u16> {
+		let setup = open_page();
+		confirming(&setup);
+		setup.fake.finish_login(Ok("Keith Getty".to_owned()));
+		pump_messages();
+		setup.dialog.focus(id);
+		pump_messages();
+		setup.dialog.focused()
+	}
+
+	#[test]
+	fn focus_that_returns_to_a_hidden_code_field_moves_to_the_account_button() {
+		assert_eq!(focus_returns_after_the_login_to(PAGE), Some(ACCOUNT));
+	}
+
+	#[test]
+	fn focus_that_returns_to_a_hidden_open_browser_moves_to_the_account_button() {
+		assert_eq!(focus_returns_after_the_login_to(BROWSER), Some(ACCOUNT));
 	}
 
 	#[test]

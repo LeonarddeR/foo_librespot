@@ -571,7 +571,9 @@ pub mod Windows {
 		pub type AnnoScope = i32;
 		pub const Assertive: LiveSetting = 2;
 		pub const BN_CLICKED: i32 = 0;
+		pub const BN_SETFOCUS: i32 = 6;
 		pub const BS_GROUPBOX: i32 = 7;
+		pub const BS_NOTIFY: i32 = 16384;
 		pub const BS_PUSHBUTTON: i32 = 0;
 		pub const CBN_SELCHANGE: i32 = 1;
 		pub const CBS_DROPDOWNLIST: i32 = 3;
@@ -864,6 +866,7 @@ pub mod Windows {
 		pub const DS_MODALFRAME: i32 = 128;
 		pub const DS_SETFONT: i32 = 64;
 		pub const DWLP_MSGRESULT: i32 = 0;
+		pub const EN_SETFOCUS: i32 = 256;
 		pub const ES_AUTOHSCROLL: i32 = 128;
 		pub const ES_AUTOVSCROLL: i32 = 64;
 		pub const ES_MULTILINE: i32 = 4;

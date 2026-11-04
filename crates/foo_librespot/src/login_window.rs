@@ -84,7 +84,7 @@ impl DialogHandler for LoginWindow {
 	}
 
 	fn command(&mut self, dialog: &Dialog, id: u16, notification: u16) {
-		if AccountPanel::command(id, notification) {
+		if AccountPanel::command(*dialog, id, notification) {
 			return;
 		}
 		if id == IDCANCEL {
@@ -158,6 +158,7 @@ mod tests {
 		controller().start();
 		let dialog = open(hidden_window()).unwrap();
 		assert!(dialog.is_visible(CODE));
+		assert!(!dialog.is_visible(BROWSER));
 		assert_eq!(dialog.text(CODE), "Waiting for Spotify's code…");
 		assert_eq!(dialog.focused(), Some(CODE));
 		destroy(dialog);

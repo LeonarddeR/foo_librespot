@@ -20,6 +20,8 @@ pub mod style {
 	pub const DS_CENTER: u32 = win::DS_CENTER.cast_unsigned();
 	pub const BS_PUSHBUTTON: u32 = win::BS_PUSHBUTTON.cast_unsigned();
 	pub const BS_GROUPBOX: u32 = win::BS_GROUPBOX.cast_unsigned();
+	/// Makes a button tell its dialog when it gains and loses focus.
+	pub const BS_NOTIFY: u32 = win::BS_NOTIFY.cast_unsigned();
 	pub const ES_MULTILINE: u32 = win::ES_MULTILINE.cast_unsigned();
 	pub const ES_READONLY: u32 = win::ES_READONLY.cast_unsigned();
 	pub const ES_AUTOVSCROLL: u32 = win::ES_AUTOVSCROLL.cast_unsigned();
@@ -34,6 +36,9 @@ pub mod notify {
 	use crate::bindings::Windows::Win32 as win;
 
 	pub const BN_CLICKED: u16 = win::BN_CLICKED as u16;
+	/// Sent only by buttons with `BS_NOTIFY`.
+	pub const BN_SETFOCUS: u16 = win::BN_SETFOCUS as u16;
+	pub const EN_SETFOCUS: u16 = win::EN_SETFOCUS as u16;
 	pub const CBN_SELCHANGE: u16 = win::CBN_SELCHANGE as u16;
 	/// The id of a dialog's Cancel or Close button, which Escape and the close box press.
 	pub const IDCANCEL: u16 = win::IDCANCEL as u16;
@@ -53,5 +58,7 @@ mod tests {
 		assert_eq!(style::CBS_DROPDOWNLIST, 3);
 		assert_eq!(style::DS_CENTER, 0x0800);
 		assert_eq!((notify::BN_CLICKED, notify::CBN_SELCHANGE, notify::IDCANCEL), (0, 1, 2));
+		assert_eq!(style::BS_NOTIFY, 0x4000);
+		assert_eq!((notify::BN_SETFOCUS, notify::EN_SETFOCUS), (6, 0x0100));
 	}
 }

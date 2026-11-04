@@ -5,8 +5,10 @@
 use oxibar::console;
 use oxibar::dialog::accessibility::{announce, make_live_region};
 use oxibar::dialog::host::{Dialog, refresh_poster};
-use oxibar::dialog::notify::BN_CLICKED;
-use oxibar::dialog::style::{ES_AUTOHSCROLL, ES_READONLY, SS_NOPREFIX, WS_BORDER, WS_TABSTOP};
+use oxibar::dialog::notify::{BN_CLICKED, BN_SETFOCUS, EN_SETFOCUS};
+use oxibar::dialog::style::{
+	BS_NOTIFY, ES_AUTOHSCROLL, ES_READONLY, SS_NOPREFIX, WS_BORDER, WS_TABSTOP,
+};
 use oxibar::dialog::template::{ControlClass, DialogItem};
 
 use crate::login::{controller, view};
@@ -18,20 +20,21 @@ pub const ACCOUNT: u16 = 102;
 pub const CODE_LABEL: u16 = 103;
 /// The code to confirm, read-only so it can be read and copied.
 pub const CODE: u16 = 104;
-/// "Open browser": the only way Spotify's page opens.
+/// "Open browser": the only way Spotify's page opens. Shown only while a code waits, and never
+/// disabled: Windows can give focus back to a hidden control, but not to a disabled one.
 pub const BROWSER: u16 = 108;
 pub const PAGE_LABEL: u16 = 109;
 /// The page to confirm the code on, read-only like the code.
 pub const PAGE: u16 = 110;
 
-/// The controls that are only for confirming a code.
-const LOGIN_CONTROLS: [u16; 5] = [CODE_LABEL, CODE, PAGE_LABEL, PAGE, BROWSER];
+/// The code and the page, with their labels.
+const CODE_FIELDS: [u16; 4] = [CODE_LABEL, CODE, PAGE_LABEL, PAGE];
 
 /// A read-only field on one line: a multi-line edit would keep Escape and Enter from the
 /// dialog it is in.
 const FIELD: u32 = ES_READONLY | ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP;
 
-/// When the code, the page and "Open browser" are shown.
+/// When the code and the page are shown. "Open browser" shows only while a code waits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoginControls {
 	/// Only while a code waits for the user, as on the preferences page.
@@ -62,7 +65,13 @@ pub fn items(x: i16, y: i16, width: i16) -> Vec<DialogItem> {
 		item(CODE, ControlClass::Edit, "", FIELD, (x + 32, y + 41, width - 32, 12)),
 		item(PAGE_LABEL, ControlClass::Static, "Pa&ge:", 0, (x, y + 59, 30, 8)),
 		item(PAGE, ControlClass::Edit, "", FIELD, (x + 32, y + 57, width - 32, 12)),
-		item(BROWSER, ControlClass::Button, "Open &browser", WS_TABSTOP, (x, y + 75, 84, 14)),
+		item(
+			BROWSER,
+			ControlClass::Button,
+			"Open &browser",
+			WS_TABSTOP | BS_NOTIFY,
+			(x, y + 75, 84, 14),
+		),
 	]
 }
 
@@ -88,10 +97,15 @@ impl AccountPanel {
 	}
 
 	/// Handles the panel's own commands; false for any other control.
-	pub fn command(id: u16, notification: u16) -> bool {
+	pub fn command(dialog: Dialog, id: u16, notification: u16) -> bool {
 		match (id, notification) {
 			(ACCOUNT, BN_CLICKED) => controller().press(),
 			(BROWSER, BN_CLICKED) => controller().open_browser(),
+			// Coming back to foobar2000, Windows gives focus to the control that had it when
+			// foobar2000 was left, which may have been hidden since; the refresh moves it on.
+			(CODE | PAGE, EN_SETFOCUS) | (BROWSER, BN_SETFOCUS) if !dialog.is_visible(id) => {
+				refresh_poster(&dialog).post();
+			}
 			(STATUS | ACCOUNT | CODE_LABEL | CODE | PAGE_LABEL | PAGE | BROWSER, _) => {}
 			_ => return false,
 		}
@@ -109,11 +123,10 @@ impl AccountPanel {
 
 	fn render(&mut self, dialog: Dialog) {
 		let shown = view(&controller().state());
-		let visible = self.controls == LoginControls::Always || shown.confirming;
-		// A hidden or disabled control can't keep focus; the account button replaced what was
-		// pressed.
+		let fields = self.controls == LoginControls::Always || shown.confirming;
+		// A hidden control can't keep focus; the account button replaced what was pressed.
 		let loses_focus = |id| match id {
-			CODE | PAGE => !visible,
+			CODE | PAGE => !fields,
 			BROWSER => !shown.confirming,
 			_ => false,
 		};
@@ -124,10 +137,10 @@ impl AccountPanel {
 		dialog.set_text(ACCOUNT, shown.button);
 		dialog.set_text(CODE, &shown.code);
 		dialog.set_text(PAGE, &shown.page);
-		dialog.enable(BROWSER, shown.confirming);
-		for id in LOGIN_CONTROLS {
-			dialog.set_visible(id, visible);
+		for id in CODE_FIELDS {
+			dialog.set_visible(id, fields);
 		}
+		dialog.set_visible(BROWSER, shown.confirming);
 		self.status = shown.status;
 	}
 }

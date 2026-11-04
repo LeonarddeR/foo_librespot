@@ -84,7 +84,7 @@ Each step lists what you should hear.
    - Tab: you hear "Code:" with the code, then "Page:" with the address, then "Open browser". Alt+D and Alt+G reach the two fields.
    - In the code field, press Escape: Preferences closes. Open it again; the login is still waiting and the page shows the same code.
    - Tab to Open browser and press it: Spotify's page opens with the code filled in.
-   - Confirm. NVDA reads "Logged in to Spotify as …" without focus moving, except that focus moves from Open browser to the button, which now reads "Log out". The code, the page and Open browser disappear.
+   - Confirm in the browser, then go back to foobar2000 with Alt+Tab. Focus is on the button, which now reads "Log out", and the status reads "Logged in to Spotify as …". The code, the page and Open browser are gone.
 3. **The bitrate.**
    - Choose 160 kbit/s with the arrow keys. Apply becomes available.
    - Press Apply and close Preferences.
@@ -95,7 +95,7 @@ Each step lists what you should hear.
 5. **The login window, from a link.**
    - Log out on the page and close Preferences.
    - Paste the album link into a playlist. The "Log in to Spotify" window opens with focus on the "Code:" field, which reads "Waiting for Spotify's code…" until the code arrives. No browser opens.
-   - Tab reaches Page, Open browser, Close and Cancel login.
+   - Once the code is there, Tab reaches Page, Open browser, Close and Cancel login. Open browser only appears with the code.
    - Confirm the login. The window closes by itself and the album's 11 tracks arrive.
 6. **The login window, from playing.**
    - Log out on the page and close Preferences.
