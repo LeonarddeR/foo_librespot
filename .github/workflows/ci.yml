@@ -162,6 +162,8 @@ jobs:
         run: cargo build --locked --workspace --all-features
       - name: Run tests
         run: cargo nextest run --locked --workspace --all-features --profile ci
+      # A pull request from a fork gets a read-only token, which can't create the Tests check run,
+      # so its results are reported as annotations instead.
       - name: Publish test report
         uses: mikepenz/action-junit-report@v6
         if: always()
@@ -171,6 +173,7 @@ jobs:
           detailed_summary: true
           include_passed: false
           require_tests: true
+          annotate_only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork }}
 
   # Single required check for branch rulesets; fails if any needed job failed or was skipped.
   all-checks-pass:
