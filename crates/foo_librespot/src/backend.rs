@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use foo_librespot_core::audio::format::Bitrate;
 use foo_librespot_core::audio::track::SpotifyTrack;
 use foo_librespot_core::link::Link;
 use foo_librespot_core::login::DeviceCode;
@@ -14,6 +13,7 @@ use foo_librespot_core::resolve::Resolved;
 use foo_librespot_core::{Core, CoreError, LoginHandle, SpotifyId};
 
 use crate::lifecycle::Lifecycle;
+use crate::settings;
 
 /// Everything the services need from Spotify. Every call blocks and returns
 /// [`CoreError::Aborted`] soon after `is_aborting` turns true.
@@ -122,8 +122,7 @@ impl Backend for CoreBackend {
 		id: SpotifyId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Box<dyn PcmTrack>, CoreError> {
-		// The bitrate becomes a preference in phase 4.
-		Ok(Box::new(core()?.open_track(id, Bitrate::default(), is_aborting)?))
+		Ok(Box::new(core()?.open_track(id, settings::bitrate(), is_aborting)?))
 	}
 
 	fn cover(
