@@ -24,10 +24,11 @@ hooks = [
   { id = "actionlint", name = "actionlint (kjanat fork)", entry = "actionlint", language = "system", files = '^\.github/workflows/', pass_filenames = false },
 ]
 
-# fmt and clippy with the same flags CI uses, so test code is linted before it is pushed.
+# fmt and clippy as CI runs them, so test code is linted before it is pushed. `cargo lint` is an
+# alias in .cargo/config.toml, so the clippy flags are written down once.
 [[repos]]
 repo = "local"
 hooks = [
   { id = "cargo-fmt", name = "cargo fmt", entry = "cargo fmt --all -- --check", language = "system", types = ["rust"], pass_filenames = false },
-  { id = "cargo-clippy", name = "cargo clippy", entry = "cargo clippy --workspace --all-targets --all-features -- -D warnings", language = "system", types = ["rust"], pass_filenames = false },
+  { id = "cargo-clippy", name = "cargo clippy", entry = "cargo lint", language = "system", types = ["rust"], pass_filenames = false },
 ]

@@ -5,7 +5,7 @@ Thank you for helping. A few rules keep the code base easy to work on.
 ## Code
 
 - Format with `cargo fmt --all`. The prek hooks do this for you; install them with `prek install`.
-- Run `cargo clippy --workspace --all-targets --all-features -- -D warnings` and fix any warnings.
+- Run `cargo lint` and fix any warnings. It runs clippy on every crate, target and feature, as CI does.
 - Comments explain why the code does something, never what it does.
 - Every bug fix comes with a regression test that fails without the fix.
 - New behaviour is developed test-first. See [TESTING.md](TESTING.md).

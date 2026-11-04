@@ -9,7 +9,7 @@ foo_librespot is a foobar2000 2.25+ x64 component, written entirely in Rust, tha
 | Build | `cargo build --workspace --all-features` |
 | Test | `cargo nextest run --workspace --all-features` (build first; see TESTING.md) |
 | Format | `cargo fmt --all` |
-| Lint | `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
+| Lint | `cargo lint` (alias for `cargo clippy --workspace --all-targets --all-features -- -D warnings`) |
 | Lint workflows | `actionlint` |
 | Supply chain | `cargo deny check` |
 | All hooks | `prek run --all-files` |
