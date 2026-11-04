@@ -12,7 +12,7 @@
 use std::fmt::Write as _;
 
 use foo_librespot_core::CoreError;
-use foo_librespot_core::link::{Link, PATH_SCHEME, item_path, parse_link};
+use foo_librespot_core::link::{Link, LinkError, PATH_SCHEME, item_path, parse_link};
 use foo_librespot_core::resolve::Skipped;
 use foxide2k::abort::Abort;
 use foxide2k::console;
@@ -59,12 +59,12 @@ impl Filesystem for SpotifyFilesystem {
 		Self::canonical_path(path).map(|canonical| canonical[PATH_SCHEME.len()..].to_owned())
 	}
 
-	/// Every link goes through the loader. It asks for a login when the user is logged out, which
-	/// the input never does while adding, and it adds the entry with its info filled in. An
-	/// episode Spotify doesn't host becomes the podcast's own audio link, which only the loader can
-	/// add.
-	fn content_type(path: &str) -> Option<String> {
-		parse_link(path).ok().map(|_| CONTENT_TYPE.to_owned())
+	/// Every path we claim goes through the loader. It asks for a login when the user is logged
+	/// out, which the input never does while adding, and it adds the entry with its info filled
+	/// in. An episode Spotify doesn't host becomes the podcast's own audio link, which only the
+	/// loader can add. A Spotify link that can't be played goes there too, so the user hears why.
+	fn content_type(_path: &str) -> Option<String> {
+		Some(CONTENT_TYPE.to_owned())
 	}
 }
 
@@ -103,8 +103,26 @@ impl PlaylistLoader for SpotifyLoader {
 
 	fn open(path: &str, callback: &mut LoaderCallback<'_>, abort: &Abort) -> Result<()> {
 		// Decided from the path alone, so other web pages cost nothing.
-		let link = parse_link(path)
-			.map_err(|error| Error::unsupported_format(format!("not a Spotify link: {error}")))?;
+		let link = match parse_link(path) {
+			Ok(link) => link,
+			// Another web page, which another loader may take; nothing to tell the user.
+			Err(LinkError::NotSpotify) => {
+				return Err(Error::unsupported_format(format!("not a Spotify link: {path}")));
+			}
+			// foobar2000 drops a loader's error without a word, so the user is told here.
+			Err(error) => {
+				console::print(&format!("foo_librespot: {path}: {error}"));
+				let message = format!(
+					"{path}
+
+{error}."
+				);
+				if let Err(shown) = popup::show("foo_librespot", &message, PopupIcon::Information) {
+					console::print(&format!("foo_librespot: {}", shown.message));
+				}
+				return Err(Error::unsupported_format(error.to_string()));
+			}
+		};
 		callback.on_progress(path)?;
 		let is_aborting = || abort.is_aborting();
 		let resolved = match backend().resolve(&link, &is_aborting) {
@@ -453,6 +471,48 @@ mod tests {
 			})
 			.collect();
 		resolved
+	}
+
+	fn says_why_it_cant_play(path: &str) {
+		let api = FakeApi::new();
+		api.install();
+		let fake = installed();
+		// Our filesystem claims spotify: URIs it can't parse, so the loader gets them too.
+		let stub = filesystem().open("spotify:local:a:b:c:180", OPEN_MODE_READ).unwrap();
+		assert_eq!(stub.content_type().as_deref(), Some(CONTENT_TYPE));
+		let (callback, record) = FakeLoaderCallback::new();
+		let error = loader().open(path, callback, &FakeAbort::new(false)).unwrap_err();
+		assert_eq!(error.kind, ExceptionKind::IoUnsupportedFormat, "{path}");
+		assert!(record.lock().unwrap().entries.is_empty());
+		let popups = api.popups();
+		assert_eq!(popups.len(), 1, "{path}: {popups:?}");
+		assert!(popups[0].1.contains("can't be played"), "{path}: {popups:?}");
+		assert!(
+			api.console_lines().iter().any(|line| line.contains("can't be played")),
+			"{path}: {:?}",
+			api.console_lines()
+		);
+		assert_eq!(fake.calls(), 0);
+	}
+
+	#[test]
+	fn a_local_file_uri_says_why_it_cant_be_played() {
+		says_why_it_cant_play("spotify:local:a:b:c:180");
+	}
+
+	#[test]
+	fn a_user_profile_page_says_why_it_cant_be_played() {
+		says_why_it_cant_play("https://open.spotify.com/user/someone");
+	}
+
+	#[test]
+	fn a_page_that_isnt_spotify_is_turned_away_silently() {
+		let api = FakeApi::new();
+		api.install();
+		let _fake = installed();
+		let (callback, _record) = FakeLoaderCallback::new();
+		loader().open("https://example.com/", callback, &FakeAbort::new(false)).unwrap_err();
+		assert!(api.popups().is_empty(), "{:?}", api.popups());
 	}
 
 	#[test]

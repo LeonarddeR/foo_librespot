@@ -147,6 +147,10 @@ fn parse_url(url: &str) -> Result<Link, LinkError> {
 	if parts.peek().is_some_and(|part| part.eq_ignore_ascii_case("user")) {
 		parts.next();
 		parts.next();
+		// Old playlist links go on after the user name; a profile page ends there.
+		if parts.peek().is_none() {
+			return Err(LinkError::Unsupported { kind: "user".to_owned() });
+		}
 	}
 	let kind = parts.next().ok_or(LinkError::NotSpotify)?.to_ascii_lowercase();
 	let kind = match kind.as_str() {
@@ -295,6 +299,8 @@ mod tests {
 			unsupported("genre")
 		);
 		assert_eq!(parse_link("spotify:local:a:b:c:180"), unsupported("local"));
+		// A user's profile page; old playlist links also start with /user/<name>/.
+		assert_eq!(parse_link("https://open.spotify.com/user/someone"), unsupported("user"));
 	}
 
 	#[test]
