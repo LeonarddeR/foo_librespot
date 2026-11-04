@@ -32,6 +32,16 @@ pub enum ExceptionKind {
 	InvalidParams,
 	/// `pfc::exception_not_implemented` (`pfc\primitives.h:196`).
 	NotImplemented,
+	/// `foobar2000_io::exception_io_not_directory` (`SDK\exception_io.h:62`).
+	IoNotDirectory,
+	/// `foobar2000_io::exception_io_denied` (`SDK\exception_io.h:12`).
+	IoDenied,
+	/// `foobar2000_io::exception_io_object_not_seekable` (`SDK\exception_io.h:32`).
+	IoObjectNotSeekable,
+	/// `foobar2000_io::exception_io_data_truncation` (`SDK\exception_io.h:18`).
+	IoDataTruncation,
+	/// `exception_album_art_not_found`, in the global namespace (`SDK\album_art.h:38`).
+	AlbumArtNotFound,
 }
 
 /// One C++ exception class: its decorated RTTI name, its base class and its default message.
@@ -41,8 +51,11 @@ pub(crate) struct TypeInfo {
 	pub default_message: &'static str,
 }
 
+/// How many classes OxiBar knows.
+pub(crate) const COUNT: usize = 17;
+
 /// Indexed by `ExceptionKind as usize`.
-pub(crate) const TYPES: [TypeInfo; 12] = [
+pub(crate) const TYPES: [TypeInfo; COUNT] = [
 	TypeInfo { name: ".?AVexception@std@@", base: None, default_message: "Unknown exception" },
 	TypeInfo {
 		name: ".?AVexception_aborted@foobar2000_io@@",
@@ -99,6 +112,31 @@ pub(crate) const TYPES: [TypeInfo; 12] = [
 		base: Some(ExceptionKind::BugCheck),
 		default_message: "Feature not implemented",
 	},
+	TypeInfo {
+		name: ".?AVexception_io_not_directory@foobar2000_io@@",
+		base: Some(ExceptionKind::Io),
+		default_message: "Not a directory",
+	},
+	TypeInfo {
+		name: ".?AVexception_io_denied@foobar2000_io@@",
+		base: Some(ExceptionKind::Io),
+		default_message: "Access denied",
+	},
+	TypeInfo {
+		name: ".?AVexception_io_object_not_seekable@foobar2000_io@@",
+		base: Some(ExceptionKind::Io),
+		default_message: "Object not seekable",
+	},
+	TypeInfo {
+		name: ".?AVexception_io_data_truncation@foobar2000_io@@",
+		base: Some(ExceptionKind::IoData),
+		default_message: "Unsupported format or corrupted file",
+	},
+	TypeInfo {
+		name: ".?AVexception_album_art_not_found@@",
+		base: Some(ExceptionKind::IoNotFound),
+		default_message: "Attached picture not found",
+	},
 ];
 
 /// The longest class chain, `exception_io_unsupported_format` and friends.
@@ -116,10 +154,10 @@ const fn chain_of(kind: ExceptionKind) -> ([&'static str; MAX_CHAIN], usize) {
 	(names, len)
 }
 
-const CHAINS: [([&str; MAX_CHAIN], usize); 12] = {
-	let mut chains = [([""; MAX_CHAIN], 0); 12];
+const CHAINS: [([&str; MAX_CHAIN], usize); COUNT] = {
+	let mut chains = [([""; MAX_CHAIN], 0); COUNT];
 	let mut index = 0;
-	while index < 12 {
+	while index < COUNT {
 		chains[index] = chain_of(ExceptionKind::ALL[index]);
 		index += 1;
 	}
@@ -127,7 +165,7 @@ const CHAINS: [([&str; MAX_CHAIN], usize); 12] = {
 };
 
 impl ExceptionKind {
-	pub const ALL: [Self; 12] = [
+	pub const ALL: [Self; COUNT] = [
 		Self::Std,
 		Self::Aborted,
 		Self::Io,
@@ -140,6 +178,11 @@ impl ExceptionKind {
 		Self::BugCheck,
 		Self::InvalidParams,
 		Self::NotImplemented,
+		Self::IoNotDirectory,
+		Self::IoDenied,
+		Self::IoObjectNotSeekable,
+		Self::IoDataTruncation,
+		Self::AlbumArtNotFound,
 	];
 
 	/// The MSVC RTTI names of this class and all its bases, most-derived first.
@@ -162,6 +205,52 @@ impl ExceptionKind {
 #[cfg(test)]
 mod tests {
 	use super::ExceptionKind;
+	use crate::cxx::{throw, try_host};
+
+	#[test]
+	fn new_kinds_have_their_class_chains() {
+		let io = ".?AVexception_io@foobar2000_io@@";
+		let std = ".?AVexception@std@@";
+		assert_eq!(
+			ExceptionKind::IoNotDirectory.type_names(),
+			[".?AVexception_io_not_directory@foobar2000_io@@", io, std]
+		);
+		assert_eq!(
+			ExceptionKind::IoDenied.type_names(),
+			[".?AVexception_io_denied@foobar2000_io@@", io, std]
+		);
+		assert_eq!(
+			ExceptionKind::IoObjectNotSeekable.type_names(),
+			[".?AVexception_io_object_not_seekable@foobar2000_io@@", io, std]
+		);
+		assert_eq!(
+			ExceptionKind::IoDataTruncation.type_names(),
+			[
+				".?AVexception_io_data_truncation@foobar2000_io@@",
+				".?AVexception_io_data@foobar2000_io@@",
+				io,
+				std
+			]
+		);
+		assert_eq!(
+			ExceptionKind::AlbumArtNotFound.type_names(),
+			[
+				".?AVexception_album_art_not_found@@",
+				".?AVexception_io_not_found@foobar2000_io@@",
+				io,
+				std
+			]
+		);
+	}
+
+	#[test]
+	fn album_art_not_found_is_caught_as_not_found() {
+		let error =
+			try_host(|| unsafe { throw(ExceptionKind::AlbumArtNotFound, "no cover") }).unwrap_err();
+		assert_eq!(error.kind, ExceptionKind::AlbumArtNotFound);
+		assert_eq!(error.type_name, ".?AVexception_album_art_not_found@@");
+		assert_eq!(error.message, "no cover");
+	}
 
 	#[test]
 	fn unsupported_format_chain() {
