@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use foo_librespot_core::audio::format;
 use foo_librespot_core::audio::track::SpotifyTrack;
 use foo_librespot_core::link::Link;
 use foo_librespot_core::login::DeviceCode;
@@ -66,6 +67,10 @@ impl LoginTask for LoginHandle {
 pub trait PcmTrack: Send {
 	fn read(&mut self, out: &mut Vec<f64>, max_frames: usize) -> Result<usize, CoreError>;
 	fn seek(&mut self, frame: u64) -> Result<(), CoreError>;
+	/// The codec of the audio file Spotify sent, as foobar2000 names it.
+	fn codec(&self) -> &'static str;
+	/// The file's nominal bitrate in kbit/s.
+	fn kbps(&self) -> Option<u32>;
 }
 
 impl PcmTrack for SpotifyTrack {
@@ -75,6 +80,14 @@ impl PcmTrack for SpotifyTrack {
 
 	fn seek(&mut self, frame: u64) -> Result<(), CoreError> {
 		Self::seek(self, frame)
+	}
+
+	fn codec(&self) -> &'static str {
+		format::codec_name(self.format())
+	}
+
+	fn kbps(&self) -> Option<u32> {
+		format::kbps(self.format())
 	}
 }
 

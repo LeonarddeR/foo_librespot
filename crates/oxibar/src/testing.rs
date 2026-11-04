@@ -721,6 +721,27 @@ impl DecoderHandle {
 		try_host(|| unsafe { (self.vtbl().can_seek)(self.0.as_raw()) }).expect("can_seek threw")
 	}
 
+	/// `get_dynamic_info`: the timestamp delta when the decoder changed `info`, else `None`.
+	pub fn dynamic_info(&self, info: &mut FakeFileInfo) -> Result<Option<f64>, HostException> {
+		let mut delta = f64::NAN;
+		let changed = try_host(|| unsafe {
+			(self.vtbl().get_dynamic_info)(self.0.as_raw(), info.as_raw(), &raw mut delta)
+		})?;
+		Ok(changed.then_some(delta))
+	}
+
+	/// `get_dynamic_info_track`, the same way as [`Self::dynamic_info`].
+	pub fn dynamic_track_info(
+		&self,
+		info: &mut FakeFileInfo,
+	) -> Result<Option<f64>, HostException> {
+		let mut delta = f64::NAN;
+		let changed = try_host(|| unsafe {
+			(self.vtbl().get_dynamic_info_track)(self.0.as_raw(), info.as_raw(), &raw mut delta)
+		})?;
+		Ok(changed.then_some(delta))
+	}
+
 	/// `set_logger`, passing `logger` by value: the decoder must release it.
 	pub fn set_logger(&self, logger: ServicePtr) {
 		let mut logger = logger.into_raw();

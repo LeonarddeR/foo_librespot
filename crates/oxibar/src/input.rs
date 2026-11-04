@@ -50,6 +50,12 @@ pub trait Input: Sized + Send + 'static {
 	/// Seeking past the end must succeed; the next `decode_run` then returns false.
 	fn decode_seek(&mut self, seconds: f64, abort: &Abort) -> Result<()>;
 	fn can_seek(&self) -> bool;
+	/// Called after each `decode_run` and `decode_seek`. Returns true when it wrote changed
+	/// technical info, such as the bitrate, into `info`; foobar2000 shows it while the track
+	/// plays, from the start of the last chunk.
+	fn get_dynamic_info(&mut self, _info: &mut FileInfo<'_>) -> Result<bool> {
+		Ok(false)
+	}
 }
 
 /// The factory that registers `T` with foobar2000.
@@ -262,8 +268,8 @@ unsafe impl<T: Input> ServiceImpl for Decoder<T> {
 		run: run::<T>,
 		seek: seek::<T>,
 		can_seek: can_seek::<T>,
-		get_dynamic_info,
-		get_dynamic_info_track: get_dynamic_info,
+		get_dynamic_info: get_dynamic_info::<T>,
+		get_dynamic_info_track,
 		on_idle,
 		run_raw,
 		set_logger,
@@ -349,7 +355,25 @@ unsafe extern "C-unwind" fn can_seek<T: Input>(this: *mut ServiceBase) -> bool {
 	unsafe { guard(|| Ok(Decoder::<T>::of(this).input()?.can_seek())) }
 }
 
-unsafe extern "C-unwind" fn get_dynamic_info(
+unsafe extern "C-unwind" fn get_dynamic_info<T: Input>(
+	this: *mut ServiceBase,
+	out: *mut RawFileInfo,
+	timestamp_delta: *mut f64,
+) -> bool {
+	unsafe {
+		guard(|| {
+			let changed =
+				Decoder::<T>::of(this).input()?.get_dynamic_info(&mut FileInfo::from_raw(out))?;
+			if changed {
+				timestamp_delta.write(0.0);
+			}
+			Ok(changed)
+		})
+	}
+}
+
+/// Only for streams whose track changes while they play, such as internet radio.
+unsafe extern "C-unwind" fn get_dynamic_info_track(
 	_this: *mut ServiceBase,
 	_out: *mut RawFileInfo,
 	_timestamp_delta: *mut f64,
@@ -420,6 +444,7 @@ mod tests {
 
 	struct TestInput {
 		runs: usize,
+		reported: bool,
 	}
 
 	impl Input for TestInput {
@@ -432,7 +457,7 @@ mod tests {
 
 		fn open(path: &str, _reason: OpenReason, _abort: &Abort) -> Result<Self> {
 			if path == "test://ok" {
-				Ok(Self { runs: 0 })
+				Ok(Self { runs: 0, reported: false })
 			} else {
 				Err(Error::unsupported_format("not a test path"))
 			}
@@ -464,6 +489,15 @@ mod tests {
 
 		fn can_seek(&self) -> bool {
 			true
+		}
+
+		fn get_dynamic_info(&mut self, info: &mut FileInfo<'_>) -> Result<bool> {
+			if self.runs != 1 || self.reported {
+				return Ok(false);
+			}
+			self.reported = true;
+			info.info_set_int("bitrate", 320)?;
+			Ok(true)
 		}
 	}
 
@@ -615,6 +649,29 @@ mod tests {
 		assert!(decoder.can_seek());
 		decoder.seek(2.5, &abort).unwrap();
 		assert_eq!(SEEKED_TO.get(), Some(2.5));
+	}
+
+	#[test]
+	fn dynamic_info_reports_what_the_input_changed_once() {
+		let abort = FakeAbort::new(false);
+		let decoder = entry().open_v3(&DECODER, "test://ok", None, None, &abort).unwrap();
+		decoder.initialize(0, 0, &abort).unwrap();
+		let mut info = FakeFileInfo::new();
+		assert_eq!(decoder.dynamic_info(&mut info).unwrap(), None);
+		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
+		assert_eq!(decoder.dynamic_info(&mut info).unwrap(), Some(0.0));
+		assert_eq!(info.info("bitrate").as_deref(), Some("320"));
+		assert_eq!(decoder.dynamic_info(&mut info).unwrap(), None);
+	}
+
+	#[test]
+	fn dynamic_track_info_is_never_reported() {
+		let abort = FakeAbort::new(false);
+		let decoder = entry().open_v3(&DECODER, "test://ok", None, None, &abort).unwrap();
+		decoder.initialize(0, 0, &abort).unwrap();
+		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
+		let mut info = FakeFileInfo::new();
+		assert_eq!(decoder.dynamic_track_info(&mut info).unwrap(), None);
 	}
 
 	#[test]

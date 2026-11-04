@@ -272,6 +272,15 @@ impl PcmTrack for FixtureTrack {
 		self.wait_while_stalled();
 		self.decoder.seek(frame)
 	}
+
+	fn codec(&self) -> &'static str {
+		"Vorbis"
+	}
+
+	/// Not the preferred 320, so tests see the file's own bitrate.
+	fn kbps(&self) -> Option<u32> {
+		Some(160)
+	}
 }
 
 /// The whole fixture, decoded straight through.

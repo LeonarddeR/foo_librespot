@@ -41,6 +41,8 @@ pub struct SpotifyInput {
 	id: SpotifyId,
 	track: Option<AbortableTrack>,
 	buffer: Vec<f64>,
+	/// Whether foobar2000 was told the codec and bitrate of the file being played.
+	reported: bool,
 }
 
 impl SpotifyInput {
@@ -63,7 +65,12 @@ impl Input for SpotifyInput {
 		// Nothing to fetch yet: info reads and decoding each ask Spotify for what they need.
 		let id = track_id(path)
 			.ok_or_else(|| Error::unsupported_format(format!("not a Spotify track: {path}")))?;
-		Ok(Self { id, track: None, buffer: Vec::with_capacity(CHUNK_FRAMES * CHANNELS) })
+		Ok(Self {
+			id,
+			track: None,
+			buffer: Vec::with_capacity(CHUNK_FRAMES * CHANNELS),
+			reported: false,
+		})
 	}
 
 	fn get_info(&mut self, info: &mut FileInfo<'_>, abort: &Abort) -> Result<()> {
@@ -114,6 +121,20 @@ impl Input for SpotifyInput {
 
 	fn can_seek(&self) -> bool {
 		true
+	}
+
+	/// The stored info can't know which file plays: that depends on the preferred bitrate and
+	/// on which files Spotify has, so the status bar learns it here.
+	fn get_dynamic_info(&mut self, info: &mut FileInfo<'_>) -> Result<bool> {
+		let Some(track) = self.track.as_ref().filter(|_| !self.reported) else {
+			return Ok(false);
+		};
+		info.info_set("codec", track.codec())?;
+		if let Some(kbps) = track.kbps() {
+			info.info_set_int("bitrate", i64::from(kbps))?;
+		}
+		self.reported = true;
+		Ok(true)
 	}
 }
 
@@ -206,6 +227,21 @@ mod tests {
 		for (want, got) in expected.iter().zip(chunk.samples()) {
 			assert!((want - got).abs() < 1e-4);
 		}
+	}
+
+	#[test]
+	fn playing_reports_the_codec_and_bitrate_of_the_file_spotify_sent_once() {
+		installed();
+		let abort = FakeAbort::new(false);
+		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
+		decoder.initialize(0, 0, &abort).unwrap();
+		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
+		let mut info = FileInfoImpl::new();
+		assert_eq!(decoder.dynamic_info(&mut info).unwrap(), Some(0.0));
+		assert_eq!(info.info("bitrate").as_deref(), Some("160"));
+		assert_eq!(info.info("codec").as_deref(), Some("Vorbis"));
+		decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap();
+		assert_eq!(decoder.dynamic_info(&mut FileInfoImpl::new()).unwrap(), None);
 	}
 
 	#[test]

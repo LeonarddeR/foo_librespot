@@ -32,12 +32,15 @@ pub struct AbortableTrack {
 	/// Set once a call was abandoned: its reply may still arrive, so later replies can't be
 	/// matched to their requests. foobar2000 drops a decoder it has aborted anyway.
 	abandoned: bool,
+	codec: &'static str,
+	kbps: Option<u32>,
 }
 
 impl AbortableTrack {
 	/// Moves `track` to a new decoder thread. The thread ends, dropping the track and stopping
 	/// its download, once this value is dropped and any call in progress has returned.
 	pub fn new(mut track: Box<dyn PcmTrack>) -> Result<Self, CoreError> {
+		let (codec, kbps) = (track.codec(), track.kbps());
 		let (requests, incoming) = mpsc::channel::<Request>();
 		let (outgoing, replies) = mpsc::channel::<Reply>();
 		std::thread::Builder::new().name("foo_librespot decoder".to_owned()).spawn(move || {
@@ -53,7 +56,17 @@ impl AbortableTrack {
 				}
 			}
 		})?;
-		Ok(Self { requests, replies, abandoned: false })
+		Ok(Self { requests, replies, abandoned: false, codec, kbps })
+	}
+
+	/// See [`PcmTrack::codec`].
+	pub const fn codec(&self) -> &'static str {
+		self.codec
+	}
+
+	/// See [`PcmTrack::kbps`].
+	pub const fn kbps(&self) -> Option<u32> {
+		self.kbps
 	}
 
 	/// See [`PcmTrack::read`].

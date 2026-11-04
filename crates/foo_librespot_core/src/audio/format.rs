@@ -64,6 +64,35 @@ pub fn bytes_per_second(format: AudioFileFormat) -> usize {
 	}
 }
 
+/// The nominal bitrate in kbit/s, as the format's name gives it; `None` for lossless FLAC.
+pub const fn kbps(format: AudioFileFormat) -> Option<u32> {
+	use AudioFileFormat as F;
+	match format {
+		F::XHE_AAC_12 => Some(12),
+		F::XHE_AAC_16 => Some(16),
+		F::AAC_24 | F::XHE_AAC_24 => Some(24),
+		F::AAC_48 => Some(48),
+		F::OGG_VORBIS_96 | F::MP3_96 => Some(96),
+		F::MP4_128 => Some(128),
+		F::OGG_VORBIS_160 | F::MP3_160 | F::MP3_160_ENC | F::AAC_160 => Some(160),
+		F::MP3_256 => Some(256),
+		F::OGG_VORBIS_320 | F::MP3_320 | F::AAC_320 | F::OTHER5 => Some(320),
+		F::FLAC_FLAC | F::FLAC_FLAC_24BIT => None,
+	}
+}
+
+/// The codec as foobar2000 names it in its `codec` field.
+pub const fn codec_name(format: AudioFileFormat) -> &'static str {
+	use AudioFileFormat as F;
+	match format {
+		F::OGG_VORBIS_96 | F::OGG_VORBIS_160 | F::OGG_VORBIS_320 => "Vorbis",
+		F::MP3_96 | F::MP3_160 | F::MP3_160_ENC | F::MP3_256 | F::MP3_320 => "MP3",
+		F::AAC_24 | F::AAC_48 | F::AAC_160 | F::AAC_320 | F::MP4_128 | F::OTHER5 => "AAC",
+		F::XHE_AAC_12 | F::XHE_AAC_16 | F::XHE_AAC_24 => "xHE-AAC",
+		F::FLAC_FLAC | F::FLAC_FLAC_24BIT => "FLAC",
+	}
+}
+
 /// Where the decodable stream starts: after Spotify's header for Ogg Vorbis, at 0 otherwise.
 pub fn header_offset(format: AudioFileFormat) -> u64 {
 	if AudioFiles::is_ogg_vorbis(format) { SPOTIFY_OGG_HEADER_END } else { 0 }
@@ -79,7 +108,9 @@ mod tests {
 
 	use librespot_metadata::audio::{AudioFileFormat, AudioFiles};
 
-	use super::{Bitrate, bytes_per_second, format_order, header_offset, pick_file};
+	use super::{
+		Bitrate, bytes_per_second, codec_name, format_order, header_offset, kbps, pick_file,
+	};
 	use crate::FileId;
 
 	fn files(formats: &[AudioFileFormat]) -> AudioFiles {
@@ -132,6 +163,23 @@ mod tests {
 		assert_eq!(bytes_per_second(AudioFileFormat::OGG_VORBIS_96), 12288);
 		assert_eq!(bytes_per_second(AudioFileFormat::OGG_VORBIS_160), 20480);
 		assert_eq!(bytes_per_second(AudioFileFormat::OGG_VORBIS_320), 40960);
+	}
+
+	#[test]
+	fn kbps_is_the_nominal_bitrate() {
+		assert_eq!(kbps(AudioFileFormat::OGG_VORBIS_96), Some(96));
+		assert_eq!(kbps(AudioFileFormat::OGG_VORBIS_160), Some(160));
+		assert_eq!(kbps(AudioFileFormat::OGG_VORBIS_320), Some(320));
+		assert_eq!(kbps(AudioFileFormat::MP3_256), Some(256));
+		assert_eq!(kbps(AudioFileFormat::FLAC_FLAC), None);
+	}
+
+	#[test]
+	fn codec_names_as_foobar2000_shows_them() {
+		assert_eq!(codec_name(AudioFileFormat::OGG_VORBIS_320), "Vorbis");
+		assert_eq!(codec_name(AudioFileFormat::MP3_160), "MP3");
+		assert_eq!(codec_name(AudioFileFormat::AAC_320), "AAC");
+		assert_eq!(codec_name(AudioFileFormat::FLAC_FLAC), "FLAC");
 	}
 
 	#[test]
