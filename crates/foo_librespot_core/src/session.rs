@@ -117,7 +117,7 @@ impl<C: Connector> SessionManager<C> {
 				*current = Some(connected.session.clone());
 				Ok(connected.session)
 			}
-			Err(CoreError::Spotify(error)) if error.kind == ErrorKind::PermissionDenied => {
+			Err(CoreError::Spotify(error)) if rejects_credentials(&error) => {
 				log::warn!("Spotify rejected the stored login: {error}");
 				self.profile.clear_credentials()?;
 				Err(CoreError::NotLoggedIn)
@@ -186,6 +186,17 @@ impl<C: Connector> SessionManager<C> {
 			log::warn!("couldn't store the refreshed Spotify login: {error}");
 		}
 	}
+}
+
+/// What librespot says when Spotify refuses the login itself.
+const BAD_CREDENTIALS: &str = "Login failed with reason: Bad credentials";
+
+/// True when Spotify refused the stored login, so it will never work again. librespot reports
+/// every access-point login failure as `PermissionDenied`, including temporary ones such as "try
+/// another access point" after six tries, and keeps the error type that names the reason
+/// private, so its message is the only way to tell them apart.
+fn rejects_credentials(error: &librespot_core::Error) -> bool {
+	error.kind == ErrorKind::PermissionDenied && error.error.to_string() == BAD_CREDENTIALS
 }
 
 /// librespot can only play with Premium accounts. An unknown type is let through: Spotify
@@ -417,15 +428,35 @@ mod tests {
 		assert_eq!(setup.profile.load_credentials().unwrap(), Some(refreshed()));
 	}
 
+	// librespot's AuthenticationError is private; these are the messages it gives for the codes.
+	fn login_failed(reason: &'static str) -> CoreError {
+		CoreError::Spotify(librespot_core::Error::permission_denied(format!(
+			"Login failed with reason: {reason}"
+		)))
+	}
+
 	#[tokio::test]
 	async fn rejected_stored_credentials_are_cleared() {
-		let setup = setup(
-			Outcome::Fail(|| CoreError::Spotify(librespot_core::Error::permission_denied("bad"))),
-			true,
-		);
+		let setup = setup(Outcome::Fail(|| login_failed("Bad credentials")), true);
 		let result = setup.manager.session().await;
 		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
 		assert!(!setup.profile.has_credentials());
+	}
+
+	#[tokio::test]
+	async fn other_login_failures_keep_stored_credentials() {
+		for reason in [
+			|| login_failed("Try another access point"),
+			|| login_failed("Protocol error"),
+			|| login_failed("Travel restriction"),
+			|| login_failed("Could not validate credentials"),
+			|| login_failed("Premium account required"),
+		] {
+			let setup = setup(Outcome::Fail(reason), true);
+			let result = setup.manager.session().await;
+			assert!(matches!(result, Err(CoreError::Spotify(_))), "{result:?}");
+			assert!(setup.profile.has_credentials(), "{result:?}");
+		}
 	}
 
 	#[tokio::test]
