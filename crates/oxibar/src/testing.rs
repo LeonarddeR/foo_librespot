@@ -10,7 +10,7 @@ use crate::abi::audio_chunk::{AudioChunk as RawAudioChunk, AudioChunkVtbl};
 use crate::abi::component::{Api, ApiVtbl, ServiceClassRef};
 use crate::abi::componentversion::ComponentVersionVtbl;
 use crate::abi::console::{self, ConsoleReceiverVtbl};
-use crate::abi::file::FileStats;
+use crate::abi::file::{FileStats, FileVtbl, StreamReaderVtbl, StreamWriterVtbl};
 use crate::abi::filesystem::{self, FilesystemVtbl};
 use crate::abi::initquit::InitQuitVtbl;
 use crate::abi::input::{DecoderVtbl, InputEntryVtbl};
@@ -802,6 +802,165 @@ impl DecoderHandle {
 		let mut logger = logger.into_raw();
 		try_host(|| unsafe { (self.vtbl().set_logger)(self.0.as_raw(), &raw mut logger) })
 			.expect("set_logger threw");
+	}
+}
+
+/// Calls a `filesystem` service through its vtable, as foobar2000 does.
+pub struct FilesystemHandle(ServicePtr);
+
+impl FilesystemHandle {
+	pub fn new(service: ServicePtr) -> Self {
+		Self(service)
+	}
+
+	fn call<R>(
+		&self,
+		f: impl FnOnce(&FilesystemVtbl, *mut ServiceBase) -> R,
+	) -> Result<R, HostException> {
+		let raw = self.0.as_raw();
+		let vtbl = unsafe { &*(*raw).vtbl.cast::<FilesystemVtbl>() };
+		try_host(|| f(vtbl, raw))
+	}
+
+	pub fn is_our_path(&self, path: &str) -> bool {
+		let path = CString::new(path).unwrap();
+		self.call(|vtbl, raw| unsafe { (vtbl.is_our_path)(raw, path.as_ptr()) })
+			.expect("is_our_path threw")
+	}
+
+	pub fn supports_content_types(&self) -> bool {
+		self.call(|vtbl, raw| unsafe { (vtbl.supports_content_types)(raw) })
+			.expect("supports_content_types threw")
+	}
+
+	pub fn canonical_path(&self, path: &str) -> Option<String> {
+		let path = CString::new(path).unwrap();
+		let mut out = FakeString::new();
+		let out_raw = out.as_raw();
+		let found = self
+			.call(|vtbl, raw| unsafe { (vtbl.get_canonical_path)(raw, path.as_ptr(), out_raw) })
+			.expect("get_canonical_path threw");
+		found.then(|| out.value())
+	}
+
+	pub fn display_path(&self, path: &str) -> Option<String> {
+		let path = CString::new(path).unwrap();
+		let mut out = FakeString::new();
+		let out_raw = out.as_raw();
+		let found = self
+			.call(|vtbl, raw| unsafe { (vtbl.get_display_path)(raw, path.as_ptr(), out_raw) })
+			.expect("get_display_path threw");
+		found.then(|| out.value())
+	}
+
+	pub fn open(&self, path: &str, mode: u32) -> Result<FileHandle, HostException> {
+		let path = CString::new(path).unwrap();
+		let abort = FakeAbort::new(false);
+		let mut out: *mut ServiceBase = std::ptr::null_mut();
+		let out_slot = &raw mut out;
+		self.call(|vtbl, raw| unsafe {
+			(vtbl.open)(raw, out_slot, path.as_ptr(), mode, abort.as_raw());
+		})?;
+		Ok(FileHandle(unsafe { ServicePtr::from_raw_owned(out) }.expect("open gave no file")))
+	}
+
+	pub fn list_directory(&self, path: &str) -> Result<(), HostException> {
+		let path = CString::new(path).unwrap();
+		let abort = FakeAbort::new(false);
+		self.call(|vtbl, raw| unsafe {
+			(vtbl.list_directory)(raw, path.as_ptr(), std::ptr::null_mut(), abort.as_raw());
+		})
+	}
+
+	pub fn get_stats(&self, path: &str) -> Result<(FileStats, bool), HostException> {
+		let path = CString::new(path).unwrap();
+		let abort = FakeAbort::new(false);
+		let mut stats = FileStats { size: 0, timestamp: 1 };
+		let mut writeable = true;
+		let (stats_slot, writeable_slot) = (&raw mut stats, &raw mut writeable);
+		self.call(|vtbl, raw| unsafe {
+			(vtbl.get_stats)(raw, path.as_ptr(), stats_slot, writeable_slot, abort.as_raw());
+		})?;
+		Ok((stats, writeable))
+	}
+}
+
+/// Calls a `file` through its three vtables, as foobar2000 does.
+pub struct FileHandle(ServicePtr);
+
+impl FileHandle {
+	pub fn service(&self) -> &ServicePtr {
+		&self.0
+	}
+
+	fn primary(&self) -> (&FileVtbl, *mut ServiceBase) {
+		let raw = self.0.as_raw();
+		(unsafe { &*(*raw).vtbl.cast::<FileVtbl>() }, raw)
+	}
+
+	/// The `stream_reader` base, at offset 8.
+	fn reader(&self) -> (&StreamReaderVtbl, *mut c_void) {
+		let base = unsafe { self.0.as_raw().byte_add(8) }.cast::<c_void>();
+		(unsafe { &**base.cast::<*const StreamReaderVtbl>() }, base)
+	}
+
+	/// The `stream_writer` base, at offset 16.
+	fn writer(&self) -> (&StreamWriterVtbl, *mut c_void) {
+		let base = unsafe { self.0.as_raw().byte_add(16) }.cast::<c_void>();
+		(unsafe { &**base.cast::<*const StreamWriterVtbl>() }, base)
+	}
+
+	pub fn size(&self) -> u64 {
+		let (vtbl, raw) = self.primary();
+		let abort = FakeAbort::new(false);
+		try_host(|| unsafe { (vtbl.get_size)(raw, abort.as_raw()) }).expect("get_size threw")
+	}
+
+	pub fn can_seek(&self) -> bool {
+		let (vtbl, raw) = self.primary();
+		try_host(|| unsafe { (vtbl.can_seek)(raw) }).expect("can_seek threw")
+	}
+
+	pub fn is_remote(&self) -> bool {
+		let (vtbl, raw) = self.primary();
+		try_host(|| unsafe { (vtbl.is_remote)(raw) }).expect("is_remote threw")
+	}
+
+	pub fn seek(&self, position: u64) -> Result<(), HostException> {
+		let (vtbl, raw) = self.primary();
+		let abort = FakeAbort::new(false);
+		try_host(|| unsafe { (vtbl.seek)(raw, position, abort.as_raw()) })
+	}
+
+	pub fn content_type(&self) -> Option<String> {
+		let (vtbl, raw) = self.primary();
+		let mut out = FakeString::new();
+		let out_raw = out.as_raw();
+		let found = try_host(|| unsafe { (vtbl.get_content_type)(raw, out_raw) })
+			.expect("get_content_type threw");
+		found.then(|| out.value())
+	}
+
+	pub fn read(&self, bytes: usize) -> Result<usize, HostException> {
+		let (vtbl, this) = self.reader();
+		let mut buffer = vec![0u8; bytes];
+		let abort = FakeAbort::new(false);
+		try_host(|| unsafe { (vtbl.read)(this, buffer.as_mut_ptr().cast(), bytes, abort.as_raw()) })
+	}
+
+	pub fn read_object(&self, bytes: usize) -> Result<(), HostException> {
+		let (vtbl, this) = self.reader();
+		let mut buffer = vec![0u8; bytes];
+		let abort = FakeAbort::new(false);
+		try_host(|| unsafe {
+			(vtbl.read_object)(this, buffer.as_mut_ptr().cast(), bytes, abort.as_raw());
+		})
+	}
+
+	pub fn write(&self, data: &[u8]) -> Result<(), HostException> {
+		let (vtbl, this) = self.writer();
+		let abort = FakeAbort::new(false);
+		try_host(|| unsafe { (vtbl.write)(this, data.as_ptr().cast(), data.len(), abort.as_raw()) })
 	}
 }
 

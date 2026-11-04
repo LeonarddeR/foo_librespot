@@ -21,6 +21,7 @@ pub mod error;
 pub mod file_info;
 pub mod file_info_impl;
 pub mod filesystem;
+pub mod filesystem_service;
 pub mod guid;
 pub mod host;
 pub mod initquit;
