@@ -7,10 +7,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use futures_util::stream::{self, StreamExt};
 use librespot_core::Session;
+use librespot_core::date::Date;
 use librespot_metadata::{Album, Metadata, Playlist, Track};
 
 use crate::link::{Link, LinkKind};
-use crate::metadata::{TrackInfo, track_info};
+use crate::metadata::{TrackInfo, availability, track_info};
 use crate::{CoreError, SpotifyId, SpotifyUri};
 
 /// How many track lookups run at once while resolving an album or playlist.
@@ -115,10 +116,16 @@ pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resol
 	for item in fetched {
 		match item {
 			Fetched::Skip(skipped) => resolved.skipped.push(skipped),
-			Fetched::Track(_, Ok(info)) if info.has_audio => resolved.tracks.push(info),
-			Fetched::Track(id, Ok(_)) => resolved.skipped.push(Skipped {
+			Fetched::Track(_, Ok(info)) if info.has_audio && info.unavailable.is_none() => {
+				resolved.tracks.push(info);
+			}
+			Fetched::Track(id, Ok(info)) => resolved.skipped.push(Skipped {
 				uri: SpotifyUri::Track { id }.to_uri(),
-				reason: SkipReason::Unavailable("Spotify has no audio for this track".to_owned()),
+				reason: SkipReason::Unavailable(
+					info.unavailable
+						.clone()
+						.unwrap_or_else(|| "Spotify has no audio for this track".to_owned()),
+				),
 			}),
 			Fetched::Track(id, Err(error)) => {
 				resolved.skipped.push(Skipped {
@@ -158,6 +165,12 @@ impl TrackCache {
 
 	pub fn insert(&self, info: Arc<TrackInfo>) {
 		self.0.lock().unwrap_or_else(PoisonError::into_inner).insert(info.id, info);
+	}
+
+	/// Forgets every track, for example after logging in to another account, whose country can
+	/// make different tracks available.
+	pub fn clear(&self) {
+		self.0.lock().unwrap_or_else(PoisonError::into_inner).clear();
 	}
 }
 
@@ -216,7 +229,11 @@ impl LibrespotMetadata {
 impl MetadataSource for LibrespotMetadata {
 	async fn track(&self, id: SpotifyId) -> Result<Arc<TrackInfo>, CoreError> {
 		let track = Track::get(&self.session, &SpotifyUri::Track { id }).await?;
-		Ok(Arc::new(track_info(&track)?))
+		let user = self.session.user_data();
+		let catalogue = user.attributes.get("catalogue").map_or("premium", String::as_str);
+		let mut info = track_info(&track)?;
+		info.unavailable = availability(&track, &user.country, catalogue, &Date::now_utc()).err();
+		Ok(Arc::new(info))
 	}
 
 	async fn album(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
@@ -261,6 +278,7 @@ mod tests {
 			duration_ms: 1000,
 			covers: Vec::new(),
 			has_audio: true,
+			unavailable: None,
 		}
 	}
 
@@ -407,6 +425,30 @@ mod tests {
 			resolve(&source, &Link { kind: LinkKind::Album, id: id(100) }).await.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
 		assert!(matches!(resolved.skipped[0].reason, SkipReason::Unavailable(_)));
+	}
+
+	#[tokio::test]
+	async fn track_unavailable_in_the_users_country_is_skipped() {
+		let mut source = FakeSource::with_tracks(&[1]);
+		let mut locked = info(2);
+		locked.unavailable = Some("not available in your country".to_owned());
+		source.tracks.insert(id(2), (Ok(locked), Duration::ZERO));
+		source.albums.insert(id(100), Ok(("The Album".to_owned(), vec![id(2), id(1)])));
+		let resolved =
+			resolve(&source, &Link { kind: LinkKind::Album, id: id(100) }).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
+		assert_eq!(
+			resolved.skipped[0].reason,
+			SkipReason::Unavailable("not available in your country".to_owned())
+		);
+	}
+
+	#[test]
+	fn cache_clear_forgets_tracks() {
+		let cache = TrackCache::default();
+		cache.insert(Arc::new(info(1)));
+		cache.clear();
+		assert!(cache.get(&id(1)).is_none());
 	}
 
 	#[tokio::test]

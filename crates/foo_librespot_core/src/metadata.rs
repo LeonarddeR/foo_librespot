@@ -1,5 +1,6 @@
 //! Spotify track metadata, reduced to the fields foobar2000 shows.
 
+use librespot_core::date::Date;
 use librespot_metadata::Track;
 use librespot_metadata::image::Images;
 
@@ -30,6 +31,9 @@ pub struct TrackInfo {
 	pub covers: Vec<Cover>,
 	/// False when Spotify lists neither an audio file nor an alternative track to play instead.
 	pub has_audio: bool,
+	/// Why Spotify won't play this track for this account, such as a region restriction; `None`
+	/// when it can, as far as the metadata shows. Set by whoever knows the account's country.
+	pub unavailable: Option<String>,
 }
 
 pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
@@ -47,7 +51,42 @@ pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
 		duration_ms: u32::try_from(track.duration).unwrap_or(0),
 		covers: sorted_covers(covers),
 		has_audio: !track.files.0.is_empty() || !track.alternatives.0.is_empty(),
+		unavailable: None,
 	})
+}
+
+/// Whether Spotify plays `track` for an account in `country` with the given `catalogue`
+/// attribute (usually "premium"). The same rules as librespot-metadata's private
+/// `available_for_user` in `audio/item.rs`, so a playlist import can skip what would only fail
+/// when played.
+pub fn availability(
+	track: &Track,
+	country: &str,
+	catalogue: &str,
+	now: &Date,
+) -> Result<(), String> {
+	const NOT_RELEASED: &str = "not released on Spotify yet";
+	if *now < track.earliest_live_timestamp {
+		return Err(NOT_RELEASED.to_owned());
+	}
+	let windows = &track.availability.0;
+	if !windows.is_empty() && !windows.iter().any(|window| *now >= window.start) {
+		return Err(NOT_RELEASED.to_owned());
+	}
+	let not_here = || Err(format!("not available in your country ({country})"));
+	let applies = |restriction: &&librespot_metadata::restriction::Restriction| {
+		restriction.catalogue_strs.iter().any(|restricted| restricted == catalogue)
+	};
+	// A restriction has either an allow list or a block list; the first one that applies decides.
+	for restriction in track.restrictions.0.iter().filter(applies) {
+		if let Some(allowed) = &restriction.countries_allowed {
+			return if allowed.iter().any(|code| code == country) { Ok(()) } else { not_here() };
+		}
+		if let Some(forbidden) = &restriction.countries_forbidden {
+			return if forbidden.iter().any(|code| code == country) { not_here() } else { Ok(()) };
+		}
+	}
+	Ok(())
 }
 
 /// librespot turns a missing month or day into 1, so 1 January stands for "only the year is
@@ -82,7 +121,12 @@ mod tests {
 	};
 	use protobuf::MessageField;
 
-	use super::{Cover, format_date, largest_cover, track_info};
+	use librespot_core::date::Date;
+	use librespot_protocol::metadata::{
+		Availability as AvailabilityMessage, Restriction as RestrictionMessage,
+	};
+
+	use super::{Cover, availability, format_date, largest_cover, track_info};
 	use crate::{FileId, SpotifyId};
 
 	fn gid(byte: u8) -> Vec<u8> {
@@ -192,6 +236,67 @@ mod tests {
 		alternative.set_gid(gid(0x11));
 		silent.alternative = vec![alternative];
 		assert!(track_info(&parse(&silent)).unwrap().has_audio);
+	}
+
+	fn restricted(allowed: Option<&str>, forbidden: Option<&str>, catalogue: &str) -> TrackMessage {
+		let mut restriction = RestrictionMessage::new();
+		restriction.catalogue_str = vec![catalogue.to_owned()];
+		if let Some(allowed) = allowed {
+			restriction.set_countries_allowed(allowed.to_owned());
+		}
+		if let Some(forbidden) = forbidden {
+			restriction.set_countries_forbidden(forbidden.to_owned());
+		}
+		let mut message = track();
+		message.restriction = vec![restriction];
+		message
+	}
+
+	fn now() -> Date {
+		Date::from_timestamp_ms(1_790_000_000_000).unwrap()
+	}
+
+	#[test]
+	fn unrestricted_track_is_available() {
+		assert_eq!(availability(&parse(&track()), "NL", "premium", &now()), Ok(()));
+	}
+
+	#[test]
+	fn allow_list_decides_by_country() {
+		let track = parse(&restricted(Some("NLBE"), None, "premium"));
+		assert_eq!(availability(&track, "BE", "premium", &now()), Ok(()));
+		let result = availability(&track, "US", "premium", &now());
+		assert!(matches!(&result, Err(reason) if reason.contains("country")), "{result:?}");
+	}
+
+	#[test]
+	fn block_list_decides_by_country() {
+		let track = parse(&restricted(None, Some("USCA"), "premium"));
+		assert_eq!(availability(&track, "NL", "premium", &now()), Ok(()));
+		assert!(availability(&track, "CA", "premium", &now()).is_err());
+	}
+
+	#[test]
+	fn restrictions_for_other_catalogues_are_ignored() {
+		let track = parse(&restricted(Some("NL"), None, "free"));
+		assert_eq!(availability(&track, "US", "premium", &now()), Ok(()));
+	}
+
+	#[test]
+	fn unreleased_track_is_unavailable() {
+		let mut message = track();
+		message.set_earliest_live_timestamp(1_900_000_000_000);
+		let result = availability(&parse(&message), "NL", "premium", &now());
+		assert!(matches!(&result, Err(reason) if reason.contains("released")), "{result:?}");
+
+		let mut message = track();
+		let mut start = DateMessage::new();
+		start.set_year(2999);
+		let mut window = AvailabilityMessage::new();
+		window.catalogue_str = vec!["premium".to_owned()];
+		window.start = MessageField::some(start);
+		message.availability = vec![window];
+		assert!(availability(&parse(&message), "NL", "premium", &now()).is_err());
 	}
 
 	#[test]

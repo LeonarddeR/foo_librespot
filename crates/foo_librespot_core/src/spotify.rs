@@ -57,11 +57,15 @@ impl Core {
 		on_done: impl FnOnce(Result<String, CoreError>) + Send + 'static,
 	) -> LoginHandle {
 		let sessions = Arc::clone(&self.sessions);
+		let cache = self.cache.clone();
 		LoginHandle(self.runtime.spawn(async move {
 			let result = async {
 				let authorizer = LibrespotAuthorizer::new()?;
 				let token = device_login(&authorizer, on_code).await?;
-				sessions.login_with_token(token).await
+				let username = sessions.login_with_token(token).await?;
+				// Which tracks are available depends on the account's country.
+				cache.clear();
+				Ok(username)
 			}
 			.await;
 			on_done(result);
