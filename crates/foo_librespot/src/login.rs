@@ -14,7 +14,6 @@ use foo_librespot_core::login::{DeviceCode, LoginError};
 use crate::backend::{LoginTask, backend};
 
 /// How often a waiting import checks whether foobar2000 wants it to stop.
-#[cfg_attr(not(test), expect(dead_code, reason = "logging in on first use (Task 9) waits"))]
 const WAIT_POLL: Duration = Duration::from_millis(50);
 
 /// Where the login is.
@@ -167,7 +166,6 @@ impl LoginController {
 	}
 
 	/// Starts a login, but only when logged out and none is running.
-	#[cfg_attr(not(test), expect(dead_code, reason = "logging in on first use (Task 9) starts it"))]
 	pub fn start(&self) {
 		self.refresh();
 		if matches!(self.state(), LoginState::LoggedOut | LoginState::Failed(_)) {
@@ -257,7 +255,6 @@ impl LoginController {
 		(self.0.open_url)(&code.url);
 	}
 
-	#[cfg_attr(not(test), expect(dead_code, reason = "logging in on first use (Task 9) waits"))]
 	/// Starts a login if none is running, then waits for it to end. Returns the username,
 	/// [`CoreError::NotLoggedIn`] when the user cancelled it, and [`CoreError::Aborted`] when
 	/// `is_aborting` turned true. An aborted wait leaves the login running: the user may still

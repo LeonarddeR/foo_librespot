@@ -7,6 +7,7 @@
 //!   fetches the page and reports `text/html`, as it did for foo_spotify. Every other web page
 //!   the user adds arrives too, and is turned away before any Spotify call.
 
+use foo_librespot_core::CoreError;
 use foo_librespot_core::link::{Link, LinkKind, PATH_SCHEME, parse_link, track_path};
 use oxibar::abort::Abort;
 use oxibar::console;
@@ -18,6 +19,7 @@ use oxibar::playlist_loader::{LoaderCallback, PlaylistLoader};
 use crate::backend::backend;
 use crate::errors::host_error;
 use crate::fields::fill_info;
+use crate::first_use::login_on_first_use;
 
 /// The content type of the stub file for a Spotify album or playlist path.
 pub const CONTENT_TYPE: &str = "application/x-foo-librespot";
@@ -75,7 +77,14 @@ impl PlaylistLoader for SpotifyLoader {
 		let link = parse_link(path)
 			.map_err(|error| Error::unsupported_format(format!("not a Spotify link: {error}")))?;
 		callback.on_progress(path)?;
-		let resolved = backend().resolve(&link, &|| abort.is_aborting()).map_err(host_error)?;
+		let is_aborting = || abort.is_aborting();
+		let resolved = match backend().resolve(&link, &is_aborting) {
+			// The first link of a new user: log in, then try once more.
+			Err(CoreError::NotLoggedIn) => login_on_first_use(&is_aborting)
+				.and_then(|()| backend().resolve(&link, &is_aborting)),
+			resolved => resolved,
+		}
+		.map_err(host_error)?;
 		for track in &resolved.tracks {
 			abort.check()?;
 			let mut info = FileInfoImpl::new();
@@ -97,6 +106,7 @@ impl PlaylistLoader for SpotifyLoader {
 #[cfg(test)]
 mod tests {
 	use std::sync::Arc;
+	use std::time::{Duration, Instant};
 
 	use foo_librespot_core::resolve::{Resolved, SkipReason, Skipped};
 	use foo_librespot_core::{CoreError, SpotifyId};
@@ -110,7 +120,10 @@ mod tests {
 
 	use super::{CONTENT_TYPE, SpotifyFilesystem, SpotifyLoader};
 	use crate::backend;
-	use crate::testing::{FakeBackend, TRACK_ID, track_info};
+	use crate::login::controller;
+	use crate::testing::{
+		FakeBackend, TRACK_ID, confirm_login_when_started, installed_prompt, stop_after, track_info,
+	};
 
 	const ALBUM: &str = "4wPtS24asgBAG4VOmYYB9O";
 
@@ -264,15 +277,97 @@ mod tests {
 		assert_eq!(error.kind, ExceptionKind::Aborted);
 	}
 
+	fn import_album(abort: &FakeAbort) -> oxibar::error::Result<usize> {
+		let (callback, record) = FakeLoaderCallback::new();
+		loader().open(&format!("spotify:album:{ALBUM}"), callback, abort)?;
+		Ok(record.lock().unwrap().entries.len())
+	}
+
 	#[test]
-	fn not_logged_in_import_fails_with_advice() {
+	fn loader_logged_out_prompts_waits_and_adds_the_tracks() {
 		let fake = installed();
+		let prompt = installed_prompt();
+		fake.require_login();
+		fake.resolve_to(album());
+		let user = confirm_login_when_started(&fake, 1);
+		assert_eq!(import_album(&FakeAbort::new(false)).unwrap(), 3);
+		user.join().unwrap();
+		assert_eq!(prompt.shown(), 1);
+		assert_eq!(fake.logins_started(), 1);
+	}
+
+	#[test]
+	fn loader_tries_again_only_once() {
+		let fake = installed();
+		let _prompt = installed_prompt();
 		fake.fail_with(|| CoreError::NotLoggedIn);
-		let (callback, _record) = FakeLoaderCallback::new();
-		let error = loader()
-			.open(&format!("spotify:album:{ALBUM}"), callback, &FakeAbort::new(false))
-			.unwrap_err();
+		let user = confirm_login_when_started(&fake, 1);
+		let error = import_album(&FakeAbort::new(false)).unwrap_err();
+		user.join().unwrap();
 		assert_eq!(error.kind, ExceptionKind::Io);
-		assert!(error.message.contains("spotify_dev"), "{}", error.message);
+		assert!(error.message.contains("Not logged in to Spotify"), "{}", error.message);
+		assert_eq!(fake.calls(), 2);
+	}
+
+	#[test]
+	fn loader_stops_waiting_when_aborted() {
+		let fake = installed();
+		let _prompt = installed_prompt();
+		fake.require_login();
+		let abort = FakeAbort::new(false);
+		let stopper = stop_after(&abort, Duration::from_millis(100));
+		let started = Instant::now();
+		let error = import_album(&abort).unwrap_err();
+		stopper.join().unwrap();
+		assert_eq!(error.kind, ExceptionKind::Aborted);
+		assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+	}
+
+	#[test]
+	fn loader_reports_a_cancelled_login() {
+		let fake = installed();
+		let _prompt = installed_prompt();
+		fake.require_login();
+		let user = std::thread::spawn(move || {
+			while fake.logins_started() == 0 {
+				std::thread::sleep(Duration::from_millis(5));
+			}
+			controller().cancel();
+		});
+		let error = import_album(&FakeAbort::new(false)).unwrap_err();
+		user.join().unwrap();
+		assert_eq!(error.kind, ExceptionKind::Io);
+		assert!(error.message.contains("Not logged in to Spotify"), "{}", error.message);
+	}
+
+	#[test]
+	fn two_loaders_share_one_window() {
+		let fake = installed();
+		let _prompt = installed_prompt();
+		fake.require_login();
+		fake.resolve_to(album());
+		let imports: Vec<_> =
+			(0..2).map(|_| std::thread::spawn(|| import_album(&FakeAbort::new(false)))).collect();
+		let user = confirm_login_when_started(&fake, 1);
+		for import in imports {
+			assert_eq!(import.join().unwrap().unwrap(), 3);
+		}
+		user.join().unwrap();
+		assert_eq!(fake.logins_started(), 1);
+	}
+
+	#[test]
+	fn loader_on_the_main_thread_prompts_but_does_not_wait() {
+		// The fake host answers that every thread is its main thread.
+		FakeApi::new().install();
+		let fake = installed();
+		let prompt = installed_prompt();
+		fake.require_login();
+		let started = Instant::now();
+		let error = import_album(&FakeAbort::new(false)).unwrap_err();
+		assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+		assert_eq!(error.kind, ExceptionKind::Io);
+		assert_eq!(prompt.shown(), 1);
+		assert_eq!(fake.logins_started(), 1);
 	}
 }

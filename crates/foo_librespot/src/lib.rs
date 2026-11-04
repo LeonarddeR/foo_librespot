@@ -5,11 +5,13 @@ mod art;
 mod backend;
 mod errors;
 mod fields;
+mod first_use;
 mod input;
 mod lifecycle;
 mod links;
 mod logging;
 mod login;
+mod login_window;
 mod prefs;
 mod settings;
 #[cfg(test)]

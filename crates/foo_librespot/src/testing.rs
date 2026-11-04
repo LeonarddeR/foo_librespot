@@ -59,6 +59,8 @@ struct State {
 	logins: Mutex<Vec<ScriptedLogin>>,
 	username: Mutex<Option<String>>,
 	logouts: AtomicUsize,
+	/// While set, Spotify calls fail with `NotLoggedIn` until a login is stored.
+	require_login: AtomicBool,
 }
 
 /// A login the test answers itself, with [`FakeBackend::send_code`] and
@@ -107,6 +109,11 @@ impl FakeBackend {
 	/// Makes reads and seeks of opened tracks block until `stall(false)`, at most 5 s.
 	pub fn stall(&self, stalled: bool) {
 		self.0.stalled.store(stalled, Ordering::SeqCst);
+	}
+
+	/// Spotify calls fail with `NotLoggedIn` until a login is stored, as for a new user.
+	pub fn require_login(&self) {
+		self.0.require_login.store(true, Ordering::SeqCst);
 	}
 
 	/// The stored login's username, as if a login had happened before.
@@ -163,6 +170,9 @@ impl FakeBackend {
 		self.0.calls.fetch_add(1, Ordering::SeqCst);
 		if is_aborting() {
 			return Err(CoreError::Aborted);
+		}
+		if self.0.require_login.load(Ordering::SeqCst) && self.username().is_none() {
+			return Err(CoreError::NotLoggedIn);
 		}
 		let failure = *self.0.failure.lock().unwrap_or_else(PoisonError::into_inner);
 		failure.map_or(Ok(()), |error| Err(error()))
@@ -272,4 +282,73 @@ pub fn fixture_samples() -> Vec<f64> {
 		all.extend_from_slice(&buffer);
 	}
 	all
+}
+
+/// A login prompt that only counts how often it was shown.
+#[derive(Clone, Default)]
+pub struct FakePrompt(Arc<AtomicUsize>);
+
+impl FakePrompt {
+	pub fn shown(&self) -> usize {
+		self.0.load(Ordering::SeqCst)
+	}
+}
+
+impl crate::first_use::LoginPrompt for FakePrompt {
+	fn show(&self) {
+		self.0.fetch_add(1, Ordering::SeqCst);
+	}
+}
+
+/// Installs a [`FakePrompt`] for this test process.
+pub fn installed_prompt() -> FakePrompt {
+	let prompt = FakePrompt::default();
+	crate::first_use::install_prompt(Box::new(prompt.clone()));
+	prompt
+}
+
+/// A login code from Spotify.
+pub fn device_code() -> DeviceCode {
+	DeviceCode {
+		user_code: "KKGT-2024".to_owned(),
+		verification_uri: "https://spotify.com/pair".to_owned(),
+		url: "https://spotify.com/pair?code=KKGT-2024".to_owned(),
+	}
+}
+
+/// Plays the user: once `logins` logins have started, confirms the latest in the browser.
+pub fn confirm_login_when_started(
+	fake: &FakeBackend,
+	logins: usize,
+) -> std::thread::JoinHandle<()> {
+	let fake = fake.clone();
+	std::thread::spawn(move || {
+		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+		while fake.logins_started() < logins {
+			assert!(std::time::Instant::now() < deadline, "no login started");
+			std::thread::sleep(std::time::Duration::from_millis(5));
+		}
+		fake.send_code(device_code());
+		fake.finish_login(Ok("Keith Getty".to_owned()));
+	})
+}
+
+/// Lets another thread press Stop on a `FakeAbort` the test keeps alive.
+struct StopLater(*const oxibar::testing::FakeAbort);
+
+// SAFETY: every test joins the thread before its FakeAbort is dropped.
+unsafe impl Send for StopLater {}
+
+/// Presses Stop on `abort` after `delay`, from another thread. Join the handle before `abort`
+/// goes out of scope.
+pub fn stop_after(
+	abort: &oxibar::testing::FakeAbort,
+	delay: std::time::Duration,
+) -> std::thread::JoinHandle<()> {
+	let target = StopLater(abort);
+	std::thread::spawn(move || {
+		let target = target;
+		std::thread::sleep(delay);
+		unsafe { &*target.0 }.set_aborting(true);
+	})
 }

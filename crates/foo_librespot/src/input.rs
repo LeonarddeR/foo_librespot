@@ -2,9 +2,9 @@
 
 use std::ffi::CStr;
 
-use foo_librespot_core::SpotifyId;
 use foo_librespot_core::audio::decoder::{CHANNELS, SAMPLE_RATE};
 use foo_librespot_core::link::parse_track_path;
+use foo_librespot_core::{CoreError, SpotifyId};
 use oxibar::abort::Abort;
 use oxibar::audio_chunk::{AudioChunk, CHANNEL_MASK_STEREO};
 use oxibar::cxx::ExceptionKind;
@@ -14,8 +14,9 @@ use oxibar::guid::Guid;
 use oxibar::input::{Input, OpenReason};
 
 use crate::backend::backend;
-use crate::errors::host_error;
+use crate::errors::{PLAY_LOGGED_OUT, host_error};
 use crate::fields::fill_info;
+use crate::first_use::prompt_login;
 use crate::worker::AbortableTrack;
 
 /// A tenth of a second per `decode_run`, as foobar2000's own inputs deliver.
@@ -71,7 +72,14 @@ impl Input for SpotifyInput {
 	}
 
 	fn decode_initialize(&mut self, _flags: u32, abort: &Abort) -> Result<()> {
-		let track = backend().open_track(self.id, &|| abort.is_aborting()).map_err(host_error)?;
+		let track = backend().open_track(self.id, &|| abort.is_aborting()).map_err(|error| {
+			if matches!(error, CoreError::NotLoggedIn) {
+				// The user pressed Play; info reads in the background never ask.
+				prompt_login();
+				return Error::new(ExceptionKind::Io, PLAY_LOGGED_OUT);
+			}
+			host_error(error)
+		})?;
 		self.track = Some(AbortableTrack::new(track).map_err(host_error)?);
 		Ok(())
 	}
@@ -123,7 +131,7 @@ mod tests {
 
 	use super::SpotifyInput;
 	use crate::backend;
-	use crate::testing::{FakeBackend, TRACK_ID, fixture_samples};
+	use crate::testing::{FakeBackend, TRACK_ID, fixture_samples, installed_prompt, stop_after};
 
 	fn path() -> String {
 		format!("sptf://spotify:track:{TRACK_ID}")
@@ -212,6 +220,35 @@ mod tests {
 	}
 
 	#[test]
+	fn decoding_while_logged_out_prompts_and_fails_with_advice() {
+		let fake = installed();
+		let prompt = installed_prompt();
+		fake.fail_with(|| CoreError::NotLoggedIn);
+		let abort = FakeAbort::new(false);
+		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
+		let error = decoder.initialize(0, 0, &abort).unwrap_err();
+		assert_eq!(error.kind, ExceptionKind::Io);
+		assert_eq!(
+			error.message,
+			"Not logged in to Spotify. Confirm the login in the window that just opened, then play again."
+		);
+		assert_eq!(prompt.shown(), 1);
+		assert_eq!(fake.logins_started(), 1);
+	}
+
+	#[test]
+	fn info_reads_while_logged_out_never_prompt() {
+		let fake = installed();
+		let prompt = installed_prompt();
+		fake.fail_with(|| CoreError::NotLoggedIn);
+		let abort = FakeAbort::new(false);
+		let decoder = entry().open_v3(&INFO_READER, &path(), None, None, &abort).unwrap();
+		assert!(decoder.get_info(0, &mut FileInfoImpl::new(), &abort).is_err());
+		assert_eq!(prompt.shown(), 0);
+		assert_eq!(fake.logins_started(), 0);
+	}
+
+	#[test]
 	fn aborted_open_throws_aborted() {
 		let fake = installed();
 		fake.fail_with(|| CoreError::Aborted);
@@ -219,21 +256,6 @@ mod tests {
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
 		let error = decoder.initialize(0, 0, &abort).unwrap_err();
 		assert_eq!(error.kind, ExceptionKind::Aborted);
-	}
-
-	/// Lets another thread press Stop on a `FakeAbort` the test keeps alive.
-	struct StopLater(*const FakeAbort);
-
-	// SAFETY: the test joins the thread before the FakeAbort is dropped.
-	unsafe impl Send for StopLater {}
-
-	fn stop_after(abort: &FakeAbort, delay: Duration) -> std::thread::JoinHandle<()> {
-		let target = StopLater(abort);
-		std::thread::spawn(move || {
-			let target = target;
-			std::thread::sleep(delay);
-			unsafe { &*target.0 }.set_aborting(true);
-		})
 	}
 
 	#[test]
