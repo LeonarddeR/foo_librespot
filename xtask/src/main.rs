@@ -121,6 +121,7 @@ fn build_dll(root: &Path, expect_built: bool) -> Result<Built> {
 
 fn package(expect_built: bool) -> Result<()> {
 	let root = root();
+	require_cargo_about(&root)?;
 	let built = build_dll(&root, expect_built)?;
 	// target\release, or target\<target>\release; the package goes next to it.
 	let out_dir = built
@@ -140,17 +141,21 @@ fn package(expect_built: bool) -> Result<()> {
 }
 
 /// The third-party notices for the DLL's dependencies, from `about.toml` and `about.hbs`.
-fn write_licenses(root: &Path, out: &Path) -> Result<()> {
+/// Fails unless cargo-about is installed. Checked before the release build, which takes minutes.
+fn require_cargo_about(root: &Path) -> Result<()> {
 	let installed = cargo(root)
 		.args(["about", "--version"])
 		.output()
 		.is_ok_and(|output| output.status.success());
-	if !installed {
-		return Err(
-			"cargo-about is not installed: cargo install --locked cargo-about --features cli"
-				.into(),
-		);
+	if installed {
+		Ok(())
+	} else {
+		Err("cargo-about is not installed: cargo install --locked cargo-about --features cli"
+			.into())
 	}
+}
+
+fn write_licenses(root: &Path, out: &Path) -> Result<()> {
 	run(&mut about_command(root, out), "cargo about generate")?;
 	if let Some(missing) = notices::missing_copyright(&read_text(out)?) {
 		return Err(missing.into());
