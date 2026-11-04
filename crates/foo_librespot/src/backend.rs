@@ -16,13 +16,13 @@ use foo_librespot_core::{Core, CoreError, LoginHandle};
 use crate::lifecycle::Lifecycle;
 use crate::settings;
 
-/// Everything the services need from Spotify. Every call blocks and returns
-/// [`CoreError::Aborted`] soon after `is_aborting` turns true.
 /// Gets the code a login shows the user.
 pub type OnCode = Box<dyn FnOnce(DeviceCode) + Send>;
 /// Gets the Spotify username, or why a login failed.
 pub type OnDone = Box<dyn FnOnce(Result<String, CoreError>) + Send>;
 
+/// Everything the services need from Spotify. Every call blocks and returns
+/// [`CoreError::Aborted`] soon after `is_aborting` turns true.
 pub trait Backend: Send + Sync {
 	fn resolve(&self, link: &Link, is_aborting: &dyn Fn() -> bool) -> Result<Resolved, CoreError>;
 	fn track_info(
