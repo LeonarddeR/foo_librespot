@@ -9,7 +9,8 @@ use librespot_metadata::track::Tracks;
 
 use super::decoder::PcmDecoder;
 use super::format::{Bitrate, bytes_per_second, header_offset, mime_type, pick_file};
-use super::header::{NormalisationData, ReplayGain, Subfile};
+use super::header::{NormalisationData, Subfile};
+use crate::replaygain::ReplayGain;
 use crate::{CoreError, SpotifyId, SpotifyUri};
 
 /// Whether a track can be played as it is, only through one of its alternatives, or not at all.

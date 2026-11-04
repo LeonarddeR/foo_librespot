@@ -9,9 +9,16 @@ use futures_util::stream::{self, StreamExt};
 use librespot_core::Session;
 use librespot_core::date::Date;
 use librespot_metadata::{Album, Metadata, Playlist, Track};
+use librespot_protocol::extended_metadata::{
+	BatchedEntityRequest, BatchedExtensionResponse, EntityRequest, ExtensionQuery,
+};
+use librespot_protocol::extension_kind::ExtensionKind;
+use librespot_protocol::metadata::Track as TrackMessage;
+use protobuf::{EnumOrUnknown, Message};
 
 use crate::link::{Link, LinkKind};
 use crate::metadata::{TrackInfo, availability, track_info};
+use crate::replaygain::parse_audio_files;
 use crate::{CoreError, SpotifyId, SpotifyUri};
 
 /// How many track lookups run at once while resolving an album or playlist.
@@ -228,11 +235,33 @@ impl LibrespotMetadata {
 
 impl MetadataSource for LibrespotMetadata {
 	async fn track(&self, id: SpotifyId) -> Result<Arc<TrackInfo>, CoreError> {
-		let track = Track::get(&self.session, &SpotifyUri::Track { id }).await?;
+		// One request for both the track and its loudness, the same number librespot's own
+		// `Track::get` makes for the track alone.
+		let query = |kind| ExtensionQuery {
+			extension_kind: EnumOrUnknown::new(kind),
+			..Default::default()
+		};
+		let request = BatchedEntityRequest {
+			entity_request: vec![EntityRequest {
+				entity_uri: SpotifyUri::Track { id }.to_uri(),
+				query: vec![query(ExtensionKind::TRACK_V4), query(ExtensionKind::AUDIO_FILES)],
+				..Default::default()
+			}],
+			..Default::default()
+		};
+		let response = self.session.spclient().get_extended_metadata(request).await?;
+		let values = extension_values(&response);
+		let bytes = values.track.ok_or_else(|| {
+			CoreError::Unavailable("Spotify sent no metadata for this track".to_owned())
+		})?;
+		let message =
+			TrackMessage::parse_from_bytes(&bytes).map_err(librespot_core::Error::from)?;
+		let track = Track::try_from(&message)?;
 		let user = self.session.user_data();
 		let catalogue = user.attributes.get("catalogue").map_or("premium", String::as_str);
 		let mut info = track_info(&track)?;
 		info.unavailable = availability(&track, &user.country, catalogue, &Date::now_utc()).err();
+		info.replay_gain = values.audio_files.as_deref().and_then(parse_audio_files);
 		Ok(Arc::new(info))
 	}
 
@@ -249,6 +278,35 @@ impl MetadataSource for LibrespotMetadata {
 	}
 }
 
+/// The raw values of the extensions asked for in one extended-metadata request.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ExtensionValues {
+	/// A `TRACK_V4` value: a serialized `metadata.Track`.
+	pub track: Option<Vec<u8>>,
+	/// An `AUDIO_FILES` value: a serialized `AudioFilesExtensionResponse`.
+	pub audio_files: Option<Vec<u8>>,
+}
+
+/// Picks the track and audio-files values out of a response. Entries Spotify reports as failed
+/// (a status code outside 2xx) are left out.
+pub fn extension_values(response: &BatchedExtensionResponse) -> ExtensionValues {
+	let mut values = ExtensionValues::default();
+	for array in &response.extended_metadata {
+		let Some(value) = array.extension_data.iter().find_map(|data| {
+			let status = data.header.as_ref().map_or(200, |header| header.status_code);
+			(200..300).contains(&status).then(|| data.extension_data.as_ref()).flatten()
+		}) else {
+			continue;
+		};
+		match array.extension_kind.enum_value() {
+			Ok(ExtensionKind::TRACK_V4) => values.track = Some(value.value.clone()),
+			Ok(ExtensionKind::AUDIO_FILES) => values.audio_files = Some(value.value.clone()),
+			_ => {}
+		}
+	}
+	values
+}
+
 #[cfg(test)]
 mod tests {
 	use std::collections::HashMap;
@@ -256,7 +314,17 @@ mod tests {
 	use std::sync::atomic::{AtomicUsize, Ordering};
 	use std::time::Duration;
 
-	use super::{CachedSource, MetadataSource, SkipReason, TrackCache, resolve};
+	use librespot_protocol::entity_extension_data::{
+		EntityExtensionData, EntityExtensionDataHeader,
+	};
+	use librespot_protocol::extended_metadata::{
+		BatchedExtensionResponse, EntityExtensionDataArray,
+	};
+	use librespot_protocol::extension_kind::ExtensionKind;
+	use protobuf::well_known_types::any::Any;
+	use protobuf::{EnumOrUnknown, MessageField};
+
+	use super::{CachedSource, MetadataSource, SkipReason, TrackCache, extension_values, resolve};
 	use crate::link::{Link, LinkKind};
 	use crate::metadata::TrackInfo;
 	use crate::{CoreError, SpotifyId, SpotifyUri};
@@ -279,6 +347,7 @@ mod tests {
 			covers: Vec::new(),
 			has_audio: true,
 			unavailable: None,
+			replay_gain: None,
 		}
 	}
 
@@ -441,6 +510,53 @@ mod tests {
 			resolved.skipped[0].reason,
 			SkipReason::Unavailable("not available in your country".to_owned())
 		);
+	}
+
+	fn extension(kind: ExtensionKind, status: i32, value: &[u8]) -> EntityExtensionDataArray {
+		EntityExtensionDataArray {
+			extension_kind: EnumOrUnknown::new(kind),
+			extension_data: vec![EntityExtensionData {
+				header: MessageField::some(EntityExtensionDataHeader {
+					status_code: status,
+					..Default::default()
+				}),
+				entity_uri: "spotify:track:2hQxLiI93xdjqENJuKeXjO".to_owned(),
+				extension_data: MessageField::some(Any {
+					value: value.to_vec(),
+					..Default::default()
+				}),
+				..Default::default()
+			}],
+			..Default::default()
+		}
+	}
+
+	#[test]
+	fn extension_values_finds_track_and_audio_files() {
+		let response = BatchedExtensionResponse {
+			extended_metadata: vec![
+				extension(ExtensionKind::AUDIO_FILES, 200, b"loudness"),
+				extension(ExtensionKind::TRACK_V4, 200, b"track"),
+			],
+			..Default::default()
+		};
+		let values = extension_values(&response);
+		assert_eq!(values.track.as_deref(), Some(&b"track"[..]));
+		assert_eq!(values.audio_files.as_deref(), Some(&b"loudness"[..]));
+	}
+
+	#[test]
+	fn extension_values_skip_failed_entries() {
+		let response = BatchedExtensionResponse {
+			extended_metadata: vec![
+				extension(ExtensionKind::TRACK_V4, 200, b"track"),
+				extension(ExtensionKind::AUDIO_FILES, 404, b"not found"),
+			],
+			..Default::default()
+		};
+		let values = extension_values(&response);
+		assert_eq!(values.track.as_deref(), Some(&b"track"[..]));
+		assert_eq!(values.audio_files, None);
 	}
 
 	#[test]

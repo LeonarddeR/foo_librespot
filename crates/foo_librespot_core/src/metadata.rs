@@ -4,6 +4,7 @@ use librespot_core::date::Date;
 use librespot_metadata::Track;
 use librespot_metadata::image::Images;
 
+use crate::replaygain::ReplayGain;
 use crate::{CoreError, FileId, SpotifyId};
 
 /// One size of an album cover.
@@ -15,7 +16,7 @@ pub struct Cover {
 }
 
 /// What foobar2000 shows for a Spotify track.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TrackInfo {
 	pub id: SpotifyId,
 	pub title: String,
@@ -34,6 +35,9 @@ pub struct TrackInfo {
 	/// Why Spotify won't play this track for this account, such as a region restriction; `None`
 	/// when it can, as far as the metadata shows. Set by whoever knows the account's country.
 	pub unavailable: Option<String>,
+	/// ReplayGain from Spotify's loudness metadata, known before the track is ever played; `None`
+	/// when Spotify has none. Set by whoever fetched the metadata.
+	pub replay_gain: Option<ReplayGain>,
 }
 
 pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
@@ -52,6 +56,7 @@ pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
 		covers: sorted_covers(covers),
 		has_audio: !track.files.0.is_empty() || !track.alternatives.0.is_empty(),
 		unavailable: None,
+		replay_gain: None,
 	})
 }
 

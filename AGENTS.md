@@ -36,7 +36,7 @@ Do not re-litigate these without new evidence.
 - Spotify tracks are stored as `sptf://spotify:track:<id>`, the form foo_spotify used, so old playlists keep working.
 - Login uses librespot's OAuth device flow with librespot's built-in client ID. No Spotify Web API.
 - librespot is pinned to the branch of PR #1855 until that fix is released, because stock librespot exits the process on a non-Premium login.
-- ReplayGain values may arrive only after a track's first play.
+- ReplayGain comes from Spotify's `AUDIO_FILES` extended metadata (integrated loudness and true peak), fetched in the same request as the track's other metadata, so tracks have it as soon as they are imported. The gains in the audio file's header, plus 1.5 dB, are only a fallback.
 - `panic = "unwind"`, never `abort`: a panic must reach foobar2000 as a C++ exception.
 - The dynamic CRT, as foobar2000 itself uses. No `+crt-static`.
 

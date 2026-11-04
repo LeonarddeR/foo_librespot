@@ -111,10 +111,12 @@ fn decode(
 	}
 	let seconds: f64 =
 		seconds.parse().map_err(|_| CoreError::Unavailable(format!("not a number: {seconds}")))?;
+	let info = core.track_info(link.id, &|| false)?;
+	println!("replay gain from metadata: {:?}", info.replay_gain);
 	let mut track = core.open_track(link.id, Bitrate::default(), &|| false)?;
 	println!("format: {:?}", track.format());
 	println!("total frames: {:?}", track.total_frames());
-	println!("replay gain: {:?}", track.replay_gain());
+	println!("replay gain from the file header: {:?}", track.replay_gain());
 	if let Some(seek) = seek {
 		let seek: f64 =
 			seek.parse().map_err(|_| CoreError::Unavailable(format!("not a number: {seek}")))?;

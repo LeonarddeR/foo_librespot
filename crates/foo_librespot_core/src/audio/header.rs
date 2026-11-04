@@ -11,12 +11,6 @@ pub const SPOTIFY_OGG_HEADER_END: u64 = 0xa7;
 /// Where the loudness values sit in Spotify's header.
 const NORMALISATION_OFFSET: u64 = 144;
 
-/// Added to the gains in Spotify's file header to get ReplayGain 2 gains. Measured on three
-/// Keith & Kristyn Getty tracks with ffmpeg's EBU R128 filter: the header gain was 1.2 to 1.8 dB
-/// below ReplayGain 2 (-18 LUFS), so the header values are only an approximation, used when
-/// Spotify's metadata has no loudness for a track.
-pub const REPLAYGAIN_OFFSET_DB: f64 = 1.5;
-
 /// Shows a stream as if it started at `offset`, hiding Spotify's header from the decoder.
 /// Same behaviour as librespot's private `Subfile` in `playback/src/player.rs`.
 pub struct Subfile<T> {
@@ -105,32 +99,11 @@ impl NormalisationData {
 	}
 }
 
-/// The ReplayGain fields foobar2000 stores.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ReplayGain {
-	pub track_gain_db: f32,
-	pub track_peak: f32,
-	pub album_gain_db: f32,
-	pub album_peak: f32,
-}
-
-impl From<NormalisationData> for ReplayGain {
-	#[allow(clippy::cast_possible_truncation, reason = "the values came from f32")]
-	fn from(data: NormalisationData) -> Self {
-		Self {
-			track_gain_db: (data.track_gain_db + REPLAYGAIN_OFFSET_DB) as f32,
-			track_peak: data.track_peak as f32,
-			album_gain_db: (data.album_gain_db + REPLAYGAIN_OFFSET_DB) as f32,
-			album_peak: data.album_peak as f32,
-		}
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use std::io::{Cursor, Read, Seek, SeekFrom};
 
-	use super::{NormalisationData, ReplayGain, SPOTIFY_OGG_HEADER_END, Subfile};
+	use super::{NormalisationData, SPOTIFY_OGG_HEADER_END, Subfile};
 
 	#[test]
 	fn normalisation_is_read_from_offset_144() {
@@ -169,24 +142,5 @@ mod tests {
 		subfile.read_exact(&mut byte).unwrap();
 		assert_eq!(byte[0], 0xb1);
 		assert_eq!(subfile.seek(SeekFrom::End(0)).unwrap(), 256 - 0xa7);
-	}
-
-	#[test]
-	fn replaygain_adds_the_calibrated_offset_to_gains_and_keeps_peaks() {
-		let data = NormalisationData {
-			track_gain_db: -6.5,
-			track_peak: 0.98,
-			album_gain_db: -7.25,
-			album_peak: 1.0,
-		};
-		assert_eq!(
-			ReplayGain::from(data),
-			ReplayGain {
-				track_gain_db: -5.0,
-				track_peak: 0.98,
-				album_gain_db: -5.75,
-				album_peak: 1.0
-			}
-		);
 	}
 }

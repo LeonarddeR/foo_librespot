@@ -42,7 +42,7 @@ ReplayGain 2 gain is `-18 - I`, where `I` is the integrated loudness in LUFS.
 | The Power Of The Cross (`0rOxHEaSWjiuAaHO0MCD6A`) | -7.82 | -11.6 | -6.4 | 1.42 | -11.61 |
 | Speak, O Lord (`66kJLPv3KRA98W86JXkuDb`) | -7.47 | -12.3 | -5.7 | 1.77 | -12.30 |
 
-- [x] The header difference is within 1 dB for all three, so `REPLAYGAIN_OFFSET_DB` is 1.5 dB.
+- [x] The header difference is within 1 dB for all three, so `HEADER_OFFSET_DB` in `crates/foo_librespot_core/src/replaygain.rs` is 1.5 dB.
 - [x] Spotify's extended metadata (`AUDIO_FILES`) has each track's integrated loudness and true peak, matching ffmpeg to 0.05 dB, before anything is played. That is the better source; the header values become the fallback.
 
 ## Optional: a Free account
