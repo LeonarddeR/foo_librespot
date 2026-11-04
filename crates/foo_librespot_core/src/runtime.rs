@@ -57,6 +57,10 @@ impl CoreRuntime {
 		work: impl FnOnce() -> T + Send + 'static,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<T, CoreError> {
+		// Once spawned, the work can't be stopped, so work that is already aborted never starts.
+		if is_aborting() {
+			return Err(CoreError::Aborted);
+		}
 		let task = self.runtime.spawn_blocking(work);
 		self.block_on(task, is_aborting)?
 			.map_err(|error| CoreError::Io(std::io::Error::other(error.to_string())))
@@ -204,6 +208,23 @@ mod tests {
 		setter.join().unwrap();
 		// Dropping a runtime would wait for the sleeping task; shutting it down doesn't.
 		runtime.shutdown(Duration::from_millis(10));
+	}
+
+	#[test]
+	fn block_on_blocking_does_not_start_work_that_is_already_aborted() {
+		let runtime = CoreRuntime::new().unwrap();
+		let started = Arc::new(AtomicBool::new(false));
+		let result = runtime.block_on_blocking(
+			{
+				let started = Arc::clone(&started);
+				move || started.store(true, Ordering::SeqCst)
+			},
+			&|| true,
+		);
+		assert!(matches!(result, Err(CoreError::Aborted)), "{result:?}");
+		// Gives work that was wrongly spawned the time to run.
+		runtime.shutdown(Duration::from_millis(200));
+		assert!(!started.load(Ordering::SeqCst));
 	}
 
 	#[test]
