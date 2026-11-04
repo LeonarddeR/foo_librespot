@@ -7,12 +7,13 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use foo_librespot_core::audio::decoder::PcmDecoder;
 use foo_librespot_core::link::Link;
+use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::replaygain::ReplayGain;
 use foo_librespot_core::resolve::Resolved;
 use foo_librespot_core::{CoreError, SpotifyId};
 
-use crate::backend::{Backend, PcmTrack};
+use crate::backend::{Backend, LoginTask, OnCode, OnDone, PcmTrack};
 
 pub const CHIRP: &[u8] = include_bytes!("../../foo_librespot_core/tests/fixtures/chirp.ogg");
 
@@ -55,6 +56,25 @@ struct State {
 	cover: Mutex<Option<Vec<u8>>>,
 	/// While set, reads and seeks block, like a Spotify download that has stalled.
 	stalled: AtomicBool,
+	logins: Mutex<Vec<ScriptedLogin>>,
+	username: Mutex<Option<String>>,
+	logouts: AtomicUsize,
+}
+
+/// A login the test answers itself, with [`FakeBackend::send_code`] and
+/// [`FakeBackend::finish_login`].
+struct ScriptedLogin {
+	on_code: Option<OnCode>,
+	on_done: Option<OnDone>,
+	cancelled: Arc<AtomicBool>,
+}
+
+struct ScriptedTask(Arc<AtomicBool>);
+
+impl LoginTask for ScriptedTask {
+	fn cancel(&self) {
+		self.0.store(true, Ordering::SeqCst);
+	}
 }
 
 /// Clones share their state, so a test can install one and inspect another.
@@ -87,6 +107,56 @@ impl FakeBackend {
 	/// Makes reads and seeks of opened tracks block until `stall(false)`, at most 5 s.
 	pub fn stall(&self, stalled: bool) {
 		self.0.stalled.store(stalled, Ordering::SeqCst);
+	}
+
+	/// The stored login's username, as if a login had happened before.
+	pub fn set_username(&self, username: Option<&str>) {
+		*self.0.username.lock().unwrap_or_else(PoisonError::into_inner) =
+			username.map(str::to_owned);
+	}
+
+	pub fn logins_started(&self) -> usize {
+		self.0.logins.lock().unwrap_or_else(PoisonError::into_inner).len()
+	}
+
+	pub fn last_login_cancelled(&self) -> bool {
+		self.0
+			.logins
+			.lock()
+			.unwrap_or_else(PoisonError::into_inner)
+			.last()
+			.is_some_and(|login| login.cancelled.load(Ordering::SeqCst))
+	}
+
+	pub fn logouts(&self) -> usize {
+		self.0.logouts.load(Ordering::SeqCst)
+	}
+
+	/// The latest login receives its code from Spotify. Unlike the real one, the fake answers
+	/// even after it was cancelled, so tests can check that late answers are ignored.
+	pub fn send_code(&self, code: DeviceCode) {
+		let on_code = self.latest(|login| login.on_code.take());
+		if let Some(on_code) = on_code {
+			on_code(code);
+		}
+	}
+
+	/// The latest login ends. Success stores the login, as the real one does, unless it was
+	/// cancelled.
+	pub fn finish_login(&self, result: Result<String, CoreError>) {
+		let (on_done, cancelled) =
+			self.latest(|login| (login.on_done.take(), login.cancelled.load(Ordering::SeqCst)));
+		if let (Ok(username), false) = (&result, cancelled) {
+			self.set_username(Some(username));
+		}
+		if let Some(on_done) = on_done {
+			on_done(result);
+		}
+	}
+
+	fn latest<R>(&self, take: impl FnOnce(&mut ScriptedLogin) -> R) -> R {
+		let mut logins = self.0.logins.lock().unwrap_or_else(PoisonError::into_inner);
+		take(logins.last_mut().expect("no login was started"))
 	}
 
 	fn enter(&self, is_aborting: &dyn Fn() -> bool) -> Result<(), CoreError> {
@@ -138,6 +208,30 @@ impl Backend for FakeBackend {
 	) -> Result<Option<Vec<u8>>, CoreError> {
 		self.enter(is_aborting)?;
 		Ok(self.0.cover.lock().unwrap_or_else(PoisonError::into_inner).clone())
+	}
+
+	fn start_login(
+		&self,
+		on_code: OnCode,
+		on_done: OnDone,
+	) -> Result<Box<dyn LoginTask>, CoreError> {
+		let cancelled = Arc::new(AtomicBool::new(false));
+		self.0.logins.lock().unwrap_or_else(PoisonError::into_inner).push(ScriptedLogin {
+			on_code: Some(on_code),
+			on_done: Some(on_done),
+			cancelled: Arc::clone(&cancelled),
+		});
+		Ok(Box::new(ScriptedTask(cancelled)))
+	}
+
+	fn logout(&self) -> Result<(), CoreError> {
+		self.0.logouts.fetch_add(1, Ordering::SeqCst);
+		self.set_username(None);
+		Ok(())
+	}
+
+	fn username(&self) -> Option<String> {
+		self.0.username.lock().unwrap_or_else(PoisonError::into_inner).clone()
 	}
 }
 

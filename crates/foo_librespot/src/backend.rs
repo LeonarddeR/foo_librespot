@@ -8,14 +8,21 @@ use std::time::Duration;
 use foo_librespot_core::audio::format::Bitrate;
 use foo_librespot_core::audio::track::SpotifyTrack;
 use foo_librespot_core::link::Link;
+use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::resolve::Resolved;
-use foo_librespot_core::{Core, CoreError, SpotifyId};
+use foo_librespot_core::{Core, CoreError, LoginHandle, SpotifyId};
 
 use crate::lifecycle::Lifecycle;
 
 /// Everything the services need from Spotify. Every call blocks and returns
 /// [`CoreError::Aborted`] soon after `is_aborting` turns true.
+/// Gets the code a login shows the user.
+pub type OnCode = Box<dyn FnOnce(DeviceCode) + Send>;
+/// Gets the Spotify username, or why a login failed.
+pub type OnDone = Box<dyn FnOnce(Result<String, CoreError>) + Send>;
+
+#[cfg_attr(not(test), expect(dead_code, reason = "the preferences page (Task 8) logs in"))]
 pub trait Backend: Send + Sync {
 	fn resolve(&self, link: &Link, is_aborting: &dyn Fn() -> bool) -> Result<Resolved, CoreError>;
 	fn track_info(
@@ -33,6 +40,28 @@ pub trait Backend: Send + Sync {
 		id: SpotifyId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Option<Vec<u8>>, CoreError>;
+	/// Starts a browser login in the background. `on_code` gets the code to show; `on_done` gets
+	/// the Spotify username or why it failed. Neither runs after [`LoginTask::cancel`].
+	fn start_login(
+		&self,
+		on_code: OnCode,
+		on_done: OnDone,
+	) -> Result<Box<dyn LoginTask>, CoreError>;
+	fn logout(&self) -> Result<(), CoreError>;
+	/// The Spotify username of the stored login, or `None` when logged out.
+	fn username(&self) -> Option<String>;
+}
+
+/// A login running in the background.
+#[cfg_attr(not(test), expect(dead_code, reason = "the preferences page (Task 8) logs in"))]
+pub trait LoginTask: Send {
+	fn cancel(&self);
+}
+
+impl LoginTask for LoginHandle {
+	fn cancel(&self) {
+		Self::cancel(self);
+	}
 }
 
 /// A track opened for decoding: 44.1 kHz stereo, interleaved `f64`.
@@ -103,6 +132,22 @@ impl Backend for CoreBackend {
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Option<Vec<u8>>, CoreError> {
 		core()?.cover(id, is_aborting)
+	}
+
+	fn start_login(
+		&self,
+		on_code: OnCode,
+		on_done: OnDone,
+	) -> Result<Box<dyn LoginTask>, CoreError> {
+		Ok(Box::new(core()?.start_login(move |code| on_code(code.clone()), on_done)))
+	}
+
+	fn logout(&self) -> Result<(), CoreError> {
+		core()?.logout()
+	}
+
+	fn username(&self) -> Option<String> {
+		core().ok()?.username()
 	}
 }
 

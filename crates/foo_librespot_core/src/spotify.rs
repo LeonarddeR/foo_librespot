@@ -48,6 +48,11 @@ impl Core {
 		self.sessions.is_logged_in()
 	}
 
+	/// The Spotify username in the stored login, or `None` when logged out.
+	pub fn username(&self) -> Option<String> {
+		self.sessions.username()
+	}
+
 	/// Starts a browser login in the background. `on_code` gets the code and page to show the
 	/// user; `on_done` gets the Spotify username or the reason it failed. Both run on a runtime
 	/// thread. After [`LoginHandle::cancel`], neither is called.

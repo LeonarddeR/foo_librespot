@@ -161,6 +161,11 @@ impl<C: Connector> SessionManager<C> {
 		matches!(self.profile.load_credentials(), Ok(Some(_)))
 	}
 
+	/// The Spotify username in the stored login, or `None` when logged out.
+	pub fn username(&self) -> Option<String> {
+		self.profile.load_credentials().ok().flatten().and_then(|credentials| credentials.username)
+	}
+
 	async fn connect(&self, credentials: Credentials) -> Result<Connected<C::Session>, CoreError> {
 		tokio::time::timeout(self.connect_timeout, self.connector.connect(credentials))
 			.await
@@ -371,6 +376,12 @@ mod tests {
 		}
 		let manager = SessionManager::new(connector.clone(), Arc::clone(&profile));
 		Setup { _dir: dir, profile, connector, manager }
+	}
+
+	#[test]
+	fn username_comes_from_the_stored_login() {
+		assert_eq!(setup(connects(), true).manager.username().as_deref(), Some("alice"));
+		assert_eq!(setup(connects(), false).manager.username(), None);
 	}
 
 	#[tokio::test]

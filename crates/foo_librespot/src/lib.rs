@@ -8,6 +8,8 @@ mod input;
 mod lifecycle;
 mod links;
 mod logging;
+#[expect(dead_code, reason = "the preferences page (Task 8) uses the controller")]
+mod login;
 #[cfg(test)]
 mod testing;
 mod worker;
