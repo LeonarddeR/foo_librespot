@@ -3,6 +3,7 @@
 //! This crate knows nothing about foobar2000: it turns Spotify links into track lists with
 //! metadata and plays Spotify tracks as seekable 44.1 kHz stereo PCM.
 
+pub mod audio;
 #[allow(
 	non_snake_case,
 	non_camel_case_types,
