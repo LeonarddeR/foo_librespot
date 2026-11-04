@@ -7,14 +7,18 @@
 //!   fetches the page and reports `text/html`, as it did for foo_spotify. Every other web page
 //!   the user adds arrives too, and is turned away before any Spotify call.
 
+use std::fmt::Write as _;
+
 use foo_librespot_core::CoreError;
 use foo_librespot_core::link::{Link, LinkKind, PATH_SCHEME, parse_link, track_path};
+use foo_librespot_core::resolve::Skipped;
 use oxibar::abort::Abort;
 use oxibar::console;
 use oxibar::error::{Error, Result};
 use oxibar::file_info_impl::FileInfoImpl;
 use oxibar::filesystem_service::Filesystem;
 use oxibar::playlist_loader::{LoaderCallback, PlaylistLoader};
+use oxibar::popup::{self, PopupIcon};
 
 use crate::backend::backend;
 use crate::errors::host_error;
@@ -64,6 +68,31 @@ impl Filesystem for SpotifyFilesystem {
 	}
 }
 
+/// How many skipped items one popup lists; the console has them all.
+const MAX_LISTED: usize = 20;
+
+const fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
+	if count == 1 { one } else { many }
+}
+
+/// The popup after an import that skipped items: what was added, then up to [`MAX_LISTED`]
+/// of the skipped items with the reason for each.
+fn skipped_message(added: usize, source: &str, skipped: &[Skipped]) -> String {
+	let tracks = plural(added, "track", "tracks");
+	let items = plural(skipped.len(), "item", "items");
+	let mut message = format!(
+		"Added {added} {tracks} from {source}.\n\n{} {items} could not be added:",
+		skipped.len()
+	);
+	for item in skipped.iter().take(MAX_LISTED) {
+		let _ = write!(message, "\n{}: {}", item.uri, item.reason);
+	}
+	if skipped.len() > MAX_LISTED {
+		let _ = write!(message, "\n…and {} more; see the console.", skipped.len() - MAX_LISTED);
+	}
+	message
+}
+
 /// Expands Spotify track, album and playlist links into one entry per track.
 pub struct SpotifyLoader;
 
@@ -99,6 +128,12 @@ impl PlaylistLoader for SpotifyLoader {
 			"foo_librespot: added {} tracks from {source}",
 			resolved.tracks.len()
 		));
+		if !resolved.skipped.is_empty() {
+			let message = skipped_message(resolved.tracks.len(), source, &resolved.skipped);
+			if let Err(error) = popup::show("foo_librespot", &message, PopupIcon::Information) {
+				console::print(&format!("foo_librespot: {}", error.message));
+			}
+		}
 		Ok(())
 	}
 }
@@ -114,6 +149,7 @@ mod tests {
 	use oxibar::cxx::ExceptionKind;
 	use oxibar::filesystem_service::filesystem_service;
 	use oxibar::playlist_loader::playlist_loader_service;
+	use oxibar::popup::PopupIcon;
 	use oxibar::testing::{
 		FakeAbort, FakeApi, FakeLoaderCallback, FilesystemHandle, PlaylistLoaderHandle,
 	};
@@ -264,6 +300,73 @@ mod tests {
 			lines.iter().any(|line| line == "foo_librespot: added 3 tracks from In Christ Alone"),
 			"{lines:?}"
 		);
+	}
+
+	fn with_skipped(count: usize) -> Resolved {
+		let mut resolved = album();
+		resolved.skipped = (0..count)
+			.map(|index| Skipped {
+				uri: format!("spotify:episode:{index:022}"),
+				reason: SkipReason::Episode,
+			})
+			.collect();
+		resolved
+	}
+
+	#[test]
+	fn import_with_skipped_items_shows_one_popup() {
+		let api = FakeApi::new();
+		api.install();
+		let fake = installed();
+		fake.resolve_to(with_skipped(2));
+		let (callback, _record) = FakeLoaderCallback::new();
+		loader()
+			.open(&format!("spotify:playlist:{ALBUM}"), callback, &FakeAbort::new(false))
+			.unwrap();
+		let popups = api.popups();
+		assert_eq!(popups.len(), 1, "{popups:?}");
+		let (title, message, icon) = &popups[0];
+		assert_eq!(title, "foo_librespot");
+		assert_eq!(*icon, PopupIcon::Information);
+		assert_eq!(
+			message,
+			"Added 3 tracks from In Christ Alone.\n\n2 items could not be added:\n\
+			 spotify:episode:0000000000000000000000: podcast episodes can't be played\n\
+			 spotify:episode:0000000000000000000001: podcast episodes can't be played"
+		);
+	}
+
+	#[test]
+	fn import_without_skips_shows_no_popup() {
+		let api = FakeApi::new();
+		api.install();
+		let fake = installed();
+		fake.resolve_to(album());
+		let (callback, _record) = FakeLoaderCallback::new();
+		loader().open(&format!("spotify:album:{ALBUM}"), callback, &FakeAbort::new(false)).unwrap();
+		assert!(api.popups().is_empty());
+	}
+
+	#[test]
+	fn one_popup_lists_at_most_20_skipped_items() {
+		let api = FakeApi::new();
+		api.install();
+		let fake = installed();
+		fake.resolve_to(with_skipped(25));
+		let (callback, _record) = FakeLoaderCallback::new();
+		loader()
+			.open(&format!("spotify:playlist:{ALBUM}"), callback, &FakeAbort::new(false))
+			.unwrap();
+		let popups = api.popups();
+		assert_eq!(popups.len(), 1);
+		let lines: Vec<&str> = popups[0].1.lines().collect();
+		assert_eq!(lines[2], "25 items could not be added:");
+		assert_eq!(lines.len(), 3 + 20 + 1, "{lines:?}");
+		assert_eq!(
+			lines[22],
+			"spotify:episode:0000000000000000000019: podcast episodes can't be played"
+		);
+		assert_eq!(lines[23], "…and 5 more; see the console.");
 	}
 
 	#[test]

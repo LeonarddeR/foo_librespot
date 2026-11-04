@@ -1,12 +1,18 @@
 //! Turning Spotify errors into the foobar2000 exceptions that explain them.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use foo_librespot_core::CoreError;
+use oxibar::console;
 use oxibar::cxx::ExceptionKind;
 use oxibar::error::Error;
 
-/// What the user reads when nobody is logged in. Phase 4's preferences page replaces the advice.
+/// What the user reads when nobody is logged in.
 const NOT_LOGGED_IN: &str =
-	"Not logged in to Spotify. For now, log in with the spotify_dev tool; see TESTING.md.";
+	"Not logged in to Spotify. Log in from File > Preferences > Tools > foo_librespot.";
+
+/// Whether the console was told about the missing login yet; once per session is enough.
+static TOLD_NOT_LOGGED_IN: AtomicBool = AtomicBool::new(false);
 
 /// What the user reads when they play a track while logged out; the login window has opened.
 pub const PLAY_LOGGED_OUT: &str =
@@ -17,7 +23,14 @@ pub const PLAY_LOGGED_OUT: &str =
 pub fn host_error(error: CoreError) -> Error {
 	let kind = match &error {
 		CoreError::Aborted => return Error::aborted(),
-		CoreError::NotLoggedIn => return Error::new(ExceptionKind::Io, NOT_LOGGED_IN),
+		CoreError::NotLoggedIn => {
+			if !TOLD_NOT_LOGGED_IN.swap(true, Ordering::SeqCst) {
+				console::print(
+					"foo_librespot: not logged in to Spotify; log in from File > Preferences > Tools > foo_librespot.",
+				);
+			}
+			return Error::new(ExceptionKind::Io, NOT_LOGGED_IN);
+		}
 		CoreError::Unavailable(_) => ExceptionKind::IoNotFound,
 		CoreError::Decode(_) => ExceptionKind::IoData,
 		CoreError::Link(_) => ExceptionKind::IoUnsupportedFormat,
@@ -30,19 +43,62 @@ pub fn host_error(error: CoreError) -> Error {
 	Error::new(kind, format!("Spotify: {error}"))
 }
 
+/// What to do when `foo_youtube` is loaded: its host filter takes every web link by default,
+/// `open.spotify.com` included, so foobar2000 never asks foo_librespot about them.
+pub fn youtube_hint(components: &[String]) -> Option<String> {
+	components.iter().any(|name| name.eq_ignore_ascii_case("foo_youtube")).then(|| {
+		"foo_youtube takes open.spotify.com links before foo_librespot sees them. Add the line \"deny spotify.com\" to foo_youtube's host filter in its preferences; spotify: links work either way.".to_owned()
+	})
+}
+
 #[cfg(test)]
 mod tests {
 	use foo_librespot_core::CoreError;
 	use foo_librespot_core::link::LinkError;
 	use oxibar::cxx::ExceptionKind;
 
-	use super::host_error;
+	use oxibar::testing::FakeApi;
+
+	use super::{host_error, youtube_hint};
 
 	#[test]
-	fn not_logged_in_reaches_the_host_as_an_io_error_with_advice() {
+	fn not_logged_in_message_points_to_the_preferences_page() {
 		let error = host_error(CoreError::NotLoggedIn);
 		assert_eq!(error.kind, ExceptionKind::Io);
-		assert!(error.message.contains("spotify_dev"), "{}", error.message);
+		assert_eq!(
+			error.message,
+			"Not logged in to Spotify. Log in from File > Preferences > Tools > foo_librespot."
+		);
+	}
+
+	#[test]
+	fn not_logged_in_is_told_on_the_console_once() {
+		let api = FakeApi::new();
+		api.install();
+		host_error(CoreError::NotLoggedIn);
+		host_error(CoreError::NotLoggedIn);
+		let told = api
+			.console_lines()
+			.iter()
+			.filter(|line| {
+				*line
+					== "foo_librespot: not logged in to Spotify; log in from File > Preferences > Tools > foo_librespot."
+			})
+			.count();
+		assert_eq!(told, 1, "{:?}", api.console_lines());
+	}
+
+	#[test]
+	fn youtube_hint_only_with_foo_youtube() {
+		let loaded =
+			|names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+		assert_eq!(youtube_hint(&loaded(&["foo_input_std", "foo_librespot"])), None);
+		assert_eq!(
+			youtube_hint(&loaded(&["foo_youtube", "foo_librespot"])).as_deref(),
+			Some(
+				"foo_youtube takes open.spotify.com links before foo_librespot sees them. Add the line \"deny spotify.com\" to foo_youtube's host filter in its preferences; spotify: links work either way."
+			)
+		);
 	}
 
 	#[test]

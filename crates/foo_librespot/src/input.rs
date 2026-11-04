@@ -216,7 +216,7 @@ mod tests {
 		let decoder = entry().open_v3(&INFO_READER, &path(), None, None, &abort).unwrap();
 		let error = decoder.get_info(0, &mut FileInfoImpl::new(), &abort).unwrap_err();
 		assert_eq!(error.kind, ExceptionKind::Io);
-		assert!(error.message.contains("spotify_dev"), "{}", error.message);
+		assert!(error.message.contains("Preferences > Tools > foo_librespot"), "{}", error.message);
 	}
 
 	#[test]

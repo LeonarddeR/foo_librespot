@@ -39,6 +39,9 @@ impl InitQuit for Startup {
 	fn on_init(&self) {
 		logging::init();
 		log::info!("loaded (OxiBar {})", oxibar::VERSION);
+		if let Some(hint) = errors::youtube_hint(&oxibar::host::host().loaded_components()) {
+			oxibar::console::print(&format!("foo_librespot: {hint}"));
+		}
 	}
 
 	fn on_quit(&self) {
