@@ -40,7 +40,10 @@ pub struct FakeApi {
 	state: Arc<services::FakeState>,
 }
 
+mod preferences;
 mod services;
+
+pub use preferences::{FakePageCallback, PageInstanceHandle, PreferencesHandle};
 
 static API_VTBL: ApiVtbl = ApiVtbl {
 	service_enum_find_class: find_class,

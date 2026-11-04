@@ -16,5 +16,6 @@ pub mod input;
 pub mod main_thread;
 pub mod playlist_loader;
 pub mod popup;
+pub mod preferences;
 pub mod service;
 pub mod string_base;
