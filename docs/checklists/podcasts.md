@@ -17,7 +17,9 @@ Test link: the episode "Our Ransom (Part 1)" of the Timothy Keller Sermons Podca
 - [x] `foobar2000.exe /add spotify:episode:4QomYTPgZ1mpVbUmxBsUpz` adds one entry, "Our Ransom (Part 1)", with "Timothy Keller Sermons Podcast by Gospel in Life" as artist and album. The console says "foo_librespot: added 1 track from the link".
 - [x] The `spotify_dev` example resolves the episode (37:39, hosted by Spotify) and decodes its first five seconds. Spotify serves it as 96 kbit/s Ogg Vorbis, the only quality it has for this episode.
 
-Not checked yet: a show link (Spotify's web page doesn't show the show's id without a browser), and an episode hosted outside Spotify.
+- [x] The show "Een preek voor elke dag" (`spotify:show:2HN6I8hmWyIFOWibAxV05O`, 2000 episodes, newest first) adds all 2000 episodes: "foo_librespot: added 2000 tracks from Een preek voor elke dag", nothing skipped. Before metadata was fetched in batches, librespot's own limit of 300 requests per 30 seconds left 1615 of them out.
+
+Not checked yet: an episode hosted outside Spotify.
 
 ## For you, with NVDA
 

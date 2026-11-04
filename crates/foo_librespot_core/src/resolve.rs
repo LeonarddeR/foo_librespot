@@ -5,16 +5,18 @@ use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use futures_util::stream::{self, StreamExt};
 use librespot_core::Session;
 use librespot_core::date::Date;
+use librespot_core::error::ErrorKind;
 use librespot_metadata::{Album, Episode, Metadata, Playlist, Show, Track};
 use librespot_protocol::extended_metadata::{
 	BatchedEntityRequest, BatchedExtensionResponse, EntityRequest, ExtensionQuery,
 };
 use librespot_protocol::extension_kind::ExtensionKind;
-use librespot_protocol::metadata::Track as TrackMessage;
+use librespot_protocol::metadata::{Episode as EpisodeMessage, Track as TrackMessage};
 use protobuf::{EnumOrUnknown, Message};
 
 use crate::link::{ItemId, Link, LinkKind};
@@ -22,8 +24,18 @@ use crate::metadata::{TrackInfo, availability, episode_info, track_info};
 use crate::replaygain::parse_audio_files;
 use crate::{CoreError, SpotifyId, SpotifyUri};
 
-/// How many track lookups run at once while resolving an album or playlist.
-pub const FETCH_CONCURRENCY: usize = 8;
+/// How many tracks or episodes one metadata request asks for. librespot allows 300 requests per
+/// 30 seconds, so asking for each item on its own stalls a show of 2000 episodes; in batches it
+/// takes 20 requests.
+pub const BATCH_SIZE: usize = 100;
+
+/// How many batches are asked for at once.
+pub const BATCH_CONCURRENCY: usize = 2;
+
+/// The first wait before a request librespot refused for its rate limit is tried again. Each
+/// wait doubles, so the last try comes about 30 seconds after the first, librespot's window.
+const RATE_LIMIT_FIRST_WAIT: Duration = Duration::from_millis(500);
+const RATE_LIMIT_TRIES: u32 = 7;
 
 /// Why an entry of an album or playlist was left out.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,12 +71,13 @@ pub struct Resolved {
 	pub skipped: Vec<Skipped>,
 }
 
-/// Where track, album and playlist metadata comes from.
+/// Where track, episode, album, playlist and show metadata comes from.
 pub trait MetadataSource: Send + Sync {
-	fn track(
+	/// The info of each of `items`, in the same order, each with its own result.
+	fn items(
 		&self,
-		id: SpotifyId,
-	) -> impl Future<Output = Result<Arc<TrackInfo>, CoreError>> + Send;
+		items: &[ItemId],
+	) -> impl Future<Output = Vec<Result<Arc<TrackInfo>, CoreError>>> + Send;
 
 	/// The album name and its track ids in album order.
 	fn album(
@@ -78,11 +91,6 @@ pub trait MetadataSource: Send + Sync {
 		id: SpotifyId,
 	) -> impl Future<Output = Result<(String, Vec<SpotifyUri>), CoreError>> + Send;
 
-	fn episode(
-		&self,
-		id: SpotifyId,
-	) -> impl Future<Output = Result<Arc<TrackInfo>, CoreError>> + Send;
-
 	/// The show name and its episode ids in the order Spotify lists them.
 	fn show(
 		&self,
@@ -90,13 +98,24 @@ pub trait MetadataSource: Send + Sync {
 	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send;
 }
 
-enum Entry {
-	Item(ItemId),
-	Skip(Skipped),
+/// The info of one item.
+pub async fn item<S: MetadataSource>(
+	source: &S,
+	item: ItemId,
+) -> Result<Arc<TrackInfo>, CoreError> {
+	source.items(&[item]).await.pop().unwrap_or_else(|| Err(missing(item)))
 }
 
-enum Fetched {
-	Item(ItemId, Result<Arc<TrackInfo>, CoreError>),
+fn missing(item: ItemId) -> CoreError {
+	let kind = match item {
+		ItemId::Track(_) => "track",
+		ItemId::Episode(_) => "episode",
+	};
+	CoreError::Unavailable(format!("Spotify sent no metadata for this {kind}"))
+}
+
+enum Entry {
+	Item(ItemId),
 	Skip(Skipped),
 }
 
@@ -127,36 +146,41 @@ pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resol
 		}
 	};
 
-	// `buffered` runs several lookups at once but yields them in entry order.
-	let fetched: Vec<Fetched> = stream::iter(entries)
-		.map(|entry| async move {
-			match entry {
-				Entry::Item(item @ ItemId::Track(id)) => {
-					Fetched::Item(item, source.track(id).await)
-				}
-				Entry::Item(item @ ItemId::Episode(id)) => {
-					Fetched::Item(item, source.episode(id).await)
-				}
-				Entry::Skip(skipped) => Fetched::Skip(skipped),
-			}
+	let items: Vec<ItemId> = entries
+		.iter()
+		.filter_map(|entry| match entry {
+			Entry::Item(item) => Some(*item),
+			Entry::Skip(_) => None,
 		})
-		.buffered(FETCH_CONCURRENCY)
-		.collect()
-		.await;
+		.collect();
+	// `buffered` runs several batches at once but yields them in order.
+	let mut fetched = stream::iter(items.chunks(BATCH_SIZE))
+		.map(|batch| source.items(batch))
+		.buffered(BATCH_CONCURRENCY)
+		.flat_map(stream::iter)
+		.collect::<Vec<_>>()
+		.await
+		.into_iter();
 
 	let mut resolved = Resolved { name, tracks: Vec::new(), skipped: Vec::new() };
 	let mut first_error = None;
-	for item in fetched {
-		match item {
-			Fetched::Skip(skipped) => resolved.skipped.push(skipped),
-			Fetched::Item(_, Ok(info)) if playable(&info) => resolved.tracks.push(info),
-			Fetched::Item(item, Ok(info)) => resolved.skipped.push(Skipped {
+	for entry in entries {
+		let item = match entry {
+			Entry::Skip(skipped) => {
+				resolved.skipped.push(skipped);
+				continue;
+			}
+			Entry::Item(item) => item,
+		};
+		match fetched.next().unwrap_or_else(|| Err(missing(item))) {
+			Ok(info) if playable(&info) => resolved.tracks.push(info),
+			Ok(info) => resolved.skipped.push(Skipped {
 				uri: item.uri().to_uri(),
 				reason: SkipReason::Unavailable(
 					info.unavailable.clone().unwrap_or_else(|| no_audio(item).to_owned()),
 				),
 			}),
-			Fetched::Item(item, Err(error)) => {
+			Err(error) => {
 				resolved.skipped.push(Skipped {
 					uri: item.uri().to_uri(),
 					reason: SkipReason::Unavailable(error.to_string()),
@@ -188,6 +212,27 @@ fn playlist_entry(uri: &SpotifyUri) -> Entry {
 		other => SkipReason::Unsupported(other.item_type().to_owned()),
 	};
 	Entry::Skip(Skipped { uri: uri.to_uri(), reason })
+}
+
+/// Runs `request` again while librespot refuses it for its own rate limit, waiting longer each
+/// time, for about 30 seconds in all.
+pub async fn retry_rate_limited<T, F, Fut>(mut request: F) -> Result<T, librespot_core::Error>
+where
+	F: FnMut() -> Fut,
+	Fut: Future<Output = Result<T, librespot_core::Error>>,
+{
+	let mut wait = RATE_LIMIT_FIRST_WAIT;
+	for _ in 1..RATE_LIMIT_TRIES {
+		match request().await {
+			Err(error) if error.kind == ErrorKind::ResourceExhausted => {
+				log::debug!("rate limited, trying again in {wait:?}: {error}");
+				tokio::time::sleep(wait).await;
+				wait *= 2;
+			}
+			result => return result,
+		}
+	}
+	request().await
 }
 
 /// Track and episode metadata already fetched this run, shared by everything that looks them up.
@@ -227,29 +272,35 @@ impl<S> CachedSource<S> {
 }
 
 impl<S: MetadataSource> MetadataSource for CachedSource<S> {
-	async fn track(&self, id: SpotifyId) -> Result<Arc<TrackInfo>, CoreError> {
-		if let Some(info) = self.cache.get(&ItemId::Track(id)) {
-			return Ok(info);
-		}
-		let info = self.inner.track(id).await?;
-		self.cache.insert(Arc::clone(&info));
-		Ok(info)
-	}
-
-	async fn episode(&self, id: SpotifyId) -> Result<Arc<TrackInfo>, CoreError> {
-		if let Some(info) = self.cache.get(&ItemId::Episode(id)) {
-			return Ok(info);
-		}
-		let info = self.inner.episode(id).await?;
-		self.cache.insert(Arc::clone(&info));
-		Ok(info)
-	}
-
-	fn show(
-		&self,
-		id: SpotifyId,
-	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send {
-		self.inner.show(id)
+	/// Answers what the cache knows and asks the source for the rest in one batch.
+	async fn items(&self, items: &[ItemId]) -> Vec<Result<Arc<TrackInfo>, CoreError>> {
+		let cached: Vec<Option<Arc<TrackInfo>>> =
+			items.iter().map(|item| self.cache.get(item)).collect();
+		let missing_items: Vec<ItemId> = items
+			.iter()
+			.zip(&cached)
+			.filter(|(_, info)| info.is_none())
+			.map(|(item, _)| *item)
+			.collect();
+		let mut fetched = if missing_items.is_empty() {
+			Vec::new().into_iter()
+		} else {
+			self.inner.items(&missing_items).await.into_iter()
+		};
+		items
+			.iter()
+			.zip(cached)
+			.map(|(item, info)| {
+				if let Some(info) = info {
+					return Ok(info);
+				}
+				let result = fetched.next().unwrap_or_else(|| Err(missing(*item)));
+				if let Ok(info) = &result {
+					self.cache.insert(Arc::clone(info));
+				}
+				result
+			})
+			.collect()
 	}
 
 	fn album(
@@ -265,6 +316,13 @@ impl<S: MetadataSource> MetadataSource for CachedSource<S> {
 	) -> impl Future<Output = Result<(String, Vec<SpotifyUri>), CoreError>> + Send {
 		self.inner.playlist(id)
 	}
+
+	fn show(
+		&self,
+		id: SpotifyId,
+	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send {
+		self.inner.show(id)
+	}
 }
 
 /// Metadata straight from Spotify, through librespot.
@@ -276,88 +334,137 @@ impl LibrespotMetadata {
 	pub fn new(session: Session) -> Self {
 		Self { session }
 	}
-}
 
-impl MetadataSource for LibrespotMetadata {
-	async fn track(&self, id: SpotifyId) -> Result<Arc<TrackInfo>, CoreError> {
-		// One request for both the track and its loudness, the same number librespot's own
-		// `Track::get` makes for the track alone.
+	/// The extensions to ask for an item: a track's metadata comes with its loudness, in the
+	/// same request.
+	fn queries(item: ItemId) -> Vec<ExtensionQuery> {
 		let query = |kind| ExtensionQuery {
 			extension_kind: EnumOrUnknown::new(kind),
 			..Default::default()
 		};
+		match item {
+			ItemId::Track(_) => {
+				vec![query(ExtensionKind::TRACK_V4), query(ExtensionKind::AUDIO_FILES)]
+			}
+			ItemId::Episode(_) => vec![query(ExtensionKind::EPISODE_V4)],
+		}
+	}
+
+	fn info(
+		&self,
+		item: ItemId,
+		values: Option<&ExtensionValues>,
+	) -> Result<Arc<TrackInfo>, CoreError> {
+		let values = values.ok_or_else(|| missing(item))?;
+		match item {
+			ItemId::Track(_) => {
+				let bytes = values.track.as_deref().ok_or_else(|| missing(item))?;
+				let message =
+					TrackMessage::parse_from_bytes(bytes).map_err(librespot_core::Error::from)?;
+				let track = Track::try_from(&message)?;
+				let user = self.session.user_data();
+				let catalogue = user.attributes.get("catalogue").map_or("premium", String::as_str);
+				let mut info = track_info(&track)?;
+				info.unavailable =
+					availability(&track, &user.country, catalogue, &Date::now_utc()).err();
+				info.replay_gain = values.audio_files.as_deref().and_then(parse_audio_files);
+				Ok(Arc::new(info))
+			}
+			ItemId::Episode(_) => {
+				let bytes = values.episode.as_deref().ok_or_else(|| missing(item))?;
+				let message =
+					EpisodeMessage::parse_from_bytes(bytes).map_err(librespot_core::Error::from)?;
+				Ok(Arc::new(episode_info(&Episode::try_from(&message)?)?))
+			}
+		}
+	}
+}
+
+impl MetadataSource for LibrespotMetadata {
+	/// One extended-metadata request for the whole batch.
+	async fn items(&self, items: &[ItemId]) -> Vec<Result<Arc<TrackInfo>, CoreError>> {
 		let request = BatchedEntityRequest {
-			entity_request: vec![EntityRequest {
-				entity_uri: SpotifyUri::Track { id }.to_uri(),
-				query: vec![query(ExtensionKind::TRACK_V4), query(ExtensionKind::AUDIO_FILES)],
-				..Default::default()
-			}],
+			entity_request: items
+				.iter()
+				.map(|item| EntityRequest {
+					entity_uri: item.uri().to_uri(),
+					query: Self::queries(*item),
+					..Default::default()
+				})
+				.collect(),
 			..Default::default()
 		};
-		let response = self.session.spclient().get_extended_metadata(request).await?;
+		let response =
+			retry_rate_limited(|| self.session.spclient().get_extended_metadata(request.clone()))
+				.await;
+		let response = match response {
+			Ok(response) => response,
+			Err(error) => {
+				// Every item fails the same way; the first keeps the error itself.
+				let message = error.to_string();
+				let mut failed = vec![Err(CoreError::from(error))];
+				failed.extend(
+					items.iter().skip(1).map(|_| Err(CoreError::Unavailable(message.clone()))),
+				);
+				return failed;
+			}
+		};
 		let values = extension_values(&response);
-		let bytes = values.track.ok_or_else(|| {
-			CoreError::Unavailable("Spotify sent no metadata for this track".to_owned())
-		})?;
-		let message =
-			TrackMessage::parse_from_bytes(&bytes).map_err(librespot_core::Error::from)?;
-		let track = Track::try_from(&message)?;
-		let user = self.session.user_data();
-		let catalogue = user.attributes.get("catalogue").map_or("premium", String::as_str);
-		let mut info = track_info(&track)?;
-		info.unavailable = availability(&track, &user.country, catalogue, &Date::now_utc()).err();
-		info.replay_gain = values.audio_files.as_deref().and_then(parse_audio_files);
-		Ok(Arc::new(info))
+		items.iter().map(|item| self.info(*item, values.get(&item.uri().to_uri()))).collect()
 	}
 
 	async fn album(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
-		let album = Album::get(&self.session, &SpotifyUri::Album { id }).await?;
+		let uri = SpotifyUri::Album { id };
+		let album = retry_rate_limited(|| Album::get(&self.session, &uri)).await?;
 		let ids = album.tracks().map(SpotifyId::try_from).collect::<Result<Vec<_>, _>>()?;
 		Ok((album.name, ids))
 	}
 
 	async fn playlist(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyUri>), CoreError> {
-		let playlist =
-			Playlist::get(&self.session, &SpotifyUri::Playlist { user: None, id }).await?;
+		let uri = SpotifyUri::Playlist { user: None, id };
+		let playlist = retry_rate_limited(|| Playlist::get(&self.session, &uri)).await?;
 		Ok((playlist.name().to_owned(), playlist.tracks().cloned().collect()))
 	}
 
-	async fn episode(&self, id: SpotifyId) -> Result<Arc<TrackInfo>, CoreError> {
-		let episode = Episode::get(&self.session, &SpotifyUri::Episode { id }).await?;
-		Ok(Arc::new(episode_info(&episode)?))
-	}
-
 	async fn show(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
-		let show = Show::get(&self.session, &SpotifyUri::Show { id }).await?;
+		let uri = SpotifyUri::Show { id };
+		let show = retry_rate_limited(|| Show::get(&self.session, &uri)).await?;
 		let ids = show.episodes.0.iter().map(SpotifyId::try_from).collect::<Result<Vec<_>, _>>()?;
 		Ok((show.name, ids))
 	}
 }
 
-/// The raw values of the extensions asked for in one extended-metadata request.
+/// The raw values of the extensions Spotify sent for one item.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ExtensionValues {
 	/// A `TRACK_V4` value: a serialized `metadata.Track`.
 	pub track: Option<Vec<u8>>,
+	/// An `EPISODE_V4` value: a serialized `metadata.Episode`.
+	pub episode: Option<Vec<u8>>,
 	/// An `AUDIO_FILES` value: a serialized `AudioFilesExtensionResponse`.
 	pub audio_files: Option<Vec<u8>>,
 }
 
-/// Picks the track and audio-files values out of a response. Entries Spotify reports as failed
-/// (a status code outside 2xx) are left out.
-pub fn extension_values(response: &BatchedExtensionResponse) -> ExtensionValues {
-	let mut values = ExtensionValues::default();
+/// Sorts the values of a response by the item they belong to, keyed by its URI. Entries Spotify
+/// reports as failed (a status code outside 2xx) are left out.
+pub fn extension_values(response: &BatchedExtensionResponse) -> HashMap<String, ExtensionValues> {
+	let mut values: HashMap<String, ExtensionValues> = HashMap::new();
 	for array in &response.extended_metadata {
-		let Some(value) = array.extension_data.iter().find_map(|data| {
+		let kind = array.extension_kind.enum_value();
+		for data in &array.extension_data {
 			let status = data.header.as_ref().map_or(200, |header| header.status_code);
-			(200..300).contains(&status).then(|| data.extension_data.as_ref()).flatten()
-		}) else {
-			continue;
-		};
-		match array.extension_kind.enum_value() {
-			Ok(ExtensionKind::TRACK_V4) => values.track = Some(value.value.clone()),
-			Ok(ExtensionKind::AUDIO_FILES) => values.audio_files = Some(value.value.clone()),
-			_ => {}
+			let Some(value) = data.extension_data.as_ref().filter(|_| (200..300).contains(&status))
+			else {
+				continue;
+			};
+			let item = values.entry(data.entity_uri.clone()).or_default();
+			let slot = match kind {
+				Ok(ExtensionKind::TRACK_V4) => &mut item.track,
+				Ok(ExtensionKind::EPISODE_V4) => &mut item.episode,
+				Ok(ExtensionKind::AUDIO_FILES) => &mut item.audio_files,
+				_ => continue,
+			};
+			*slot = Some(value.value.clone());
 		}
 	}
 	values
@@ -366,9 +473,11 @@ pub fn extension_values(response: &BatchedExtensionResponse) -> ExtensionValues 
 #[cfg(test)]
 mod tests {
 	use std::collections::HashMap;
-	use std::sync::Arc;
 	use std::sync::atomic::{AtomicUsize, Ordering};
+	use std::sync::{Arc, Mutex};
 	use std::time::Duration;
+
+	use librespot_core::error::ErrorKind;
 
 	use librespot_protocol::entity_extension_data::{
 		EntityExtensionData, EntityExtensionDataHeader,
@@ -380,7 +489,10 @@ mod tests {
 	use protobuf::well_known_types::any::Any;
 	use protobuf::{EnumOrUnknown, MessageField};
 
-	use super::{CachedSource, MetadataSource, SkipReason, TrackCache, extension_values, resolve};
+	use super::{
+		CachedSource, MetadataSource, SkipReason, TrackCache, extension_values, resolve,
+		retry_rate_limited,
+	};
 	use crate::link::{ItemId, Link, LinkKind};
 	use crate::metadata::TrackInfo;
 	use crate::{CoreError, SpotifyId, SpotifyUri};
@@ -437,6 +549,8 @@ mod tests {
 		playlists: HashMap<SpotifyId, (String, Vec<SpotifyUri>)>,
 		shows: HashMap<SpotifyId, (String, Vec<SpotifyId>)>,
 		track_calls: AtomicUsize,
+		/// The size of each batch asked for, in the order asked.
+		batches: Mutex<Vec<usize>>,
 	}
 
 	impl FakeSource {
@@ -449,15 +563,30 @@ mod tests {
 		}
 	}
 
+	impl FakeSource {
+		async fn item(&self, item: ItemId) -> Result<Arc<TrackInfo>, CoreError> {
+			match item {
+				ItemId::Track(id) => {
+					self.track_calls.fetch_add(1, Ordering::SeqCst);
+					let (result, delay) = self.tracks.get(&id).expect("unknown track");
+					tokio::time::sleep(*delay).await;
+					result
+						.clone()
+						.map(Arc::new)
+						.map_err(|message| CoreError::Unavailable(message.to_owned()))
+				}
+				ItemId::Episode(id) => {
+					tokio::task::yield_now().await;
+					Ok(Arc::new(self.episodes.get(&id).expect("unknown episode").clone()))
+				}
+			}
+		}
+	}
+
 	impl MetadataSource for FakeSource {
-		async fn track(&self, id: SpotifyId) -> Result<Arc<TrackInfo>, CoreError> {
-			self.track_calls.fetch_add(1, Ordering::SeqCst);
-			let (result, delay) = self.tracks.get(&id).expect("unknown track");
-			tokio::time::sleep(*delay).await;
-			result
-				.clone()
-				.map(Arc::new)
-				.map_err(|message| CoreError::Unavailable(message.to_owned()))
+		async fn items(&self, items: &[ItemId]) -> Vec<Result<Arc<TrackInfo>, CoreError>> {
+			self.batches.lock().unwrap().push(items.len());
+			futures_util::future::join_all(items.iter().map(|item| self.item(*item))).await
 		}
 
 		async fn album(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
@@ -472,11 +601,6 @@ mod tests {
 		async fn playlist(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyUri>), CoreError> {
 			tokio::task::yield_now().await;
 			Ok(self.playlists.get(&id).expect("unknown playlist").clone())
-		}
-
-		async fn episode(&self, id: SpotifyId) -> Result<Arc<TrackInfo>, CoreError> {
-			tokio::task::yield_now().await;
-			Ok(Arc::new(self.episodes.get(&id).expect("unknown episode").clone()))
 		}
 
 		async fn show(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
@@ -518,6 +642,22 @@ mod tests {
 		let resolved = resolve(&source, &Link { kind: LinkKind::Show, id: id(250) }).await.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Episode 52", "Episode 50", "Episode 51"]);
 		assert_eq!(resolved.name.as_deref(), Some("The Show"));
+	}
+
+	#[tokio::test]
+	async fn a_long_show_is_fetched_in_batches_of_100_and_kept_in_order() {
+		let mut source = FakeSource::default();
+		for byte in 1..=250u8 {
+			source.episodes.insert(id(byte), episode(byte));
+		}
+		source.shows.insert(id(255), ("The Show".to_owned(), (1..=250u8).map(id).collect()));
+		let resolved = resolve(&source, &Link { kind: LinkKind::Show, id: id(255) }).await.unwrap();
+		assert_eq!(resolved.tracks.len(), 250);
+		assert_eq!(resolved.tracks[0].title, "Episode 1");
+		assert_eq!(resolved.tracks[249].title, "Episode 250");
+		let mut batches = source.batches.lock().unwrap().clone();
+		batches.sort_unstable();
+		assert_eq!(batches, [50, 100, 100]);
 	}
 
 	#[tokio::test]
@@ -658,6 +798,9 @@ mod tests {
 		}
 	}
 
+	const TRACK_URI: &str = "spotify:track:2hQxLiI93xdjqENJuKeXjO";
+	const EPISODE_URI: &str = "spotify:episode:4QomYTPgZ1mpVbUmxBsUpz";
+
 	#[test]
 	fn extension_values_finds_track_and_audio_files() {
 		let response = BatchedExtensionResponse {
@@ -667,7 +810,7 @@ mod tests {
 			],
 			..Default::default()
 		};
-		let values = extension_values(&response);
+		let values = &extension_values(&response)[TRACK_URI];
 		assert_eq!(values.track.as_deref(), Some(&b"track"[..]));
 		assert_eq!(values.audio_files.as_deref(), Some(&b"loudness"[..]));
 	}
@@ -681,9 +824,59 @@ mod tests {
 			],
 			..Default::default()
 		};
-		let values = extension_values(&response);
+		let values = &extension_values(&response)[TRACK_URI];
 		assert_eq!(values.track.as_deref(), Some(&b"track"[..]));
 		assert_eq!(values.audio_files, None);
+	}
+
+	#[test]
+	fn extension_values_are_sorted_by_item() {
+		let mut tracks = extension(ExtensionKind::TRACK_V4, 200, b"track");
+		let mut episode = tracks.extension_data[0].clone();
+		episode.entity_uri = EPISODE_URI.to_owned();
+		tracks.extension_data.push(episode);
+		let mut episodes = extension(ExtensionKind::EPISODE_V4, 200, b"episode");
+		episodes.extension_data[0].entity_uri = EPISODE_URI.to_owned();
+		let response = BatchedExtensionResponse {
+			extended_metadata: vec![tracks, episodes],
+			..Default::default()
+		};
+		let values = extension_values(&response);
+		assert_eq!(values[TRACK_URI].track.as_deref(), Some(&b"track"[..]));
+		assert_eq!(values[TRACK_URI].episode, None);
+		assert_eq!(values[EPISODE_URI].episode.as_deref(), Some(&b"episode"[..]));
+	}
+
+	fn rate_limited() -> librespot_core::Error {
+		librespot_core::Error::resource_exhausted("rate limited for at least another 0 seconds")
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_request_librespot_rate_limits_is_tried_again() {
+		let calls = AtomicUsize::new(0);
+		let result = retry_rate_limited(|| async {
+			if calls.fetch_add(1, Ordering::SeqCst) < 2 { Err(rate_limited()) } else { Ok(7) }
+		})
+		.await;
+		assert_eq!(result.unwrap(), 7);
+		assert_eq!(calls.load(Ordering::SeqCst), 3);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn other_failures_and_lasting_rate_limits_are_given_up_on() {
+		let calls = AtomicUsize::new(0);
+		let result: Result<(), _> = retry_rate_limited(|| async {
+			calls.fetch_add(1, Ordering::SeqCst);
+			Err(librespot_core::Error::unavailable("gone"))
+		})
+		.await;
+		assert_eq!(result.unwrap_err().kind, ErrorKind::Unavailable);
+		assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+		let started = tokio::time::Instant::now();
+		let result: Result<(), _> = retry_rate_limited(|| async { Err(rate_limited()) }).await;
+		assert_eq!(result.unwrap_err().kind, ErrorKind::ResourceExhausted);
+		assert!(started.elapsed() >= Duration::from_secs(30), "{:?}", started.elapsed());
 	}
 
 	#[test]

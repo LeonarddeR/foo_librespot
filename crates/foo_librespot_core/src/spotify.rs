@@ -12,9 +12,7 @@ use crate::link::{ItemId, Link};
 use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
 use crate::metadata::{TrackInfo, largest_cover};
 use crate::profile::Profile;
-use crate::resolve::{
-	CachedSource, LibrespotMetadata, MetadataSource, Resolved, TrackCache, resolve,
-};
+use crate::resolve::{CachedSource, LibrespotMetadata, Resolved, TrackCache, item, resolve};
 use crate::runtime::CoreRuntime;
 use crate::session::{LibrespotConnector, SessionManager};
 
@@ -108,10 +106,7 @@ impl Core {
 			async {
 				let session = self.sessions.session().await?;
 				let source = CachedSource::new(LibrespotMetadata::new(session), self.cache.clone());
-				match id {
-					ItemId::Track(id) => source.track(id).await,
-					ItemId::Episode(id) => source.episode(id).await,
-				}
+				item(&source, id).await
 			},
 			is_aborting,
 		)?
