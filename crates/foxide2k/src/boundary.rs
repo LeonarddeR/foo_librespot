@@ -79,6 +79,21 @@ mod tests {
 	}
 
 	#[test]
+	fn guard_rethrows_a_host_sharing_violation_as_itself() {
+		// foobar2000 code that retries on a sharing violation must still see one after it has
+		// passed through a slot.
+		let error = try_host(|| unsafe {
+			shim(|| {
+				try_host(|| throw(ExceptionKind::IoSharingViolation, "in use"))?;
+				Ok(0)
+			})
+		})
+		.unwrap_err();
+		assert_eq!(error.kind, ExceptionKind::IoSharingViolation);
+		assert_eq!(error.type_name, ".?AVexception_io_sharing_violation@foobar2000_io@@");
+	}
+
+	#[test]
 	fn error_from_host_exception_keeps_type_name() {
 		let host = try_host(|| unsafe { throw(ExceptionKind::IoNotFound, "gone") }).unwrap_err();
 		let error = Error::from(host);
