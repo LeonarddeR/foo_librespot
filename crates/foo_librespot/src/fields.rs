@@ -38,6 +38,7 @@ pub fn fill_info(info: &mut FileInfo<'_>, track: &TrackInfo) -> Result<()> {
 	match track.id {
 		// Spotify's tracks are 44.1 kHz stereo Vorbis; the bitrate shows once a file is chosen.
 		ItemId::Track(_) => {
+			add_all(info, "GENRE", &track.genres)?;
 			info.info_set("codec", "Vorbis")?;
 			info.info_set_int("samplerate", 44_100)?;
 			info.info_set_int("channels", 2)?;
@@ -93,7 +94,7 @@ mod tests {
 		assert_eq!(info.info("codec").as_deref(), Some("Vorbis"));
 		assert_eq!(info.info("samplerate").as_deref(), Some("44100"));
 		assert_eq!(info.info("channels").as_deref(), Some("2"));
-		assert!(info.meta("GENRE").is_empty());
+		assert_eq!(info.meta("GENRE"), ["Worship", "Gospel"]);
 		let gain = info.replaygain();
 		assert!((gain.track_gain - -6.62).abs() < 1e-4, "{gain:?}");
 		assert!((gain.album_gain - -8.51).abs() < 1e-4, "{gain:?}");
@@ -123,6 +124,7 @@ mod tests {
 		track.total_tracks = 0;
 		track.total_discs = 0;
 		track.date = None;
+		track.genres.clear();
 		track.replay_gain = None;
 		let mut info = FileInfoImpl::new();
 		fill_info(&mut info.file_info(), &track).unwrap();
@@ -131,6 +133,7 @@ mod tests {
 		assert!(info.meta("TOTALTRACKS").is_empty());
 		assert!(info.meta("TOTALDISCS").is_empty());
 		assert!(info.meta("DATE").is_empty());
+		assert!(info.meta("GENRE").is_empty());
 		assert_eq!(info.replaygain(), foxide2k::file_info_impl::REPLAYGAIN_UNSET);
 	}
 }

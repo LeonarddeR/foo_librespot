@@ -43,6 +43,9 @@ pub struct TrackInfo {
 	/// ReplayGain from Spotify's loudness metadata, known before the track is ever played; `None`
 	/// when Spotify has none. Set by whoever fetched the metadata.
 	pub replay_gain: Option<ReplayGain>,
+	/// The genres Spotify tags a track with, surest first; empty for episodes. Set by whoever
+	/// fetched the metadata.
+	pub genres: Vec<String>,
 	/// What an episode is about; `None` for tracks.
 	pub description: Option<String>,
 	/// The podcast's own audio link, for an episode Spotify doesn't host.
@@ -68,6 +71,7 @@ pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
 		has_audio: !track.files.0.is_empty() || !track.alternatives.0.is_empty(),
 		unavailable: None,
 		replay_gain: None,
+		genres: Vec::new(),
 		description: None,
 		external_url: None,
 	})
@@ -96,6 +100,7 @@ pub fn episode_info(episode: &Episode) -> Result<TrackInfo, CoreError> {
 		has_audio,
 		unavailable: None,
 		replay_gain: None,
+		genres: Vec::new(),
 		description: Some(episode.description.clone()).filter(|text| !text.is_empty()),
 		external_url: Some(episode.external_url.clone())
 			.filter(|url| !has_audio && !url.is_empty()),

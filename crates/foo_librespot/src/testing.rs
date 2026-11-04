@@ -54,6 +54,7 @@ pub fn track_info(id: SpotifyId, title: &str) -> TrackInfo {
 			album_gain_db: -8.51,
 			album_peak: 1.0724,
 		}),
+		genres: vec!["Worship".to_owned(), "Gospel".to_owned()],
 		description: None,
 		external_url: None,
 	}
@@ -77,6 +78,7 @@ pub fn episode_info(id: SpotifyId, title: &str) -> TrackInfo {
 		has_audio: true,
 		unavailable: None,
 		replay_gain: None,
+		genres: Vec::new(),
 		description: Some("How the Psalms shaped the songs of the church.".to_owned()),
 		external_url: None,
 	}

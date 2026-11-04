@@ -17,6 +17,7 @@ pub mod audio;
 mod bindings;
 mod dpapi;
 pub mod error;
+pub mod genre;
 pub mod link;
 pub mod login;
 pub mod metadata;

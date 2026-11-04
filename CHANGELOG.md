@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `foo_librespot`: adding a Spotify link or playing a Spotify track while logged out opens a "Log in to Spotify" window. It closes by itself once the login is confirmed, and the tracks are then added or played. The browser opens only when you press Open browser.
 - `foo_librespot`: the status bar shows the codec and bitrate of the file that plays.
 - `foo_librespot`: tracks get TOTALTRACKS and TOTALDISCS from their album.
+- `foo_librespot`: tracks get GENRE from the genre tags Spotify gives them: the three it is surest of, capitalized.
 - `foo_librespot`: Spotify audio is only decoded for playback; the Converter, the ReplayGain scanner and similar tools get "Access denied".
 - `foo_librespot`: podcast episode and show links. A show adds all its episodes, playlists keep theirs, and an episode Spotify doesn't host is added as the podcast's own audio link.
 - `foo_librespot`: one popup per import lists the items that were skipped and why, and the console explains how to stop foo_youtube from taking Spotify links.

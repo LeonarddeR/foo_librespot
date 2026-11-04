@@ -22,6 +22,7 @@ use librespot_protocol::metadata::{
 };
 use protobuf::{EnumOrUnknown, Message};
 
+use crate::genre::parse_genres;
 use crate::link::{ItemId, Link, LinkKind};
 use crate::metadata::{AlbumTotals, TrackInfo, availability, episode_info, track_info};
 use crate::replaygain::parse_audio_files;
@@ -349,8 +350,8 @@ impl LibrespotMetadata {
 		Self { session }
 	}
 
-	/// The extensions to ask for an item: a track's metadata comes with its loudness, in the
-	/// same request.
+	/// The extensions to ask for an item: a track's metadata comes with its loudness and its
+	/// genres, in the same request.
 	fn queries(item: ItemId) -> Vec<ExtensionQuery> {
 		let query = |kind| ExtensionQuery {
 			extension_kind: EnumOrUnknown::new(kind),
@@ -358,7 +359,11 @@ impl LibrespotMetadata {
 		};
 		match item {
 			ItemId::Track(_) => {
-				vec![query(ExtensionKind::TRACK_V4), query(ExtensionKind::AUDIO_FILES)]
+				vec![
+					query(ExtensionKind::TRACK_V4),
+					query(ExtensionKind::AUDIO_FILES),
+					query(ExtensionKind::TRACK_DESCRIPTOR),
+				]
 			}
 			ItemId::Episode(_) => vec![query(ExtensionKind::EPISODE_V4)],
 		}
@@ -381,6 +386,7 @@ impl LibrespotMetadata {
 				info.unavailable =
 					availability(&track, &viewer.country, &viewer.catalogue, &viewer.now).err();
 				info.replay_gain = values.audio_files.as_deref().and_then(parse_audio_files);
+				info.genres = values.descriptors.as_deref().map(parse_genres).unwrap_or_default();
 				Ok((info, Some(track.album.id.to_uri())))
 			}
 			ItemId::Episode(_) => {
@@ -524,6 +530,8 @@ pub struct ExtensionValues {
 	pub metadata: Option<Vec<u8>>,
 	/// An `AUDIO_FILES` value: a serialized `AudioFilesExtensionResponse`.
 	pub audio_files: Option<Vec<u8>>,
+	/// A `TRACK_DESCRIPTOR` value: a serialized `ExtensionDescriptorData`.
+	pub descriptors: Option<Vec<u8>>,
 }
 
 /// Sorts the values of a response by the item they belong to, keyed by its URI. Entries Spotify
@@ -531,13 +539,15 @@ pub struct ExtensionValues {
 pub fn extension_values(response: BatchedExtensionResponse) -> HashMap<String, ExtensionValues> {
 	let mut values: HashMap<String, ExtensionValues> = HashMap::new();
 	for array in response.extended_metadata {
-		let audio_files = match array.extension_kind.enum_value() {
-			Ok(ExtensionKind::TRACK_V4 | ExtensionKind::EPISODE_V4 | ExtensionKind::ALBUM_V4) => {
-				false
-			}
-			Ok(ExtensionKind::AUDIO_FILES) => true,
-			_ => continue,
-		};
+		let slot: fn(&mut ExtensionValues) -> &mut Option<Vec<u8>> =
+			match array.extension_kind.enum_value() {
+				Ok(
+					ExtensionKind::TRACK_V4 | ExtensionKind::EPISODE_V4 | ExtensionKind::ALBUM_V4,
+				) => |item| &mut item.metadata,
+				Ok(ExtensionKind::AUDIO_FILES) => |item| &mut item.audio_files,
+				Ok(ExtensionKind::TRACK_DESCRIPTOR) => |item| &mut item.descriptors,
+				_ => continue,
+			};
 		for data in array.extension_data {
 			let status = data.header.as_ref().map_or(200, |header| header.status_code);
 			let Some(value) =
@@ -545,9 +555,7 @@ pub fn extension_values(response: BatchedExtensionResponse) -> HashMap<String, E
 			else {
 				continue;
 			};
-			let item = values.entry(data.entity_uri).or_default();
-			let slot = if audio_files { &mut item.audio_files } else { &mut item.metadata };
-			*slot = Some(value.value);
+			*slot(values.entry(data.entity_uri).or_default()) = Some(value.value);
 		}
 	}
 	values
@@ -574,9 +582,13 @@ mod tests {
 
 	use librespot_metadata::show::ShowConsumptionOrder;
 
+	use librespot_core::date::Date;
+	use librespot_protocol::metadata::{Album as AlbumMessage, Track as TrackMessage};
+	use protobuf::{CodedOutputStream, Message};
+
 	use super::{
-		CachedSource, MetadataSource, SkipReason, TrackCache, extension_values, listening_order,
-		resolve, retry_rate_limited,
+		CachedSource, ExtensionValues, LibrespotMetadata, MetadataSource, SkipReason, TrackCache,
+		Viewer, extension_values, listening_order, resolve, retry_rate_limited,
 	};
 	use crate::link::{ItemId, Link, LinkKind};
 	use crate::metadata::TrackInfo;
@@ -603,6 +615,7 @@ mod tests {
 			has_audio: true,
 			unavailable: None,
 			replay_gain: None,
+			genres: Vec::new(),
 			description: None,
 			external_url: None,
 		}
@@ -625,6 +638,7 @@ mod tests {
 			has_audio: true,
 			unavailable: None,
 			replay_gain: None,
+			genres: Vec::new(),
 			description: Some("What this episode is about.".to_owned()),
 			external_url: None,
 		}
@@ -920,6 +934,75 @@ mod tests {
 		let values = &extension_values(response)[TRACK_URI];
 		assert_eq!(values.metadata.as_deref(), Some(&b"track"[..]));
 		assert_eq!(values.audio_files.as_deref(), Some(&b"loudness"[..]));
+	}
+
+	#[test]
+	fn descriptor_values_are_kept_apart() {
+		let response = BatchedExtensionResponse {
+			extended_metadata: vec![
+				extension(ExtensionKind::TRACK_V4, 200, b"track"),
+				extension(ExtensionKind::TRACK_DESCRIPTOR, 200, b"genres"),
+			],
+			..Default::default()
+		};
+		let values = &extension_values(response)[TRACK_URI];
+		assert_eq!(values.metadata.as_deref(), Some(&b"track"[..]));
+		assert_eq!(values.descriptors.as_deref(), Some(&b"genres"[..]));
+	}
+
+	#[test]
+	fn a_track_is_asked_for_with_its_loudness_and_genres() {
+		let kinds: Vec<_> = LibrespotMetadata::queries(ItemId::Track(id(1)))
+			.iter()
+			.map(|query| query.extension_kind.enum_value())
+			.collect();
+		assert_eq!(
+			kinds,
+			[
+				Ok(ExtensionKind::TRACK_V4),
+				Ok(ExtensionKind::AUDIO_FILES),
+				Ok(ExtensionKind::TRACK_DESCRIPTOR)
+			]
+		);
+	}
+
+	/// A `TRACK_DESCRIPTOR` value with one genre.
+	fn genre_descriptor(text: &str, weight: f32) -> Vec<u8> {
+		let mut descriptor = Vec::new();
+		let mut out = CodedOutputStream::vec(&mut descriptor);
+		out.write_string(1, text).unwrap();
+		out.write_float(2, weight).unwrap();
+		out.write_bytes(3, &[1]).unwrap();
+		out.flush().unwrap();
+		drop(out);
+		let mut bytes = Vec::new();
+		let mut out = CodedOutputStream::vec(&mut bytes);
+		out.write_bytes(1, &descriptor).unwrap();
+		out.flush().unwrap();
+		drop(out);
+		bytes
+	}
+
+	#[test]
+	fn a_track_takes_its_genres_from_its_descriptors() {
+		let mut album = AlbumMessage::new();
+		album.set_gid(vec![0x20; 16]);
+		let mut track = TrackMessage::new();
+		track.set_gid(vec![0x10; 16]);
+		track.album = MessageField::some(album);
+		let values = ExtensionValues {
+			metadata: Some(track.write_to_bytes().unwrap()),
+			descriptors: Some(genre_descriptor("gospel", 0.9)),
+			..Default::default()
+		};
+		let viewer = Viewer {
+			country: "NL".to_owned(),
+			catalogue: "premium".to_owned(),
+			now: Date::now_utc(),
+		};
+		let item = ItemId::Track(SpotifyId::from_raw(&[0x10; 16]).unwrap());
+		let (info, _) = LibrespotMetadata::info(item, Some(&values), &viewer).unwrap();
+		assert_eq!(info.genres, ["Gospel"]);
 	}
 
 	#[test]

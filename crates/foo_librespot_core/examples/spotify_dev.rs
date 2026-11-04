@@ -96,6 +96,9 @@ fn resolve(core: &Core, link: &str) -> Result<(), CoreError> {
 				track.track_number, track.total_tracks, track.disc_number, track.total_discs
 			);
 		}
+		if !track.genres.is_empty() {
+			println!("   genre: {}", track.genres.join("; "));
+		}
 		if let Some(url) = &track.external_url {
 			println!("   hosted elsewhere: {url}");
 		}
