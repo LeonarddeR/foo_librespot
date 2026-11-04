@@ -2059,6 +2059,7 @@ pub mod Windows {
 			pub ImageBase: usize,
 			pub FunctionEntry: PRUNTIME_FUNCTION,
 		}
+		pub type VARENUM = i32;
 		#[repr(C)]
 		pub struct VARIANT {
 			pub Anonymous: VARIANT_0,
@@ -2177,6 +2178,7 @@ pub mod Windows {
 		#[repr(transparent)]
 		#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 		pub struct VARTYPE(pub u16);
+		pub const VT_I4: VARENUM = 3;
 		pub const WM_APP: i32 = 32768;
 		pub const WM_CLOSE: i32 = 16;
 		pub const WM_COMMAND: i32 = 273;

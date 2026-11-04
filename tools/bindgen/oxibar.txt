@@ -70,6 +70,7 @@
     SW_SHOWNORMAL
     TranslateMessage
     VARIANT
+    VT_I4
     WM_APP
     WM_CLOSE
     WM_COMMAND

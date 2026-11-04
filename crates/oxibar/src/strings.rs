@@ -42,6 +42,11 @@ impl OwnedString {
 	}
 }
 
+/// `text` as a NUL-terminated UTF-16 string, for Win32.
+pub(crate) fn wide(text: &str) -> Vec<u16> {
+	text.encode_utf16().chain([0]).collect()
+}
+
 /// Bytes up to the NUL terminator, or up to `length` if that comes first, as pfc reads strings.
 pub(crate) unsafe fn bytes_of<'a>(text: *const c_char, length: usize) -> &'a [u8] {
 	if text.is_null() {

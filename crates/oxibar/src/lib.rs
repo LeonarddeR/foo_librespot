@@ -33,6 +33,7 @@ pub mod main_thread;
 pub mod playlist_loader;
 pub mod popup;
 pub mod service;
+pub mod shell;
 pub mod strings;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
