@@ -12,6 +12,7 @@ use super::format::{Bitrate, bytes_per_second, header_offset, mime_type, pick_fi
 use super::header::{NormalisationData, Subfile};
 use crate::link::ItemId;
 use crate::replaygain::ReplayGain;
+use crate::resolve::retry_rate_limited;
 use crate::{CoreError, SpotifyUri};
 
 /// Whether a track can be played as it is, only through one of its alternatives, or not at all.
@@ -54,7 +55,10 @@ pub async fn fetch_track(
 	bitrate: Bitrate,
 ) -> Result<FetchedTrack, CoreError> {
 	let id = item.id();
-	let item = AudioItem::get_file(session, item.uri()).await?;
+	// Waits out librespot's rate limit, as imports do: right after a big import, pressing Play
+	// would otherwise fail at once. An abort (Stop) drops the wait.
+	let uri = item.uri();
+	let item = retry_rate_limited(|| AudioItem::get_file(session, uri.clone())).await?;
 	let item = match playability(&item.availability, &item.files, item.alternatives.as_ref()) {
 		Playability::Play => item,
 		Playability::TryAlternatives(alternatives) => {
@@ -67,7 +71,8 @@ pub async fn fetch_track(
 	let (format, file_id) = pick_file(&item.files, bitrate).ok_or_else(|| {
 		CoreError::Unavailable("Spotify has no audio file foo_librespot can play".to_owned())
 	})?;
-	let file = AudioFile::open(session, file_id, bytes_per_second(format)).await?;
+	let file =
+		retry_rate_limited(|| AudioFile::open(session, file_id, bytes_per_second(format))).await?;
 	let controller = file.get_stream_loader_controller()?;
 	// The key is always asked for with the original track id, even for an alternative.
 	let key = match session.audio_key().request(id, file_id).await {
@@ -117,7 +122,7 @@ pub fn on_key_failure(format: AudioFileFormat, kind: ErrorKind) -> KeyFailure {
 
 async fn find_alternative(session: &Session, alternatives: Vec<SpotifyUri>) -> Option<AudioItem> {
 	for uri in alternatives {
-		match AudioItem::get_file(session, uri).await {
+		match retry_rate_limited(|| AudioItem::get_file(session, uri.clone())).await {
 			Ok(item) if playability(&item.availability, &item.files, None) == Playability::Play => {
 				return Some(item);
 			}
