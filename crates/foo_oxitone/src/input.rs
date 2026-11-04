@@ -58,10 +58,8 @@ impl Input for ToneInput {
 
 	fn open(path: &str, _reason: OpenReason, abort: &Abort) -> Result<Self> {
 		match parse(path) {
-			Some(ToneSpec::Sine { hz }) => Ok(Self {
-				tone: Tone::new(hz),
-				buffer: Vec::with_capacity(CHUNK_FRAMES * CHANNELS as usize),
-			}),
+			// The buffer grows on the first decode; info reads never decode.
+			Some(ToneSpec::Sine { hz }) => Ok(Self { tone: Tone::new(hz), buffer: Vec::new() }),
 			Some(ToneSpec::HostCheck) => Err(host_check(abort)),
 			#[cfg(feature = "test-panic")]
 			Some(ToneSpec::Panic) => panic!("oxitone://panic was opened"),
