@@ -103,6 +103,8 @@ fn bad_path_throws_unsupported_format_across_dll() {
 fn abort_during_run_throws_aborted() {
 	let decoder =
 		entry().open_v3(&DECODER, "oxitone://440", None, None, &FakeAbort::new(false)).unwrap();
+	// Initialized first, as foobar2000 does before every run.
+	decoder.initialize(0, 0, &FakeAbort::new(false)).unwrap();
 	let mut chunk = FakeAudioChunk::new();
 	let error = decoder.run(&mut chunk, &FakeAbort::new(true)).unwrap_err();
 	assert_eq!(error.kind, ExceptionKind::Aborted);
@@ -191,4 +193,26 @@ fn hostcheck_says_so_when_foobar2000_threw_nothing() {
 			.any(|line| line.starts_with("foo_oxitone: hostcheck failed before foobar2000")),
 		"{lines:?}"
 	);
+}
+
+#[test]
+fn a_seek_past_the_end_succeeds_and_the_next_run_ends_the_track() {
+	let abort = FakeAbort::new(false);
+	let decoder = entry().open_v3(&DECODER, "oxitone://440", None, None, &abort).unwrap();
+	decoder.initialize(0, 0, &abort).unwrap();
+	decoder.seek(60.0, &abort).unwrap();
+	assert!(!decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap());
+}
+
+#[test]
+fn hostcheck_also_throws_when_opened_for_its_info() {
+	// foobar2000 reads an entry's info before it plays it.
+	let (api, component) = common::load();
+	api.add_service(foxide2k::abi::filesystem::IID, foxide2k::testing::FakeFilesystem::service());
+	let entry = InputEntryHandle::new(
+		component.create_all(&INPUT_ENTRY).pop().expect("an input_entry service"),
+	);
+	let abort = FakeAbort::new(false);
+	let error = entry.open_v3(&INFO_READER, "oxitone://hostcheck", None, None, &abort).unwrap_err();
+	assert_eq!(error.kind, ExceptionKind::IoNotFound);
 }
