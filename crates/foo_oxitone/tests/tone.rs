@@ -173,3 +173,22 @@ fn hostcheck_rethrows_host_not_found_and_logs() {
 	});
 	assert!(logged, "{:?}", api.console_lines());
 }
+
+#[test]
+fn hostcheck_says_so_when_foobar2000_threw_nothing() {
+	// No filesystem claims the path, so Foxide2k fails before foobar2000 throws anything.
+	let (api, component) = common::load();
+	let entry = InputEntryHandle::new(
+		component.create_all(&INPUT_ENTRY).pop().expect("an input_entry service"),
+	);
+	let abort = FakeAbort::new(false);
+	entry.open_v3(&DECODER, "oxitone://hostcheck", None, None, &abort).unwrap_err();
+	let lines = api.console_lines();
+	assert!(!lines.iter().any(|line| line.contains("from foobar2000")), "{lines:?}");
+	assert!(
+		lines
+			.iter()
+			.any(|line| line.starts_with("foo_oxitone: hostcheck failed before foobar2000")),
+		"{lines:?}"
+	);
+}

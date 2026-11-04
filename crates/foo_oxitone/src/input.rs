@@ -21,20 +21,37 @@ use crate::tone::{
 /// that does not exist, and returns it as the error to throw back: proof that Foxide2k can catch
 /// foobar2000's exceptions and rethrow them with their type intact.
 fn host_check(abort: &Abort) -> Error {
-	let profile = host().profile_path();
-	let profile = if profile.contains("://") { profile } else { format!("file://{profile}") };
-	let path = format!("{}\\oxitone-hostcheck-missing.wav", profile.trim_end_matches(['\\', '/']));
+	let Some(path) = missing_file(&host().profile_path()) else {
+		return Error::new(ExceptionKind::Io, "hostcheck: foobar2000 has no profile folder");
+	};
 	match get_stats(&path, abort) {
 		Err(error) => {
-			let type_name = error.host_type.as_deref().unwrap_or("an exception");
-			console::print(&format!(
-				"foo_oxitone: caught {type_name} from foobar2000: {}",
-				error.message
-			));
+			let message = match &error.host_type {
+				Some(type_name) => {
+					format!("foo_oxitone: caught {type_name} from foobar2000: {}", error.message)
+				}
+				// Foxide2k's own error, such as no filesystem for the path: nothing was caught.
+				None => format!(
+					"foo_oxitone: hostcheck failed before foobar2000 threw anything: {}",
+					error.message
+				),
+			};
+			console::print(&message);
 			error
 		}
 		Ok(_) => Error::new(ExceptionKind::Io, format!("hostcheck: {path} unexpectedly exists")),
 	}
+}
+
+/// A file that doesn't exist, in the profile folder, as the URL foobar2000's filesystem takes;
+/// `None` without a profile folder.
+fn missing_file(profile: &str) -> Option<String> {
+	if profile.is_empty() {
+		return None;
+	}
+	let profile =
+		if profile.contains("://") { profile.to_owned() } else { format!("file://{profile}") };
+	Some(format!("{}\\oxitone-hostcheck-missing.wav", profile.trim_end_matches(['\\', '/'])))
 }
 
 /// The bitrate shown while a tone plays: that of CD audio, 16-bit samples at the tone's rate
@@ -106,5 +123,27 @@ impl Input for ToneInput {
 	/// plays, also after a seek.
 	fn live_info(&self) -> Vec<(String, String)> {
 		vec![("bitrate".to_owned(), KBPS.to_string())]
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::missing_file;
+
+	#[test]
+	fn the_missing_file_is_inside_the_profile_folder_as_a_file_url() {
+		assert_eq!(
+			missing_file(r"C:\foobar2000\profile\").as_deref(),
+			Some(r"file://C:\foobar2000\profile\oxitone-hostcheck-missing.wav")
+		);
+		assert_eq!(
+			missing_file(r"file://C:\p").as_deref(),
+			Some(r"file://C:\p\oxitone-hostcheck-missing.wav")
+		);
+	}
+
+	#[test]
+	fn no_profile_folder_gives_no_path() {
+		assert_eq!(missing_file(""), None);
 	}
 }
