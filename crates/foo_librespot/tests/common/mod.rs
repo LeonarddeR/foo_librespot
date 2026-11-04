@@ -1,26 +1,9 @@
-//! Loading the built foo_librespot DLL into Foxide2k's fake foobar2000.
-
-use std::path::PathBuf;
+//! Loading the foo_librespot DLL this test build made into Foxide2k's fake foobar2000.
 
 use foxide2k::testing::{FakeApi, LoadedComponent};
 
-/// The DLL under test: `FOO_LIBRESPOT_DLL_PATH`, or the workspace's debug build.
-pub fn dll_path() -> PathBuf {
-	let path = std::env::var_os("FOO_LIBRESPOT_DLL_PATH").map_or_else(
-		|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/foo_librespot.dll"),
-		PathBuf::from,
-	);
-	assert!(
-		path.exists(),
-		"{} is missing: run `cargo build -p foo_librespot` first",
-		path.display()
-	);
-	path
-}
-
-/// A fresh fake foobar2000 with foo_librespot loaded into it.
+/// A fresh fake foobar2000 with foo_librespot loaded into it. `FOO_LIBRESPOT_DLL_PATH` names
+/// another DLL to test.
 pub fn load() -> (&'static FakeApi, LoadedComponent) {
-	let api = FakeApi::new();
-	let component = LoadedComponent::load(&dll_path(), api);
-	(api, component)
+	LoadedComponent::load_built("foo_librespot", "FOO_LIBRESPOT_DLL_PATH")
 }

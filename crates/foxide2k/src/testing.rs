@@ -27,7 +27,7 @@ use crate::host;
 use crate::service::{ServiceImpl, ServiceObject, ServicePtr, new_service};
 
 #[cfg(feature = "testing")]
-pub use loader::LoadedComponent;
+pub use loader::{LoadedComponent, built_dll};
 
 /// A fake `foobar2000_api`: a registry of services, a console that records what is printed, and
 /// a temporary profile folder.
@@ -1317,7 +1317,7 @@ impl AlbumArtInstanceHandle {
 #[cfg(feature = "testing")]
 mod loader {
 	use std::ffi::{CString, c_void};
-	use std::path::Path;
+	use std::path::{Path, PathBuf};
 
 	use super::FakeApi;
 	use crate::abi::component::{Api, Client, FactoryBase};
@@ -1328,12 +1328,34 @@ mod loader {
 
 	type GetInterface = unsafe extern "C" fn(*mut Api, *mut c_void) -> *mut Client;
 
+	/// The DLL of the component `name` from the build that made this test program. Cargo writes
+	/// it next to the test, from the same build, with the same profile, features and target
+	/// folder, so no separate build is needed. `override_var`, when set, names another DLL.
+	pub fn built_dll(name: &str, override_var: &str) -> PathBuf {
+		if let Some(path) = std::env::var_os(override_var) {
+			return PathBuf::from(path);
+		}
+		std::env::current_exe()
+			.expect("the test program's path")
+			.with_file_name(format!("{name}.dll"))
+	}
+
 	/// A component DLL loaded into a [`FakeApi`], as foobar2000 loads it.
 	pub struct LoadedComponent {
 		client: *mut Client,
 	}
 
 	impl LoadedComponent {
+		/// Loads the component `name` this test build made (see [`built_dll`]) into a fresh
+		/// [`FakeApi`].
+		pub fn load_built(name: &str, override_var: &str) -> (&'static FakeApi, Self) {
+			let dll = built_dll(name, override_var);
+			assert!(dll.exists(), "{} is missing", dll.display());
+			let api = FakeApi::new();
+			let component = Self::load(&dll, api);
+			(api, component)
+		}
+
 		/// Loads the DLL, calls its entry point, then `set_library_path` and `services_init(true)`.
 		/// The library stays loaded for the rest of the process, as in foobar2000.
 		pub fn load(dll: &Path, api: &'static FakeApi) -> Self {
@@ -1404,6 +1426,18 @@ mod loader {
 			try_host(|| unsafe { ((*(*factory).vtbl).instance_create)(factory, &raw mut out) })
 				.expect("instance_create threw");
 			unsafe { ServicePtr::from_raw_owned(out) }.expect("instance_create produced a service")
+		}
+	}
+
+	#[cfg(test)]
+	mod tests {
+		#[test]
+		fn the_built_dll_is_the_one_next_to_the_test_program() {
+			let exe = std::env::current_exe().unwrap();
+			assert_eq!(
+				super::built_dll("foo_example", "FOXIDE2K_UNSET_DLL_PATH"),
+				exe.with_file_name("foo_example.dll")
+			);
 		}
 	}
 }

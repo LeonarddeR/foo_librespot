@@ -3,11 +3,10 @@
 Tests run with [cargo-nextest](https://nexte.st), which runs every test in its own process.
 
 ```
-cargo build --workspace --all-features
 cargo nextest run --workspace --all-features
 ```
 
-Build first: the DLL tests load the built component DLLs, and nextest does not build them.
+The DLL tests load the component DLLs the same test build made, so there is no separate build step, and `--cargo-profile release` tests the release DLLs.
 
 ## Writing a test
 
@@ -39,15 +38,9 @@ Run the crashing part in a child process:
 
 `foxide2k::testing` (the `testing` feature) is a fake foobar2000.
 `FakeApi` plays the host: it registers services, records console output and reports a temporary profile folder.
-`LoadedComponent::load` loads a built component DLL into it the way foobar2000 does: it calls `foobar2000_get_interface`, `set_library_path` and `services_init(true)`, and can then create every registered service.
+`LoadedComponent::load` loads a component DLL into it the way foobar2000 does: it calls `foobar2000_get_interface`, `set_library_path` and `services_init(true)`, and can then create every registered service.
+`LoadedComponent::load_built` loads the DLL Cargo wrote next to the test program in the same build.
 Tests call the services through their vtables, so they exercise the same code paths foobar2000 does.
-
-The DLL must be built before the tests run, because nextest does not build it:
-
-```
-cargo build --workspace --all-features
-cargo nextest run --workspace --all-features
-```
 
 Set `FOO_OXITONE_DLL_PATH` to test a DLL from somewhere else, such as a CI artifact.
 
