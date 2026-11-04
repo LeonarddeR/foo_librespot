@@ -17,6 +17,7 @@ mod dpapi;
 pub mod error;
 pub mod link;
 pub mod profile;
+pub mod runtime;
 
 pub use error::{CoreError, Result};
 pub use librespot_core::authentication::Credentials;
