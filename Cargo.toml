@@ -53,7 +53,6 @@ unreadable_literal = "allow"
 lto = true
 codegen-units = 1
 opt-level = "s"
-strip = "debuginfo"
 # A panic must reach foobar2000 as a C++ exception, and foreign C++ exceptions
 # must be able to unwind through Rust frames; panic = "abort" would kill the host.
 panic = "unwind"
