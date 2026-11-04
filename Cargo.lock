@@ -455,6 +455,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "windows-core 0.100.0",
 ]
 
 [[package]]

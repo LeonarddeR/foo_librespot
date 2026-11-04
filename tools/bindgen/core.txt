@@ -1,0 +1,7 @@
+--out crates/foo_librespot_core/src/bindings.rs
+
+--filter
+    CRYPTPROTECT_UI_FORBIDDEN
+    CryptProtectData
+    CryptUnprotectData
+    LocalFree

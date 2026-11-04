@@ -1,6 +1,7 @@
 //! The one error type every fallible call in this crate returns.
 
 use crate::link::LinkError;
+use crate::profile::ProfileError;
 
 /// What went wrong, in words a foobar2000 user can act on.
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +22,8 @@ pub enum CoreError {
 	Decode(String),
 	#[error(transparent)]
 	Io(#[from] std::io::Error),
+	#[error(transparent)]
+	Profile(#[from] ProfileError),
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;
