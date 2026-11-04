@@ -28,11 +28,12 @@ Press Open browser, or open the address yourself, and confirm the code on Spotif
 The page says "Logged in to Spotify" once that is done.
 Nothing opens your browser unless you press Open browser.
 
-If you add a Spotify link before logging in, a "Log in to Spotify" window opens with the same controls.
-Once you confirm the code, the tracks are added.
-If you close the window instead, the link is not added.
+If you add a Spotify link or play a Spotify track before logging in, a "Log in to Spotify" window opens with the same controls.
+Once you confirm the code, the window closes and the tracks are added or the track plays.
+If you close the window instead, nothing is added or played, and playing doesn't ask again until you add a link or press Log in.
 
 The same page sets the preferred bitrate: 96, 160 or 320 kbit/s.
+While a track plays, the status bar shows the codec and bitrate of the file Spotify sent.
 
 ## Troubleshooting
 
