@@ -32,3 +32,23 @@ fn on_init_prints_loaded_line() {
 		api.console_lines()
 	);
 }
+
+#[test]
+fn component_registers_all_services() {
+	use oxibar::abi::filesystem::IID as FILESYSTEM;
+	use oxibar::abi::input::INPUT_ENTRY;
+	use oxibar::abi::playlist_loader::IID as PLAYLIST_LOADER;
+
+	let (_, component) = common::load();
+	let factories = component.factories();
+	for (iid, name) in [
+		(COMPONENTVERSION, "componentversion"),
+		(INITQUIT, "initquit"),
+		(INPUT_ENTRY, "input_entry"),
+		(FILESYSTEM, "filesystem"),
+		(PLAYLIST_LOADER, "playlist_loader"),
+	] {
+		assert_eq!(factories.iter().filter(|guid| **guid == iid).count(), 1, "{name}");
+	}
+	assert_eq!(factories.len(), 5);
+}

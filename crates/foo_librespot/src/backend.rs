@@ -14,7 +14,6 @@ use foo_librespot_core::{Core, CoreError, SpotifyId};
 /// Everything the services need from Spotify. Every call blocks and returns
 /// [`CoreError::Aborted`] soon after `is_aborting` turns true.
 pub trait Backend: Send + Sync {
-	#[allow(dead_code, reason = "the playlist loader uses it from the next commit")]
 	fn resolve(&self, link: &Link, is_aborting: &dyn Fn() -> bool) -> Result<Resolved, CoreError>;
 	fn track_info(
 		&self,

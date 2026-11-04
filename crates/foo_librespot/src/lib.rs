@@ -4,13 +4,16 @@ mod backend;
 mod errors;
 mod fields;
 mod input;
+mod links;
 mod logging;
 #[cfg(test)]
 mod testing;
 
 use oxibar::component::Factory;
+use oxibar::filesystem_service::filesystem_factory;
 use oxibar::initquit::{InitQuit, InitQuitService};
 use oxibar::input::input_factory;
+use oxibar::playlist_loader::playlist_loader_factory;
 use oxibar::service::Singleton;
 
 const ABOUT: &str = "Plays Spotify tracks, albums and playlists from their links. Needs Spotify Premium.
@@ -38,5 +41,10 @@ oxibar::component! {
 	name: "foo_librespot",
 	version: env!("CARGO_PKG_VERSION"),
 	about: ABOUT,
-	services: [Factory::init_quit(&STARTUP), input_factory::<input::SpotifyInput>()],
+	services: [
+		Factory::init_quit(&STARTUP),
+		input_factory::<input::SpotifyInput>(),
+		filesystem_factory::<links::SpotifyFilesystem>(),
+		playlist_loader_factory::<links::SpotifyLoader>(),
+	],
 }
