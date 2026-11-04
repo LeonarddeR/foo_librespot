@@ -45,6 +45,16 @@ fn cargo(root: &Path) -> Command {
 	command
 }
 
+/// The text of `path`; the error names the file.
+fn read_text(path: &Path) -> Result<String> {
+	fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()).into())
+}
+
+/// Copies `from` to `to`; the error names the file that couldn't be read.
+fn copy(from: &Path, to: &Path) -> Result<()> {
+	fs::copy(from, to).map(drop).map_err(|error| format!("{}: {error}", from.display()).into())
+}
+
 fn run(command: &mut Command, what: &str) -> Result<()> {
 	if command.status()?.success() { Ok(()) } else { Err(format!("{what} failed").into()) }
 }
@@ -124,7 +134,7 @@ fn package(expect_built: bool) -> Result<()> {
 	write_licenses(&root, &licenses)?;
 	let component = out_dir.join(component::file_name(&built.version));
 	component::write(&component, &component::entries(&root, &built.dll, &licenses))?;
-	fs::copy(&built.pdb, out_dir.join("foo_librespot.pdb"))?;
+	copy(&built.pdb, &out_dir.join("foo_librespot.pdb"))?;
 	println!("{}", component.display());
 	Ok(())
 }
@@ -142,7 +152,7 @@ fn write_licenses(root: &Path, out: &Path) -> Result<()> {
 		);
 	}
 	run(&mut about_command(root, out), "cargo about generate")?;
-	if let Some(missing) = notices::missing_copyright(&fs::read_to_string(out)?) {
+	if let Some(missing) = notices::missing_copyright(&read_text(out)?) {
 		return Err(missing.into());
 	}
 	Ok(())
@@ -163,7 +173,7 @@ fn about_command(root: &Path, out: &Path) -> Command {
 }
 
 fn print_release_notes(version: &str) -> Result<()> {
-	let changelog = fs::read_to_string(root().join("CHANGELOG.md"))?;
+	let changelog = read_text(&root().join("CHANGELOG.md"))?;
 	let notes = notes::release_notes(&changelog, version)
 		.ok_or_else(|| format!("CHANGELOG.md has no section for version {version}"))?;
 	println!("{notes}");
@@ -194,6 +204,15 @@ mod tests {
 	fn a_package_id_that_names_the_crate_still_gives_the_version() {
 		let messages = ARTIFACT.replace("foo_librespot#0.2.0", "foo#foo_librespot@0.3.1");
 		assert_eq!(built_dll(&messages).unwrap().version, "0.3.1");
+	}
+
+	#[test]
+	fn a_file_error_names_the_file() {
+		let missing = Path::new("no such folder").join("CHANGELOG.md");
+		let error = super::read_text(&missing).unwrap_err();
+		assert!(error.to_string().starts_with(&missing.display().to_string()), "{error}");
+		let error = super::copy(&missing, Path::new("out.pdb")).unwrap_err();
+		assert!(error.to_string().starts_with(&missing.display().to_string()), "{error}");
 	}
 
 	#[test]
