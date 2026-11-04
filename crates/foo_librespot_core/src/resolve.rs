@@ -66,7 +66,7 @@ pub struct Skipped {
 /// The tracks a link stands for, in order.
 #[derive(Clone, Debug)]
 pub struct Resolved {
-	/// The album or playlist name; `None` for a track link.
+	/// The album, playlist or show name; `None` for a track or episode link.
 	pub name: Option<String>,
 	pub tracks: Vec<Arc<TrackInfo>>,
 	pub skipped: Vec<Skipped>,
@@ -109,11 +109,7 @@ pub async fn item<S: MetadataSource>(
 }
 
 fn missing(item: ItemId) -> CoreError {
-	let kind = match item {
-		ItemId::Track(_) => "track",
-		ItemId::Episode(_) => "episode",
-	};
-	CoreError::Unavailable(format!("Spotify sent no metadata for this {kind}"))
+	CoreError::Unavailable(format!("Spotify sent no metadata for this {}", item.uri().item_type()))
 }
 
 enum Entry {
@@ -132,8 +128,9 @@ fn playable(info: &TrackInfo) -> bool {
 /// failure never looks like an empty album.
 pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resolved, CoreError> {
 	let (name, entries) = match link.kind {
-		LinkKind::Track => (None, vec![Entry::Item(ItemId::Track(link.id))]),
-		LinkKind::Episode => (None, vec![Entry::Item(ItemId::Episode(link.id))]),
+		LinkKind::Track | LinkKind::Episode => {
+			(None, link.item().map(Entry::Item).into_iter().collect::<Vec<_>>())
+		}
 		LinkKind::Album => {
 			let (name, ids) = source.album(link.id).await?;
 			(Some(name), ids.into_iter().map(|id| Entry::Item(ItemId::Track(id))).collect())
@@ -178,9 +175,9 @@ pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resol
 			Ok(info) if playable(&info) => resolved.tracks.push(info),
 			Ok(info) => resolved.skipped.push(Skipped {
 				uri: item.uri().to_uri(),
-				reason: SkipReason::Unavailable(
-					info.unavailable.clone().unwrap_or_else(|| no_audio(item).to_owned()),
-				),
+				reason: SkipReason::Unavailable(info.unavailable.clone().unwrap_or_else(|| {
+					format!("Spotify has no audio for this {}", item.uri().item_type())
+				})),
 			}),
 			Err(error) => {
 				resolved.skipped.push(Skipped {
@@ -197,13 +194,6 @@ pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resol
 		return Err(error);
 	}
 	Ok(resolved)
-}
-
-const fn no_audio(item: ItemId) -> &'static str {
-	match item {
-		ItemId::Track(_) => "Spotify has no audio for this track",
-		ItemId::Episode(_) => "Spotify has no audio for this episode",
-	}
 }
 
 fn playlist_entry(uri: &SpotifyUri) -> Entry {
@@ -345,6 +335,13 @@ pub struct LibrespotMetadata {
 	session: Session,
 }
 
+/// What decides whether this account can play a track: read once per batch, not per track.
+struct Viewer {
+	country: String,
+	catalogue: String,
+	now: Date,
+}
+
 impl LibrespotMetadata {
 	pub fn new(session: Session) -> Self {
 		Self { session }
@@ -366,29 +363,25 @@ impl LibrespotMetadata {
 	}
 
 	fn info(
-		&self,
 		item: ItemId,
 		values: Option<&ExtensionValues>,
+		viewer: &Viewer,
 	) -> Result<Arc<TrackInfo>, CoreError> {
 		let values = values.ok_or_else(|| missing(item))?;
+		let bytes = values.metadata.as_deref().ok_or_else(|| missing(item))?;
+		let parse_error = librespot_core::Error::from;
 		match item {
 			ItemId::Track(_) => {
-				let bytes = values.track.as_deref().ok_or_else(|| missing(item))?;
-				let message =
-					TrackMessage::parse_from_bytes(bytes).map_err(librespot_core::Error::from)?;
-				let track = Track::try_from(&message)?;
-				let user = self.session.user_data();
-				let catalogue = user.attributes.get("catalogue").map_or("premium", String::as_str);
+				let track =
+					Track::try_from(&TrackMessage::parse_from_bytes(bytes).map_err(parse_error)?)?;
 				let mut info = track_info(&track)?;
 				info.unavailable =
-					availability(&track, &user.country, catalogue, &Date::now_utc()).err();
+					availability(&track, &viewer.country, &viewer.catalogue, &viewer.now).err();
 				info.replay_gain = values.audio_files.as_deref().and_then(parse_audio_files);
 				Ok(Arc::new(info))
 			}
 			ItemId::Episode(_) => {
-				let bytes = values.episode.as_deref().ok_or_else(|| missing(item))?;
-				let message =
-					EpisodeMessage::parse_from_bytes(bytes).map_err(librespot_core::Error::from)?;
+				let message = EpisodeMessage::parse_from_bytes(bytes).map_err(parse_error)?;
 				Ok(Arc::new(episode_info(&Episode::try_from(&message)?)?))
 			}
 		}
@@ -398,6 +391,9 @@ impl LibrespotMetadata {
 impl MetadataSource for LibrespotMetadata {
 	/// One extended-metadata request for the whole batch.
 	async fn items(&self, items: &[ItemId]) -> Vec<Result<Arc<TrackInfo>, CoreError>> {
+		if items.is_empty() {
+			return Vec::new();
+		}
 		let request = BatchedEntityRequest {
 			entity_request: items
 				.iter()
@@ -424,8 +420,22 @@ impl MetadataSource for LibrespotMetadata {
 				return failed;
 			}
 		};
-		let values = extension_values(&response);
-		items.iter().map(|item| self.info(*item, values.get(&item.uri().to_uri()))).collect()
+		let values = extension_values(response);
+		let user = self.session.user_data();
+		let viewer = Viewer {
+			catalogue: user
+				.attributes
+				.get("catalogue")
+				.map_or("premium", String::as_str)
+				.to_owned(),
+			country: user.country,
+			now: Date::now_utc(),
+		};
+		items
+			.iter()
+			.zip(&request.entity_request)
+			.map(|(item, asked)| Self::info(*item, values.get(&asked.entity_uri), &viewer))
+			.collect()
 	}
 
 	async fn album(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
@@ -452,34 +462,33 @@ impl MetadataSource for LibrespotMetadata {
 /// The raw values of the extensions Spotify sent for one item.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ExtensionValues {
-	/// A `TRACK_V4` value: a serialized `metadata.Track`.
-	pub track: Option<Vec<u8>>,
-	/// An `EPISODE_V4` value: a serialized `metadata.Episode`.
-	pub episode: Option<Vec<u8>>,
+	/// A `TRACK_V4` or `EPISODE_V4` value, as the item's URI says: a serialized
+	/// `metadata.Track` or `metadata.Episode`.
+	pub metadata: Option<Vec<u8>>,
 	/// An `AUDIO_FILES` value: a serialized `AudioFilesExtensionResponse`.
 	pub audio_files: Option<Vec<u8>>,
 }
 
 /// Sorts the values of a response by the item they belong to, keyed by its URI. Entries Spotify
 /// reports as failed (a status code outside 2xx) are left out.
-pub fn extension_values(response: &BatchedExtensionResponse) -> HashMap<String, ExtensionValues> {
+pub fn extension_values(response: BatchedExtensionResponse) -> HashMap<String, ExtensionValues> {
 	let mut values: HashMap<String, ExtensionValues> = HashMap::new();
-	for array in &response.extended_metadata {
-		let kind = array.extension_kind.enum_value();
-		for data in &array.extension_data {
+	for array in response.extended_metadata {
+		let audio_files = match array.extension_kind.enum_value() {
+			Ok(ExtensionKind::TRACK_V4 | ExtensionKind::EPISODE_V4) => false,
+			Ok(ExtensionKind::AUDIO_FILES) => true,
+			_ => continue,
+		};
+		for data in array.extension_data {
 			let status = data.header.as_ref().map_or(200, |header| header.status_code);
-			let Some(value) = data.extension_data.as_ref().filter(|_| (200..300).contains(&status))
+			let Some(value) =
+				data.extension_data.into_option().filter(|_| (200..300).contains(&status))
 			else {
 				continue;
 			};
-			let item = values.entry(data.entity_uri.clone()).or_default();
-			let slot = match kind {
-				Ok(ExtensionKind::TRACK_V4) => &mut item.track,
-				Ok(ExtensionKind::EPISODE_V4) => &mut item.episode,
-				Ok(ExtensionKind::AUDIO_FILES) => &mut item.audio_files,
-				_ => continue,
-			};
-			*slot = Some(value.value.clone());
+			let item = values.entry(data.entity_uri).or_default();
+			let slot = if audio_files { &mut item.audio_files } else { &mut item.metadata };
+			*slot = Some(value.value);
 		}
 	}
 	values
@@ -845,8 +854,8 @@ mod tests {
 			],
 			..Default::default()
 		};
-		let values = &extension_values(&response)[TRACK_URI];
-		assert_eq!(values.track.as_deref(), Some(&b"track"[..]));
+		let values = &extension_values(response)[TRACK_URI];
+		assert_eq!(values.metadata.as_deref(), Some(&b"track"[..]));
 		assert_eq!(values.audio_files.as_deref(), Some(&b"loudness"[..]));
 	}
 
@@ -859,8 +868,8 @@ mod tests {
 			],
 			..Default::default()
 		};
-		let values = &extension_values(&response)[TRACK_URI];
-		assert_eq!(values.track.as_deref(), Some(&b"track"[..]));
+		let values = &extension_values(response)[TRACK_URI];
+		assert_eq!(values.metadata.as_deref(), Some(&b"track"[..]));
 		assert_eq!(values.audio_files, None);
 	}
 
@@ -876,10 +885,9 @@ mod tests {
 			extended_metadata: vec![tracks, episodes],
 			..Default::default()
 		};
-		let values = extension_values(&response);
-		assert_eq!(values[TRACK_URI].track.as_deref(), Some(&b"track"[..]));
-		assert_eq!(values[TRACK_URI].episode, None);
-		assert_eq!(values[EPISODE_URI].episode.as_deref(), Some(&b"episode"[..]));
+		let values = extension_values(response);
+		assert_eq!(values[TRACK_URI].metadata.as_deref(), Some(&b"track"[..]));
+		assert_eq!(values[EPISODE_URI].metadata.as_deref(), Some(&b"episode"[..]));
 	}
 
 	fn rate_limited() -> librespot_core::Error {

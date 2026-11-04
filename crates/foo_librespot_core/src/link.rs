@@ -26,6 +26,18 @@ pub struct Link {
 }
 
 impl Link {
+	/// The link as librespot names it.
+	pub const fn uri(&self) -> SpotifyUri {
+		let id = self.id;
+		match self.kind {
+			LinkKind::Track => SpotifyUri::Track { id },
+			LinkKind::Album => SpotifyUri::Album { id },
+			LinkKind::Playlist => SpotifyUri::Playlist { user: None, id },
+			LinkKind::Episode => SpotifyUri::Episode { id },
+			LinkKind::Show => SpotifyUri::Show { id },
+		}
+	}
+
 	/// The one item a track or episode link names; `None` for links to several.
 	pub const fn item(&self) -> Option<ItemId> {
 		match self.kind {
@@ -86,17 +98,14 @@ pub fn parse_link(input: &str) -> Result<Link, LinkError> {
 
 /// The path foobar2000 stores for a Spotify track or episode.
 pub fn item_path(item: ItemId) -> String {
-	let kind = match item {
-		ItemId::Track(_) => "track",
-		ItemId::Episode(_) => "episode",
-	};
-	format!("{PATH_SCHEME}spotify:{kind}:{}", item.id().to_base62())
+	format!("{PATH_SCHEME}{}", item.uri().to_uri())
 }
 
-/// The item in a path made by [`item_path`]; `None` for anything else.
-pub fn parse_item_path(path: &str) -> Option<ItemId> {
-	let uri = strip_prefix_ignore_case(path.trim(), PATH_SCHEME)?;
-	parse_uri(uri).ok()?.item()
+/// The item a path made by [`item_path`], or a bare `spotify:` URI, names; `None` for anything
+/// else, web links included.
+pub fn parse_item(text: &str) -> Option<ItemId> {
+	let text = text.trim();
+	parse_uri(strip_prefix_ignore_case(text, PATH_SCHEME).unwrap_or(text)).ok()?.item()
 }
 
 fn parse_uri(uri: &str) -> Result<Link, LinkError> {
@@ -154,7 +163,7 @@ fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> 
 
 #[cfg(test)]
 mod tests {
-	use super::{ItemId, Link, LinkError, LinkKind, item_path, parse_item_path, parse_link};
+	use super::{ItemId, Link, LinkError, LinkKind, item_path, parse_item, parse_link};
 	use crate::SpotifyId;
 
 	const TRACK: &str = "4uLU6hMCjMI75M1A2tKUQC";
@@ -290,12 +299,35 @@ mod tests {
 		let episode = ItemId::Episode(id(EPISODE));
 		assert_eq!(item_path(track), format!("sptf://spotify:track:{TRACK}"));
 		assert_eq!(item_path(episode), format!("sptf://spotify:episode:{EPISODE}"));
-		assert_eq!(parse_item_path(&item_path(track)), Some(track));
-		assert_eq!(parse_item_path(&item_path(episode)), Some(episode));
-		assert_eq!(parse_item_path(&format!("SPTF://spotify:track:{TRACK}")), Some(track));
-		assert_eq!(parse_item_path(&format!("sptf://spotify:album:{ALBUM}")), None);
-		assert_eq!(parse_item_path(&format!("sptf://spotify:show:{SHOW}")), None);
-		assert_eq!(parse_item_path(&format!("https://open.spotify.com/track/{TRACK}")), None);
+		assert_eq!(parse_item(&item_path(track)), Some(track));
+		assert_eq!(parse_item(&item_path(episode)), Some(episode));
+		assert_eq!(parse_item(&format!("SPTF://spotify:track:{TRACK}")), Some(track));
+		assert_eq!(parse_item(&format!("sptf://spotify:album:{ALBUM}")), None);
+		assert_eq!(parse_item(&format!("sptf://spotify:show:{SHOW}")), None);
+	}
+
+	#[test]
+	fn items_are_named_by_paths_and_uris_but_not_web_links() {
+		assert_eq!(parse_item(&format!("spotify:track:{TRACK}")), Some(ItemId::Track(id(TRACK))));
+		assert_eq!(
+			parse_item(&format!(" spotify:episode:{EPISODE}")),
+			Some(ItemId::Episode(id(EPISODE)))
+		);
+		assert_eq!(parse_item(&format!("https://open.spotify.com/track/{TRACK}")), None);
+		assert_eq!(parse_item(&format!("spotify:album:{ALBUM}")), None);
+	}
+
+	#[test]
+	fn every_link_has_its_spotify_uri() {
+		assert_eq!(
+			link(LinkKind::Playlist, PLAYLIST).uri().to_uri(),
+			format!("spotify:playlist:{PLAYLIST}")
+		);
+		assert_eq!(link(LinkKind::Show, SHOW).uri().to_uri(), format!("spotify:show:{SHOW}"));
+		assert_eq!(
+			link(LinkKind::Episode, EPISODE).uri().to_uri(),
+			format!("spotify:episode:{EPISODE}")
+		);
 	}
 
 	#[test]

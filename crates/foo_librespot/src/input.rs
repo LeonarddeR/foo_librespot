@@ -4,7 +4,7 @@ use std::ffi::CStr;
 
 use foo_librespot_core::CoreError;
 use foo_librespot_core::audio::decoder::{CHANNELS, SAMPLE_RATE};
-use foo_librespot_core::link::{ItemId, parse_item_path, parse_link};
+use foo_librespot_core::link::{ItemId, parse_item};
 use foxide2k::abort::Abort;
 use foxide2k::audio_chunk::{AudioChunk, CHANNEL_MASK_STEREO};
 use foxide2k::cxx::ExceptionKind;
@@ -25,14 +25,13 @@ const CHUNK_FRAMES: usize = 4410;
 /// The Spotify track or episode a path names: `sptf://spotify:track:<id>`, which foo_librespot
 /// and foo_spotify store, `sptf://spotify:episode:<id>`, or a bare `spotify:` URI of either.
 pub fn item_id(path: &str) -> Option<ItemId> {
-	if let Some(item) = parse_item_path(path) {
-		return Some(item);
-	}
-	let path = path.trim();
-	if !path.get(.."spotify:".len())?.eq_ignore_ascii_case("spotify:") {
-		return None;
-	}
-	parse_link(path).ok()?.item()
+	parse_item(path)
+}
+
+/// [`item_id`], or the error foobar2000 expects for a path that isn't ours.
+pub fn item_or_error(path: &str) -> Result<ItemId> {
+	item_id(path)
+		.ok_or_else(|| Error::unsupported_format(format!("not a Spotify track or episode: {path}")))
 }
 
 /// One opened Spotify track or episode.
@@ -60,9 +59,7 @@ impl Input for SpotifyInput {
 
 	fn open(path: &str, _reason: OpenReason, _abort: &Abort) -> Result<Self> {
 		// Nothing to fetch yet: info reads and decoding each ask Spotify for what they need.
-		let id = item_id(path).ok_or_else(|| {
-			Error::unsupported_format(format!("not a Spotify track or episode: {path}"))
-		})?;
+		let id = item_or_error(path)?;
 		Ok(Self { id, track: None, buffer: Vec::with_capacity(CHUNK_FRAMES * CHANNELS) })
 	}
 

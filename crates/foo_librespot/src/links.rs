@@ -36,16 +36,7 @@ fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
 
 /// The one path foobar2000 stores for `link`.
 fn canonical(link: &Link) -> String {
-	if let Some(item) = link.item() {
-		return item_path(item);
-	}
-	let kind = match link.kind {
-		LinkKind::Album => "album",
-		LinkKind::Playlist => "playlist",
-		LinkKind::Show => "show",
-		LinkKind::Track | LinkKind::Episode => unreachable!("a single item has a path"),
-	};
-	format!("{PATH_SCHEME}spotify:{kind}:{}", link.id.to_base62())
+	format!("{PATH_SCHEME}{}", link.uri().to_uri())
 }
 
 /// Claims `sptf://` paths, `spotify:` URIs and Spotify's web links.

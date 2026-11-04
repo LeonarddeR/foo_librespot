@@ -2,13 +2,13 @@
 
 use foxide2k::abort::Abort;
 use foxide2k::album_art::{AlbumArt, ArtKind};
-use foxide2k::error::{Error, Result};
+use foxide2k::error::Result;
 use foxide2k::guid::Guid;
 use foxide2k::input::Input;
 
 use crate::backend::backend;
 use crate::errors::host_error;
-use crate::input::{SpotifyInput, item_id};
+use crate::input::{SpotifyInput, item_id, item_or_error};
 
 /// The largest album cover Spotify has, as the front cover. Spotify has no other kinds.
 pub struct SpotifyArt;
@@ -24,10 +24,7 @@ impl AlbumArt for SpotifyArt {
 		if kind != ArtKind::FrontCover {
 			return Ok(None);
 		}
-		let id = item_id(path).ok_or_else(|| {
-			Error::unsupported_format(format!("not a Spotify track or episode: {path}"))
-		})?;
-		backend().cover(id, &|| abort.is_aborting()).map_err(host_error)
+		backend().cover(item_or_error(path)?, &|| abort.is_aborting()).map_err(host_error)
 	}
 }
 
