@@ -1,2 +1,3 @@
 [alias]
 bindgen = "run --release --manifest-path tools/bindgen/Cargo.toml"
+xtask = "run --quiet --package xtask --"
