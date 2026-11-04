@@ -225,11 +225,23 @@ mod tests {
 	}
 
 	#[test]
-	fn cargo_about_fails_on_unlisted_licences_and_uses_the_lockfile() {
+	fn cargo_about_lists_the_dlls_crates_with_our_config_and_fails_on_unreadable_licences() {
 		let command = about_command(Path::new("repo"), Path::new("out/licenses.html"));
 		let args: Vec<_> =
 			command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+		let after = |flag: &str| {
+			args.iter().position(|arg| arg == flag).and_then(|index| args.get(index + 1)).cloned()
+		};
 		assert_eq!(&args[..2], ["about", "generate"]);
+		// Only the DLL's dependencies, not the xtask's.
+		assert_eq!(
+			after("--manifest-path").map(PathBuf::from),
+			Some(Path::new("repo").join("crates").join("foo_librespot").join("Cargo.toml"))
+		);
+		assert_eq!(after("--config").as_deref(), Some("about.toml"));
+		assert_eq!(after("--output-file").as_deref(), Some("out/licenses.html"));
+		// --fail: a crate whose licence can't be read or worked out fails the run instead of
+		// being left out with a warning.
 		assert!(args.iter().any(|arg| arg == "--fail"), "{args:?}");
 		assert!(args.iter().any(|arg| arg == "--locked"), "{args:?}");
 		assert_eq!(args.last().map(String::as_str), Some("about.hbs"));
