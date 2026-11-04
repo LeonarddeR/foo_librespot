@@ -125,7 +125,8 @@ impl Core {
 			},
 			is_aborting,
 		)??;
-		fetched.open()
+		// The first reads block until data arrives; do them where Stop can still interrupt.
+		self.runtime.block_on_blocking(move || fetched.open(), is_aborting)?
 	}
 
 	/// The largest album cover of a track, as JPEG bytes; `None` when it has none.

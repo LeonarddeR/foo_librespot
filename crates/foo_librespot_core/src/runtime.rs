@@ -48,6 +48,20 @@ impl CoreRuntime {
 		})
 	}
 
+	/// Runs blocking work, such as the first reads of a Spotify file, on the runtime's blocking
+	/// threads, and returns [`CoreError::Aborted`] within [`ABORT_POLL_INTERVAL`] of
+	/// `is_aborting` turning true. Work that was aborted finishes on its own and its result is
+	/// dropped.
+	pub fn block_on_blocking<T: Send + 'static>(
+		&self,
+		work: impl FnOnce() -> T + Send + 'static,
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<T, CoreError> {
+		let task = self.runtime.spawn_blocking(work);
+		self.block_on(task, is_aborting)?
+			.map_err(|error| CoreError::Io(std::io::Error::other(error.to_string())))
+	}
+
 	pub fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
 	where
 		F: Future + Send + 'static,
@@ -161,6 +175,35 @@ mod tests {
 		for (index, thread) in threads.into_iter().enumerate() {
 			assert_eq!(thread.join().unwrap().unwrap(), index);
 		}
+	}
+
+	#[test]
+	fn block_on_blocking_returns_the_result() {
+		let runtime = CoreRuntime::new().unwrap();
+		assert_eq!(runtime.block_on_blocking(|| 7, &never).unwrap(), 7);
+	}
+
+	#[test]
+	fn block_on_blocking_stops_waiting_when_aborted() {
+		let runtime = CoreRuntime::new().unwrap();
+		let aborting = Arc::new(AtomicBool::new(false));
+		let setter = {
+			let aborting = Arc::clone(&aborting);
+			std::thread::spawn(move || {
+				std::thread::sleep(Duration::from_millis(100));
+				aborting.store(true, Ordering::SeqCst);
+			})
+		};
+		let started = Instant::now();
+		let result = runtime
+			.block_on_blocking(|| std::thread::sleep(Duration::from_secs(5)), &|| {
+				aborting.load(Ordering::SeqCst)
+			});
+		assert!(matches!(result, Err(CoreError::Aborted)), "{result:?}");
+		assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+		setter.join().unwrap();
+		// Dropping a runtime would wait for the sleeping task; shutting it down doesn't.
+		runtime.shutdown(Duration::from_millis(10));
 	}
 
 	#[test]

@@ -9,6 +9,7 @@ mod links;
 mod logging;
 #[cfg(test)]
 mod testing;
+mod worker;
 
 use oxibar::album_art::album_art_factory;
 use oxibar::component::Factory;

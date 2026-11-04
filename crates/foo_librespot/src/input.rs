@@ -13,9 +13,10 @@ use oxibar::file_info::FileInfo;
 use oxibar::guid::Guid;
 use oxibar::input::{Input, OpenReason};
 
-use crate::backend::{PcmTrack, backend};
+use crate::backend::backend;
 use crate::errors::host_error;
 use crate::fields::fill_info;
+use crate::worker::AbortableTrack;
 
 /// A tenth of a second per `decode_run`, as foobar2000's own inputs deliver.
 const CHUNK_FRAMES: usize = 4410;
@@ -37,12 +38,12 @@ pub fn track_id(path: &str) -> Option<SpotifyId> {
 /// One opened Spotify track.
 pub struct SpotifyInput {
 	id: SpotifyId,
-	track: Option<Box<dyn PcmTrack>>,
+	track: Option<AbortableTrack>,
 	buffer: Vec<f64>,
 }
 
 impl SpotifyInput {
-	fn track(&mut self) -> Result<&mut Box<dyn PcmTrack>> {
+	fn track(&mut self) -> Result<&mut AbortableTrack> {
 		self.track
 			.as_mut()
 			.ok_or_else(|| Error::new(ExceptionKind::BugCheck, "decoding before decode_initialize"))
@@ -70,15 +71,18 @@ impl Input for SpotifyInput {
 	}
 
 	fn decode_initialize(&mut self, _flags: u32, abort: &Abort) -> Result<()> {
-		self.track =
-			Some(backend().open_track(self.id, &|| abort.is_aborting()).map_err(host_error)?);
+		let track = backend().open_track(self.id, &|| abort.is_aborting()).map_err(host_error)?;
+		self.track = Some(AbortableTrack::new(track).map_err(host_error)?);
 		Ok(())
 	}
 
 	fn decode_run(&mut self, chunk: &mut AudioChunk<'_>, abort: &Abort) -> Result<bool> {
 		abort.check()?;
 		let mut buffer = std::mem::take(&mut self.buffer);
-		let frames = self.track()?.read(&mut buffer, CHUNK_FRAMES).map_err(host_error);
+		let frames = self
+			.track()?
+			.read(&mut buffer, CHUNK_FRAMES, &|| abort.is_aborting())
+			.map_err(host_error);
 		self.buffer = buffer;
 		let frames = frames?;
 		if frames == 0 {
@@ -97,7 +101,7 @@ impl Input for SpotifyInput {
 			reason = "clamped to 0 and up"
 		)]
 		let frame = (seconds.max(0.0) * f64::from(SAMPLE_RATE)).round() as u64;
-		self.track()?.seek(frame).map_err(host_error)
+		self.track()?.seek(frame, &|| abort.is_aborting()).map_err(host_error)
 	}
 
 	fn can_seek(&self) -> bool {
@@ -107,6 +111,8 @@ impl Input for SpotifyInput {
 
 #[cfg(test)]
 mod tests {
+	use std::time::{Duration, Instant};
+
 	use foo_librespot_core::CoreError;
 	use oxibar::abi::input::INFO_READER;
 	use oxibar::audio_chunk::CHANNEL_MASK_STEREO;
@@ -213,6 +219,53 @@ mod tests {
 		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
 		let error = decoder.initialize(0, 0, &abort).unwrap_err();
 		assert_eq!(error.kind, ExceptionKind::Aborted);
+	}
+
+	/// Lets another thread press Stop on a `FakeAbort` the test keeps alive.
+	struct StopLater(*const FakeAbort);
+
+	// SAFETY: the test joins the thread before the FakeAbort is dropped.
+	unsafe impl Send for StopLater {}
+
+	fn stop_after(abort: &FakeAbort, delay: Duration) -> std::thread::JoinHandle<()> {
+		let target = StopLater(abort);
+		std::thread::spawn(move || {
+			let target = target;
+			std::thread::sleep(delay);
+			unsafe { &*target.0 }.set_aborting(true);
+		})
+	}
+
+	#[test]
+	fn stop_during_a_stalled_read_returns_promptly() {
+		let fake = installed();
+		let abort = FakeAbort::new(false);
+		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
+		decoder.initialize(0, 0, &abort).unwrap();
+		fake.stall(true);
+		let stopper = stop_after(&abort, Duration::from_millis(100));
+		let started = Instant::now();
+		let error = decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap_err();
+		assert_eq!(error.kind, ExceptionKind::Aborted);
+		assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+		stopper.join().unwrap();
+		fake.stall(false);
+	}
+
+	#[test]
+	fn stop_during_a_stalled_seek_returns_promptly() {
+		let fake = installed();
+		let abort = FakeAbort::new(false);
+		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
+		decoder.initialize(0, 0, &abort).unwrap();
+		fake.stall(true);
+		let stopper = stop_after(&abort, Duration::from_millis(100));
+		let started = Instant::now();
+		let error = decoder.seek(1.0, &abort).unwrap_err();
+		assert_eq!(error.kind, ExceptionKind::Aborted);
+		assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+		stopper.join().unwrap();
+		fake.stall(false);
 	}
 
 	#[test]

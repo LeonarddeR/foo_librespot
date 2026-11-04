@@ -2,7 +2,7 @@
 //! chirp fixture of `foo_librespot_core`.
 
 use std::io::Cursor;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use foo_librespot_core::audio::decoder::PcmDecoder;
@@ -53,6 +53,8 @@ struct State {
 	failure: Mutex<Option<fn() -> CoreError>>,
 	resolved: Mutex<Option<Resolved>>,
 	cover: Mutex<Option<Vec<u8>>>,
+	/// While set, reads and seeks block, like a Spotify download that has stalled.
+	stalled: AtomicBool,
 }
 
 /// Clones share their state, so a test can install one and inspect another.
@@ -80,6 +82,11 @@ impl FakeBackend {
 
 	pub fn open_calls(&self) -> usize {
 		self.0.open_calls.load(Ordering::SeqCst)
+	}
+
+	/// Makes reads and seeks of opened tracks block until `stall(false)`, at most 5 s.
+	pub fn stall(&self, stalled: bool) {
+		self.0.stalled.store(stalled, Ordering::SeqCst);
 	}
 
 	fn enter(&self, is_aborting: &dyn Fn() -> bool) -> Result<(), CoreError> {
@@ -120,10 +127,8 @@ impl Backend for FakeBackend {
 	) -> Result<Box<dyn PcmTrack>, CoreError> {
 		self.0.open_calls.fetch_add(1, Ordering::SeqCst);
 		self.enter(is_aborting)?;
-		Ok(Box::new(FixtureTrack(PcmDecoder::new(
-			Box::new(Cursor::new(CHIRP)),
-			Some("audio/ogg"),
-		)?)))
+		let decoder = PcmDecoder::new(Box::new(Cursor::new(CHIRP)), Some("audio/ogg"))?;
+		Ok(Box::new(FixtureTrack { decoder, state: Arc::clone(&self.0) }))
 	}
 
 	fn cover(
@@ -137,15 +142,31 @@ impl Backend for FakeBackend {
 }
 
 /// The fixture, decoded.
-struct FixtureTrack(PcmDecoder);
+struct FixtureTrack {
+	decoder: PcmDecoder,
+	state: Arc<State>,
+}
+
+impl FixtureTrack {
+	fn wait_while_stalled(&self) {
+		let started = std::time::Instant::now();
+		while self.state.stalled.load(Ordering::SeqCst)
+			&& started.elapsed() < std::time::Duration::from_secs(5)
+		{
+			std::thread::sleep(std::time::Duration::from_millis(10));
+		}
+	}
+}
 
 impl PcmTrack for FixtureTrack {
 	fn read(&mut self, out: &mut Vec<f64>, max_frames: usize) -> Result<usize, CoreError> {
-		self.0.read(out, max_frames)
+		self.wait_while_stalled();
+		self.decoder.read(out, max_frames)
 	}
 
 	fn seek(&mut self, frame: u64) -> Result<(), CoreError> {
-		self.0.seek(frame)
+		self.wait_while_stalled();
+		self.decoder.seek(frame)
 	}
 }
 
