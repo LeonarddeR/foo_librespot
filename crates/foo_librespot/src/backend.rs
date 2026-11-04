@@ -41,7 +41,7 @@ pub trait Backend: Send + Sync {
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Option<Vec<u8>>, CoreError>;
 	/// Starts a browser login in the background. `on_code` gets the code to show; `on_done` gets
-	/// the Spotify username or why it failed. Neither runs after [`LoginTask::cancel`].
+	/// the Spotify username or why it failed. Neither runs after [`LoginTask::cancel`] returns true.
 	fn start_login(
 		&self,
 		on_code: OnCode,
@@ -55,12 +55,14 @@ pub trait Backend: Send + Sync {
 
 /// A login running in the background.
 pub trait LoginTask: Send {
-	fn cancel(&self);
+	/// Stops the login. True when it was stopped in time: nothing is stored and `on_done` isn't
+	/// called. False when it had already finished; `on_done` gets its result.
+	fn cancel(&self) -> bool;
 }
 
 impl LoginTask for LoginHandle {
-	fn cancel(&self) {
-		Self::cancel(self);
+	fn cancel(&self) -> bool {
+		Self::cancel(self)
 	}
 }
 

@@ -250,7 +250,7 @@ impl LoginController {
 			// Cancelled, or already finished, while starting.
 			Ok(task) => {
 				drop(inner);
-				task.cancel();
+				let _ = task.cancel();
 			}
 			Err(error) if inner.generation == generation => {
 				self.0.set(inner, LoginState::Failed(error.to_string()));
@@ -269,8 +269,11 @@ impl LoginController {
 		inner.generation += 1;
 		let task = inner.task.take();
 		self.0.set(inner, LoginState::Cancelled);
-		if let Some(task) = task {
-			task.cancel();
+		// Too late: the login was stored as Cancel was pressed. Show it rather than "Cancelled".
+		if let Some(task) = task
+			&& !task.cancel()
+		{
+			self.refresh();
 		}
 	}
 
@@ -570,6 +573,16 @@ mod tests {
 		fake.set_username(Some("Kristyn Getty"));
 		controller.refresh();
 		assert_eq!(controller.state(), LoginState::LoggedIn(Some("Kristyn Getty".to_owned())));
+	}
+
+	#[test]
+	fn a_cancel_after_the_login_was_stored_shows_the_login() {
+		let fake = installed();
+		let (controller, _opened) = controller();
+		controller.start();
+		fake.store_login_before_answering("Keith Getty");
+		controller.cancel();
+		assert_eq!(controller.state(), LoginState::LoggedIn(Some("Keith Getty".to_owned())));
 	}
 
 	#[test]

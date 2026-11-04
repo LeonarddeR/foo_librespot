@@ -57,7 +57,9 @@ impl Core {
 
 	/// Starts a browser login in the background. `on_code` gets the code and page to show the
 	/// user; `on_done` gets the Spotify username or the reason it failed. Both run on a runtime
-	/// thread. After [`LoginHandle::cancel`], neither is called.
+	/// thread. When [`LoginHandle::cancel`] returns true, neither is called afterwards and no login
+	/// is stored; when it returns false, the login had already finished and `on_done` gets its
+	/// result.
 	pub fn start_login(
 		&self,
 		on_code: impl FnOnce(&DeviceCode) + Send + 'static,
@@ -65,7 +67,9 @@ impl Core {
 	) -> LoginHandle {
 		let sessions = Arc::clone(&self.sessions);
 		let cache = self.cache.clone();
-		LoginHandle(self.runtime.spawn(async move {
+		let gate = LoginGate::default();
+		let finishing = gate.clone();
+		let task = self.runtime.spawn(async move {
 			let result = async {
 				let authorizer = LibrespotAuthorizer::new()?;
 				let token = device_login(&authorizer, on_code).await?;
@@ -75,8 +79,16 @@ impl Core {
 				Ok(username)
 			}
 			.await;
-			on_done(result);
-		}))
+			if finishing.finish() {
+				on_done(result);
+			} else if result.is_ok() {
+				// Cancelled as the login was being stored: what the user sees is the cancel.
+				if let Err(error) = sessions.logout() {
+					log::warn!("couldn't undo a cancelled Spotify login: {error}");
+				}
+			}
+		});
+		LoginHandle { task, gate }
 	}
 
 	pub fn logout(&self) -> Result<(), CoreError> {
@@ -170,25 +182,83 @@ impl Core {
 }
 
 /// A login running in the background.
-pub struct LoginHandle(tokio::task::JoinHandle<()>);
+pub struct LoginHandle {
+	task: tokio::task::JoinHandle<()>,
+	gate: LoginGate,
+}
 
 impl LoginHandle {
-	pub fn cancel(&self) {
-		self.0.abort();
+	/// Stops the login. True when it was stopped in time: nothing is stored and nothing is
+	/// reported. False when it had already finished; its result is reported as usual.
+	pub fn cancel(&self) -> bool {
+		let in_time = self.gate.cancel();
+		if in_time {
+			self.task.abort();
+		}
+		in_time
 	}
 
 	pub fn is_finished(&self) -> bool {
-		self.0.is_finished()
+		self.task.is_finished()
+	}
+}
+
+/// Decides whether a login that is finishing or a cancel came first. Without it, a cancel
+/// during the last moments of a login, while the login is stored, would be ignored: tokio stops
+/// a task only at its next await, and there is none left.
+#[derive(Clone, Default)]
+struct LoginGate(Arc<std::sync::Mutex<Option<Outcome>>>);
+
+#[derive(Clone, Copy)]
+enum Outcome {
+	Finished,
+	Cancelled,
+}
+
+impl LoginGate {
+	/// Called once the login has ended. True when it may report its result; false when a cancel
+	/// came first, so a stored login must be undone.
+	fn finish(&self) -> bool {
+		self.settle(Outcome::Finished)
+	}
+
+	/// True when the cancel came before the login finished.
+	fn cancel(&self) -> bool {
+		self.settle(Outcome::Cancelled)
+	}
+
+	fn settle(&self, outcome: Outcome) -> bool {
+		let mut settled = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+		if settled.is_some() {
+			return false;
+		}
+		*settled = Some(outcome);
+		true
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{Core, LoginHandle};
+	use super::{Core, LoginGate, LoginHandle};
 	use crate::CoreError;
 	use crate::SpotifyId;
 	use crate::audio::track::SpotifyTrack;
 	use crate::link::{Link, LinkKind};
+
+	#[test]
+	fn a_cancel_before_the_login_is_stored_wins() {
+		let gate = LoginGate::default();
+		assert!(gate.cancel());
+		// The login, finishing after the cancel, must undo itself and not report.
+		assert!(!gate.finish());
+	}
+
+	#[test]
+	fn a_cancel_after_the_login_is_stored_comes_too_late() {
+		let gate = LoginGate::default();
+		assert!(gate.finish());
+		assert!(!gate.cancel());
+	}
 
 	fn album() -> Link {
 		Link {

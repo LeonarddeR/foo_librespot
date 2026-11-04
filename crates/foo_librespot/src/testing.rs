@@ -110,13 +110,22 @@ struct ScriptedLogin {
 	on_code: Option<OnCode>,
 	on_done: Option<OnDone>,
 	cancelled: Arc<AtomicBool>,
+	/// Set once the login is stored; a cancel after that comes too late.
+	stored: Arc<AtomicBool>,
 }
 
-struct ScriptedTask(Arc<AtomicBool>);
+struct ScriptedTask {
+	cancelled: Arc<AtomicBool>,
+	stored: Arc<AtomicBool>,
+}
 
 impl LoginTask for ScriptedTask {
-	fn cancel(&self) {
-		self.0.store(true, Ordering::SeqCst);
+	fn cancel(&self) -> bool {
+		if self.stored.load(Ordering::SeqCst) {
+			return false;
+		}
+		self.cancelled.store(true, Ordering::SeqCst);
+		true
 	}
 }
 
@@ -213,6 +222,13 @@ impl FakeBackend {
 		}
 	}
 
+	/// The latest login stores its login and is about to answer, but hasn't yet: the moment a
+	/// cancel comes too late.
+	pub fn store_login_before_answering(&self, username: &str) {
+		self.latest(|login| login.stored.store(true, Ordering::SeqCst));
+		self.set_username(Some(username));
+	}
+
 	fn latest<R>(&self, take: impl FnOnce(&mut ScriptedLogin) -> R) -> R {
 		let mut logins = self.0.logins.lock().unwrap_or_else(PoisonError::into_inner);
 		take(logins.last_mut().expect("no login was started"))
@@ -281,12 +297,14 @@ impl Backend for FakeBackend {
 		on_done: OnDone,
 	) -> Result<Box<dyn LoginTask>, CoreError> {
 		let cancelled = Arc::new(AtomicBool::new(false));
+		let stored = Arc::new(AtomicBool::new(false));
 		self.0.logins.lock().unwrap_or_else(PoisonError::into_inner).push(ScriptedLogin {
 			on_code: Some(on_code),
 			on_done: Some(on_done),
 			cancelled: Arc::clone(&cancelled),
+			stored: Arc::clone(&stored),
 		});
-		Ok(Box::new(ScriptedTask(cancelled)))
+		Ok(Box::new(ScriptedTask { cancelled, stored }))
 	}
 
 	fn logout(&self) -> Result<(), CoreError> {
