@@ -4,8 +4,8 @@ use std::ffi::{CStr, c_char};
 
 use crate::abi::string_base::{StringBase, StringBaseVtbl};
 use crate::boundary::guard;
-use crate::cxx::try_host;
-use crate::error::Result;
+use crate::cxx::{ExceptionKind, try_host};
+use crate::error::{Error, Result};
 
 /// A `pfc::string_base` implemented in Rust, to pass where foobar2000 writes a string out.
 #[repr(C)]
@@ -116,7 +116,12 @@ unsafe extern "C-unwind" fn string_lock_buffer(
 	unsafe {
 		guard(|| {
 			let string = owned(this);
-			string.bytes.resize(length + 1, 0);
+			let size = length.checked_add(1).ok_or_else(|| {
+				Error::new(ExceptionKind::InvalidParams, "string buffer length overflows")
+			})?;
+			// pfc hands out a zeroed buffer, and callers may leave the terminator to it.
+			string.bytes.clear();
+			string.bytes.resize(size, 0);
 			Ok(string.bytes.as_mut_ptr().cast())
 		})
 	}
@@ -206,5 +211,42 @@ mod tests {
 		})
 		.unwrap();
 		assert_eq!((buffer_length, string.value().as_str()), (5, "Keith"));
+	}
+
+	#[test]
+	fn lock_buffer_hands_out_a_zeroed_buffer_as_pfc_does() {
+		let mut string = OwnedString::new();
+		let raw = string.as_raw();
+		try_host(|| unsafe {
+			((*(*raw).vtbl).set_string)(raw, c"Hello World".as_ptr(), usize::MAX);
+			// Writes three bytes without a terminator, relying on the zeroed buffer.
+			let buffer = ((*(*raw).vtbl).lock_buffer)(raw, 20);
+			buffer.copy_from_nonoverlapping(c"abc".as_ptr(), 3);
+			((*(*raw).vtbl).unlock_buffer)(raw);
+		})
+		.unwrap();
+		assert_eq!(string.value(), "abc");
+	}
+
+	#[test]
+	fn lock_buffer_shorter_than_the_string_ends_it_at_the_new_length() {
+		let mut string = OwnedString::new();
+		let raw = string.as_raw();
+		try_host(|| unsafe {
+			((*(*raw).vtbl).set_string)(raw, c"Hello".as_ptr(), usize::MAX);
+			((*(*raw).vtbl).lock_buffer)(raw, 3);
+			((*(*raw).vtbl).unlock_buffer)(raw);
+		})
+		.unwrap();
+		assert_eq!(string.value(), "");
+	}
+
+	#[test]
+	fn lock_buffer_refuses_a_length_that_overflows() {
+		let mut string = OwnedString::new();
+		let raw = string.as_raw();
+		let error =
+			try_host(|| unsafe { ((*(*raw).vtbl).lock_buffer)(raw, usize::MAX) }).unwrap_err();
+		assert_eq!(error.kind, crate::cxx::ExceptionKind::InvalidParams);
 	}
 }
