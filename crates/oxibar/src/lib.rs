@@ -19,6 +19,7 @@ pub mod component;
 pub mod config_store;
 pub mod console;
 pub mod cxx;
+pub mod dialog;
 pub mod error;
 pub mod file_info;
 pub mod file_info_impl;
