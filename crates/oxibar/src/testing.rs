@@ -20,7 +20,7 @@ use crate::abi::playlist_loader::{
 	self, PlayableLocation, PlaylistLoaderCallbackVtbl, PlaylistLoaderVtbl,
 };
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
-use crate::abi::string_base::{StringBase, StringBaseVtbl};
+use crate::abi::string_base::StringBase;
 use crate::cxx::{ExceptionKind, HostException, try_host};
 use crate::guid::Guid;
 use crate::host;
@@ -164,17 +164,7 @@ unsafe extern "C-unwind" fn get_profile_path(this: *mut Api) -> *const c_char {
 	unsafe { fake(this) }.profile_path.as_ptr()
 }
 
-/// Bytes up to the NUL terminator, or up to `length` if that comes first, as pfc reads strings.
-unsafe fn bytes_of<'a>(text: *const c_char, length: usize) -> &'a [u8] {
-	if text.is_null() {
-		return &[];
-	}
-	let mut len = 0;
-	while len < length && unsafe { *text.add(len) } != 0 {
-		len += 1;
-	}
-	unsafe { std::slice::from_raw_parts(text.cast(), len) }
-}
+use crate::strings::bytes_of;
 
 struct FakeConsole {
 	lines: Arc<Mutex<Vec<String>>>,
@@ -198,88 +188,7 @@ unsafe extern "C-unwind" fn console_print(
 }
 
 /// A `pfc::string_base` implemented in Rust, to receive string out-parameters.
-#[repr(C)]
-pub struct FakeString {
-	base: StringBase,
-	/// Always NUL-terminated.
-	bytes: Vec<u8>,
-}
-
-static FAKE_STRING_VTBL: StringBaseVtbl = StringBaseVtbl {
-	add_string: string_add,
-	get_ptr: string_get_ptr,
-	set_string: string_set,
-	truncate: string_truncate,
-	get_length: string_get_length,
-	lock_buffer: string_lock_buffer,
-	unlock_buffer: string_unlock_buffer,
-};
-
-impl FakeString {
-	pub fn new() -> Box<Self> {
-		Box::new(Self { base: StringBase { vtbl: &raw const FAKE_STRING_VTBL }, bytes: vec![0] })
-	}
-
-	/// The `pfc::string_base &` to pass to a slot.
-	pub fn as_raw(&mut self) -> *mut StringBase {
-		(&raw mut self.base).cast()
-	}
-
-	pub fn value(&self) -> String {
-		String::from_utf8_lossy(&self.bytes[..self.bytes.len() - 1]).into_owned()
-	}
-}
-
-unsafe fn fake_string<'a>(this: *const StringBase) -> &'a mut FakeString {
-	unsafe { &mut *this.cast::<FakeString>().cast_mut() }
-}
-
-unsafe extern "C-unwind" fn string_add(this: *mut StringBase, text: *const c_char, length: usize) {
-	let string = unsafe { fake_string(this) };
-	let added = unsafe { bytes_of(text, length) }.to_vec();
-	string.bytes.pop();
-	string.bytes.extend_from_slice(&added);
-	string.bytes.push(0);
-}
-
-unsafe extern "C-unwind" fn string_get_ptr(this: *const StringBase) -> *const c_char {
-	unsafe { fake_string(this) }.bytes.as_ptr().cast()
-}
-
-unsafe extern "C-unwind" fn string_set(this: *mut StringBase, text: *const c_char, length: usize) {
-	let string = unsafe { fake_string(this) };
-	let value = unsafe { bytes_of(text, length) }.to_vec();
-	string.bytes = value;
-	string.bytes.push(0);
-}
-
-unsafe extern "C-unwind" fn string_truncate(this: *mut StringBase, length: usize) {
-	let string = unsafe { fake_string(this) };
-	if length < string.bytes.len() - 1 {
-		string.bytes.truncate(length);
-		string.bytes.push(0);
-	}
-}
-
-unsafe extern "C-unwind" fn string_get_length(this: *const StringBase) -> usize {
-	unsafe { fake_string(this) }.bytes.len() - 1
-}
-
-unsafe extern "C-unwind" fn string_lock_buffer(
-	this: *mut StringBase,
-	length: usize,
-) -> *mut c_char {
-	let string = unsafe { fake_string(this) };
-	string.bytes.resize(length + 1, 0);
-	string.bytes.as_mut_ptr().cast()
-}
-
-unsafe extern "C-unwind" fn string_unlock_buffer(this: *mut StringBase) {
-	let string = unsafe { fake_string(this) };
-	let end = string.bytes.iter().position(|&byte| byte == 0).unwrap_or(string.bytes.len());
-	string.bytes.truncate(end);
-	string.bytes.push(0);
-}
+pub type FakeString = crate::strings::OwnedString;
 
 /// Counts how often a [`CountedService`] was destroyed.
 #[derive(Clone)]

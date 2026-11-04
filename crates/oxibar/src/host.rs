@@ -5,10 +5,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use crate::abi::component::Api;
+use crate::abi::componentversion::{self, ComponentVersionVtbl};
 use crate::abi::service::ServiceBase;
 use crate::cxx::try_host;
 use crate::guid::Guid;
 use crate::service::ServicePtr;
+use crate::strings::OwnedString;
 
 static API: AtomicPtr<Api> = AtomicPtr::new(std::ptr::null_mut());
 static INSTANCE: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
@@ -91,6 +93,23 @@ impl Host {
 		})
 	}
 
+	/// The file name, without extension, of every loaded component, such as `"foo_youtube"`.
+	pub fn loaded_components(&self) -> Vec<String> {
+		self.enumerate(&componentversion::IID)
+			.iter()
+			.filter_map(|service| {
+				let raw = service.as_raw();
+				let mut name = OwnedString::new();
+				try_host(|| unsafe {
+					let vtbl = &*(*raw).vtbl.cast::<ComponentVersionVtbl>();
+					(vtbl.get_file_name)(raw, name.as_raw());
+				})
+				.ok()?;
+				Some(name.value())
+			})
+			.collect()
+	}
+
 	/// The component's file name without extension, as foobar2000 reported it.
 	pub fn library_name(&self) -> Option<String> {
 		LIBRARY
@@ -107,5 +126,27 @@ impl Host {
 			.unwrap_or_else(std::sync::PoisonError::into_inner)
 			.as_ref()
 			.map(|(path, _)| path.clone())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::host;
+	use crate::abi::componentversion;
+	use crate::component::ComponentVersionService;
+	use crate::service::new_service;
+	use crate::testing::FakeApi;
+
+	#[test]
+	fn loaded_components_lists_every_componentversion_file_name() {
+		let api = FakeApi::new();
+		for name in ["foo_youtube", "foo_librespot"] {
+			api.add_service(
+				componentversion::IID,
+				new_service(ComponentVersionService::new(name, "1.0", "")),
+			);
+		}
+		api.install();
+		assert_eq!(host().loaded_components(), ["foo_youtube", "foo_librespot"]);
 	}
 }
