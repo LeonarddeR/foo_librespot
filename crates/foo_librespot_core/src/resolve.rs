@@ -356,7 +356,11 @@ impl<S: MetadataSource> MetadataSource for CachedSource<S> {
 					return Ok(info);
 				}
 				let result = fetched.next().unwrap_or_else(|| Err(missing(*item)));
-				if let Ok(info) = &result {
+				// Whether an item plays changes with the clock and the account's country, so an
+				// unavailable one is asked for again next time.
+				if let Ok(info) = &result
+					&& info.unavailable.is_none()
+				{
 					self.cache.insert(Arc::clone(info));
 				}
 				result
@@ -1009,6 +1013,21 @@ mod tests {
 			resolved.skipped[0].reason,
 			SkipReason::Unavailable("not available in your country".to_owned())
 		);
+	}
+
+	#[tokio::test]
+	async fn an_unavailable_track_is_asked_for_again_later() {
+		let mut inner = FakeSource::with_tracks(&[1]);
+		let mut unreleased = info(2);
+		unreleased.unavailable = Some("not released on Spotify yet".to_owned());
+		inner.tracks.insert(id(2), (Ok(unreleased), Duration::ZERO));
+		inner.albums.insert(id(100), Ok(("The Album".to_owned(), vec![id(1), id(2)])));
+		let source = CachedSource::new(inner, TrackCache::default());
+		let link = Link { kind: LinkKind::Album, id: id(100) };
+		resolve(&source, &link).await.unwrap();
+		resolve(&source, &link).await.unwrap();
+		// Track 1 once; track 2 each time, since its release or the country may change.
+		assert_eq!(source.inner().track_calls.load(Ordering::SeqCst), 3);
 	}
 
 	fn extension(kind: ExtensionKind, status: i32, value: &[u8]) -> EntityExtensionDataArray {
