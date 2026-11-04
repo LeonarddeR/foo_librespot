@@ -5,6 +5,7 @@ mod backend;
 mod errors;
 mod fields;
 mod input;
+mod lifecycle;
 mod links;
 mod logging;
 #[cfg(test)]

@@ -2,7 +2,8 @@
 //! services can be tested with a fake.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use foo_librespot_core::audio::format::Bitrate;
 use foo_librespot_core::audio::track::SpotifyTrack;
@@ -10,6 +11,8 @@ use foo_librespot_core::link::Link;
 use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::resolve::Resolved;
 use foo_librespot_core::{Core, CoreError, SpotifyId};
+
+use crate::lifecycle::Lifecycle;
 
 /// Everything the services need from Spotify. Every call blocks and returns
 /// [`CoreError::Aborted`] soon after `is_aborting` turns true.
@@ -56,25 +59,18 @@ pub fn profile_folder(profile_path: &str) -> PathBuf {
 }
 
 /// `Core`, started the first time anything asks Spotify, and stopped when foobar2000 quits.
-static CORE: Mutex<Option<Arc<Core>>> = Mutex::new(None);
+static CORE: Lifecycle<Core> = Lifecycle::new();
+
+/// How long quitting waits for Spotify calls still running; foobar2000 aborts them as it quits.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
 fn core() -> Result<Arc<Core>, CoreError> {
-	let mut core = CORE.lock().unwrap_or_else(PoisonError::into_inner);
-	if let Some(core) = core.as_ref() {
-		return Ok(Arc::clone(core));
-	}
-	let folder = profile_folder(&oxibar::host::host().profile_path());
-	let created = Arc::new(Core::new(folder)?);
-	*core = Some(Arc::clone(&created));
-	Ok(created)
+	CORE.get_or_start(|| Core::new(profile_folder(&oxibar::host::host().profile_path())))
 }
 
-/// Stops `Core`, if it was started. Calls still running keep their own reference and finish.
+/// Stops `Core` for good, if it was started; later calls fail instead of starting it again.
 pub fn shutdown() {
-	let core = CORE.lock().unwrap_or_else(PoisonError::into_inner).take();
-	if let Some(core) = core.and_then(|core| Arc::try_unwrap(core).ok()) {
-		core.shutdown();
-	}
+	CORE.shutdown(SHUTDOWN_WAIT, Core::shutdown);
 }
 
 struct CoreBackend;
