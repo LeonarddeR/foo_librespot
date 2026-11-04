@@ -1,6 +1,6 @@
 # Agent notes
 
-foo_librespot is a foobar2000 2.25+ x64 component, written entirely in Rust, that plays Spotify links through librespot.
+foo_librespot is a foobar2000 2.25+ x64 component, written entirely in Rust, that plays Spotify tracks, albums, playlists and podcasts through librespot.
 
 ## Commands
 

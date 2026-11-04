@@ -1,4 +1,5 @@
-//! foo_librespot: a foobar2000 component that plays Spotify links through librespot.
+//! foo_librespot: a foobar2000 component that plays Spotify tracks, albums, playlists and
+//! podcasts through librespot.
 
 mod account;
 mod art;
@@ -27,7 +28,7 @@ use foxide2k::playlist_loader::playlist_loader_factory;
 use foxide2k::preferences::preferences_page_factory;
 use foxide2k::service::Singleton;
 
-const ABOUT: &str = "Plays Spotify tracks, albums and playlists from their links. Needs Spotify Premium.
+const ABOUT: &str = "Plays Spotify tracks, albums, playlists and podcasts in foobar2000. Paste or drag a Spotify link to add them. Needs Spotify Premium.
 
 Built on librespot (MIT licence), an unofficial Spotify client: Spotify can change its service at any time in a way that stops it working.
 

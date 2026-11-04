@@ -1,6 +1,6 @@
 [package]
 name = "foo_librespot"
-description = "A foobar2000 component that plays Spotify links through librespot"
+description = "A foobar2000 component that plays Spotify tracks, albums, playlists and podcasts through librespot"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

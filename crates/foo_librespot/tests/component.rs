@@ -16,6 +16,13 @@ fn component_loads_and_reports_its_version() {
 	let strings = component_version_strings(&service);
 	assert_eq!(strings.name, "foo_librespot");
 	assert_eq!(strings.version, "0.1.0");
+	assert!(
+		strings.about.starts_with(
+			"Plays Spotify tracks, albums, playlists and podcasts in foobar2000. Paste or drag a Spotify link to add them."
+		),
+		"{}",
+		strings.about
+	);
 	assert!(strings.about.contains("Spotify Premium"), "{}", strings.about);
 	assert!(strings.about.contains("librespot"), "{}", strings.about);
 	assert_eq!(strings.file_name, "foo_librespot");
