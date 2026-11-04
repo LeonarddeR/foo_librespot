@@ -34,7 +34,7 @@ Checked by starting the portable foobar2000 from the command line and reading it
 ## Still to check by hand
 
 - [ ] The console (View > Console) shows `foo_librespot: loaded`, `foo_librespot: added 11 tracks from In Christ Alone` and `added 35 tracks from Give Us This Day Our Daily Hymns`, and no errors.
-- [ ] Playing "In Christ Alone" sounds right: clean, no noise, no clicks, correct speed.
+- [x] Playing "In Christ Alone" sounds right: clean, no noise, no clicks, correct speed. (2026-11-04: plays.)
 - [ ] Seeking with the seek bar continues from there, without a crash.
 - [ ] Next and Previous move between Spotify tracks, and the next track starts without a long gap.
 - [ ] Stop during playback stops at once.
@@ -50,3 +50,5 @@ Checked by starting the portable foobar2000 from the command line and reading it
 
 Tested by: …
 Outcome: …
+
+Note: `pwsh tools/fb2k-portable.ps1 -ImportSettings` copies your own keyboard shortcuts, layout and components into the portable copy, which is much easier to use with a screen reader than its fresh default profile.
