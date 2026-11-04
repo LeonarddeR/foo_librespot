@@ -27,6 +27,7 @@ foo_librespot is a foobar2000 2.x x64 component, written entirely in Rust, that 
 - `foo_librespot_core` must not depend on `oxibar` or know about foobar2000. The plugin talks to it only through `foo_librespot_core::Core`.
 - In `foo_librespot_core`, blocking reads of Spotify audio never run on a tokio worker: `fetch_track` only awaits, and `FetchedTrack::open` and `SpotifyTrack::read` run on the caller's thread. `CoreRuntime::block_on` is never called from async code.
 - Spotify credentials are never logged and never written in plain text; `Profile` stores them encrypted with DPAPI.
+- `foo_librespot` reaches Spotify only through its `Backend` trait; its tests install a fake backend, so every service is tested through its vtables without Spotify.
 
 ## Settled design decisions
 

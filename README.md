@@ -13,7 +13,7 @@ Early development. Nothing is released yet.
 
 - `crates/oxibar`: the Rust layer that talks to foobar2000. It is proven in a real foobar2000 by the `foo_oxitone` test-tone component.
 - `crates/foo_librespot_core`: the Spotify side, built on librespot, with no foobar2000 knowledge. It logs in, turns links into track lists with metadata, and plays tracks as seekable PCM. Its `spotify_dev` example tries it against a real account.
-- `crates/foo_librespot`, the component itself, is next.
+- `crates/foo_librespot`: the component. It adds Spotify track, album and playlist links as playlist entries with their metadata and ReplayGain, plays and seeks them, and shows album art. There is no login page yet: log in with the `spotify_dev` tool (see TESTING.md).
 
 ## Requirements
 

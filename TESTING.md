@@ -82,3 +82,15 @@ cargo run -p foo_librespot_core --example spotify_dev -- decode https://open.spo
 `login` prints a page and a code; open the page, confirm, and the login is stored encrypted for your Windows account.
 Set `SPOTIFY_DEV_LOG=debug` to see what librespot does.
 The phase 2 checklist is in [docs/checklists/phase-2-core.md](docs/checklists/phase-2-core.md).
+
+## Testing `foo_librespot`
+
+The component's services run against a fake `Backend` in the unit tests, and its DLL tests load the built `foo_librespot.dll` into OxiBar's fake foobar2000; neither needs Spotify.
+
+To try it in the portable foobar2000, install it and log in into the portable profile, as [the phase 3 checklist](docs/checklists/phase-3-playback.md) describes:
+
+```
+pwsh tools/fb2k-portable.ps1 -Install foo_librespot
+cargo run -q -p foo_librespot_core --example spotify_dev -- --profile .fb2k-portable\profile\foo_librespot login
+pwsh tools/fb2k-portable.ps1 -Run /add https://open.spotify.com/album/4wPtS24asgBAG4VOmYYB9O
+```
