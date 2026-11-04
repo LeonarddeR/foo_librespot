@@ -1,4 +1,4 @@
-//! The foobar2000 exception types OxiBar can throw and recognise.
+//! The foobar2000 exception types Foxide2k can throw and recognise.
 //!
 //! Every foobar2000 exception is declared with `PFC_DECLARE_EXCEPTION` (`pfc\primitives.h:18-31`),
 //! which adds no data and no virtual functions to `std::exception`. They differ only in their
@@ -51,7 +51,7 @@ pub(crate) struct TypeInfo {
 	pub default_message: &'static str,
 }
 
-/// How many classes OxiBar knows.
+/// How many classes Foxide2k knows.
 pub(crate) const COUNT: usize = 17;
 
 /// Indexed by `ExceptionKind as usize`.
@@ -196,7 +196,7 @@ impl ExceptionKind {
 		TYPES[self as usize].default_message
 	}
 
-	/// The class with this RTTI name, if OxiBar knows it.
+	/// The class with this RTTI name, if Foxide2k knows it.
 	pub fn from_type_name(name: &str) -> Option<Self> {
 		Self::ALL.into_iter().find(|kind| TYPES[*kind as usize].name == name)
 	}

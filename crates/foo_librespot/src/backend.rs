@@ -105,7 +105,7 @@ static CORE: Lifecycle<Core> = Lifecycle::new();
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
 fn core() -> Result<Arc<Core>, CoreError> {
-	CORE.get_or_start(|| Core::new(profile_folder(&oxibar::host::host().profile_path())))
+	CORE.get_or_start(|| Core::new(profile_folder(&foxide2k::host::host().profile_path())))
 }
 
 /// Stops `Core` for good, if it was started; later calls fail instead of starting it again.

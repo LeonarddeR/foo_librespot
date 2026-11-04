@@ -1,7 +1,7 @@
 //! The preferences foo_librespot keeps in foobar2000's settings store.
 
 use foo_librespot_core::audio::format::Bitrate;
-use oxibar::config_store;
+use foxide2k::config_store;
 
 /// The preferred bitrate in kbit/s: 96, 160 or 320.
 pub const BITRATE_KEY: &str = "foo_librespot.bitrate";
@@ -22,7 +22,7 @@ pub fn bitrate() -> Bitrate {
 	BITRATES.into_iter().find(|&bitrate| kbps(bitrate) == stored).unwrap_or_default()
 }
 
-pub fn set_bitrate(bitrate: Bitrate) -> oxibar::error::Result<()> {
+pub fn set_bitrate(bitrate: Bitrate) -> foxide2k::error::Result<()> {
 	config_store::set_int(BITRATE_KEY, kbps(bitrate))
 }
 
@@ -39,7 +39,7 @@ pub fn bitrate_at(index: usize) -> Bitrate {
 #[cfg(test)]
 mod tests {
 	use foo_librespot_core::audio::format::Bitrate;
-	use oxibar::testing::FakeApi;
+	use foxide2k::testing::FakeApi;
 
 	use super::{BITRATE_KEY, bitrate, bitrate_at, bitrate_index, set_bitrate};
 
@@ -64,7 +64,7 @@ mod tests {
 	fn unknown_stored_values_give_the_default() {
 		FakeApi::new().install();
 		for stored in [0, 128, 256, -1, 9999] {
-			oxibar::config_store::set_int(BITRATE_KEY, stored).unwrap();
+			foxide2k::config_store::set_int(BITRATE_KEY, stored).unwrap();
 			assert_eq!(bitrate(), Bitrate::Kbps320, "{stored}");
 		}
 	}

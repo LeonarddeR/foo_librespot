@@ -1,4 +1,4 @@
---out crates/oxibar/src/bindings.rs
+--out crates/foxide2k/src/bindings.rs
 
 --filter
     CONTEXT

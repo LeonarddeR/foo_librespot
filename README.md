@@ -5,13 +5,13 @@ You paste or drag a Spotify link into foobar2000, and the tracks play like any o
 It replaces foo_spotify, which stopped working when Spotify shut down libspotify.
 
 The component is written entirely in Rust.
-It uses [librespot](https://github.com/librespot-org/librespot) to talk to Spotify, and its own `oxibar` crate to talk to foobar2000.
+It uses [librespot](https://github.com/librespot-org/librespot) to talk to Spotify, and its own `foxide2k` crate to talk to foobar2000.
 
 ## Status
 
 Early development. Nothing is released yet.
 
-- `crates/oxibar`: the Rust layer that talks to foobar2000. It is proven in a real foobar2000 by the `foo_oxitone` test-tone component.
+- `crates/foxide2k`: the Rust layer that talks to foobar2000, named for foobar2000 and oxide, which is what rust is. It is proven in a real foobar2000 by the `foo_oxitone` test-tone component.
 - `crates/foo_librespot_core`: the Spotify side, built on librespot, with no foobar2000 knowledge. It logs in, turns links into track lists with metadata, and plays tracks as seekable PCM. Its `spotify_dev` example tries it against a real account.
 - `crates/foo_librespot`: the component. It adds Spotify track, album and playlist links as playlist entries with their metadata and ReplayGain, plays and seeks them, and shows album art. You log in from its preferences page.
 
@@ -49,4 +49,4 @@ Spotify can change its service at any time in a way that breaks or blocks it, an
 ## Licence
 
 foo_librespot is released under the MIT licence; see [LICENSE](LICENSE).
-The `oxibar` crate contains interface definitions transcribed from the foobar2000 SDK, which stay under the SDK's licence; see [crates/oxibar/sdk-license.txt](crates/oxibar/sdk-license.txt).
+The `foxide2k` crate contains interface definitions transcribed from the foobar2000 SDK, which stay under the SDK's licence; see [crates/foxide2k/sdk-license.txt](crates/foxide2k/sdk-license.txt).

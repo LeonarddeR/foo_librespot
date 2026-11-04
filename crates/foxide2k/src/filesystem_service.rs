@@ -26,7 +26,7 @@ use crate::guid::Guid;
 use crate::service::{ServiceImpl, ServicePtr, new_service};
 use crate::strings::set_string;
 
-/// A component's filesystem. OxiBar answers everything else the same way for every
+/// A component's filesystem. Foxide2k answers everything else the same way for every
 /// implementation: paths open as read-only stub files that read nothing, everything else that
 /// would change them is denied, and none of them is a directory.
 pub trait Filesystem: 'static {

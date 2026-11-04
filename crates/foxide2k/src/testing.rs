@@ -68,7 +68,7 @@ impl FakeApi {
 	pub fn new() -> &'static Self {
 		let console = Arc::new(Mutex::new(Vec::new()));
 		let profile =
-			std::env::temp_dir().join(format!("oxibar-fake-profile-{}", std::process::id()));
+			std::env::temp_dir().join(format!("foxide2k-fake-profile-{}", std::process::id()));
 		let profile_path =
 			CString::new(format!("file://{}", profile.display())).expect("no NUL in a temp path");
 		let api: &'static Self = Box::leak(Box::new(Self {
@@ -107,7 +107,7 @@ impl FakeApi {
 		self.profile_path.to_string_lossy().into_owned()
 	}
 
-	/// Makes this fake the host of the OxiBar inside the test binary itself, to test services
+	/// Makes this fake the host of the Foxide2k inside the test binary itself, to test services
 	/// in-process without loading a DLL.
 	pub fn install(&'static self) {
 		host::set_api(self.as_raw(), std::ptr::null_mut());

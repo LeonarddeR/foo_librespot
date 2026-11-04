@@ -17,7 +17,7 @@ impl Log for ConsoleLogger {
 
 	fn log(&self, record: &Record<'_>) {
 		if self.enabled(record.metadata()) {
-			oxibar::console::print(&format!("foo_librespot: {}", record.args()));
+			foxide2k::console::print(&format!("foo_librespot: {}", record.args()));
 		}
 	}
 

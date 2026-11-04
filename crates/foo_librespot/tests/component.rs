@@ -3,9 +3,9 @@
 
 mod common;
 
-use oxibar::abi::componentversion::IID as COMPONENTVERSION;
-use oxibar::abi::initquit::IID as INITQUIT;
-use oxibar::testing::{component_version_strings, on_init};
+use foxide2k::abi::componentversion::IID as COMPONENTVERSION;
+use foxide2k::abi::initquit::IID as INITQUIT;
+use foxide2k::testing::{component_version_strings, on_init};
 
 #[test]
 fn component_loads_and_reports_its_version() {
@@ -27,7 +27,7 @@ fn on_init_prints_loaded_line() {
 	let initquit = component.create_all(&INITQUIT).pop().expect("an initquit service");
 	on_init(&initquit);
 	assert!(
-		api.console_lines().iter().any(|line| line == "foo_librespot: loaded (OxiBar 0.1.0)"),
+		api.console_lines().iter().any(|line| line == "foo_librespot: loaded (Foxide2k 0.1.0)"),
 		"{:?}",
 		api.console_lines()
 	);
@@ -35,11 +35,11 @@ fn on_init_prints_loaded_line() {
 
 #[test]
 fn component_registers_all_services() {
-	use oxibar::abi::album_art::EXTRACTOR_IID as ALBUM_ART;
-	use oxibar::abi::filesystem::IID as FILESYSTEM;
-	use oxibar::abi::input::INPUT_ENTRY;
-	use oxibar::abi::playlist_loader::IID as PLAYLIST_LOADER;
-	use oxibar::abi::preferences::PAGE_IID as PREFERENCES_PAGE;
+	use foxide2k::abi::album_art::EXTRACTOR_IID as ALBUM_ART;
+	use foxide2k::abi::filesystem::IID as FILESYSTEM;
+	use foxide2k::abi::input::INPUT_ENTRY;
+	use foxide2k::abi::playlist_loader::IID as PLAYLIST_LOADER;
+	use foxide2k::abi::preferences::PAGE_IID as PREFERENCES_PAGE;
 
 	let (_, component) = common::load();
 	let factories = component.factories();
@@ -59,8 +59,8 @@ fn component_registers_all_services() {
 
 #[test]
 fn on_init_hints_at_foo_youtube_when_it_is_loaded() {
-	use oxibar::component::ComponentVersionService;
-	use oxibar::service::new_service;
+	use foxide2k::component::ComponentVersionService;
+	use foxide2k::service::new_service;
 
 	let (api, component) = common::load();
 	api.add_service(

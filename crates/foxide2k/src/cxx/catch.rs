@@ -14,7 +14,7 @@ use crate::bindings::Windows::Win32::{
 use crate::cxx::kind::ExceptionKind;
 use crate::cxx::rtti::{CatchableType, ThrowInfo};
 use crate::cxx::throw::throw;
-use crate::cxx::trampoline::{SLOT_OFFSET, landing, oxibar_cxx_try};
+use crate::cxx::trampoline::{SLOT_OFFSET, foxide2k_cxx_try, landing};
 
 /// The exception code `_CxxThrowException` raises: "msc" in ASCII.
 const CXX_EXCEPTION_CODE: u32 = 0xE06D7363;
@@ -29,7 +29,7 @@ const RUST_PANIC: &str = "rust_panic";
 /// A C++ exception thrown by foobar2000 and caught by [`try_host`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostException {
-	/// The most-derived class OxiBar recognises. A `std::exception` subclass it doesn't know,
+	/// The most-derived class Foxide2k recognises. A `std::exception` subclass it doesn't know,
 	/// or a type that isn't a `std::exception` at all, gives [`ExceptionKind::Std`].
 	pub kind: ExceptionKind,
 	/// The MSVC RTTI name of the class that was actually thrown.
@@ -85,7 +85,7 @@ fn try_host_impl<F: FnOnce() -> R, R>(f: F) -> Result<R, HostException> {
 	let mut payload = Payload { f: Some(f), result: None };
 	let mut slot = CatchSlot { caught: None };
 	let caught = unsafe {
-		oxibar_cxx_try((&raw mut payload).cast(), call_closure::<F, R>, (&raw mut slot).cast())
+		foxide2k_cxx_try((&raw mut payload).cast(), call_closure::<F, R>, (&raw mut slot).cast())
 	};
 	if caught == 0 {
 		Ok(payload.result.take().expect("the closure ran to completion"))
@@ -98,10 +98,10 @@ fn try_host_impl<F: FnOnce() -> R, R>(f: F) -> Result<R, HostException> {
 	}
 }
 
-/// The language-specific handler named in `oxibar_cxx_try`'s unwind info. Windows calls it while
+/// The language-specific handler named in `foxide2k_cxx_try`'s unwind info. Windows calls it while
 /// searching for a handler for an exception raised inside the closure.
 // "system-unwind": RtlUnwindEx unwinds from its caller, so it unwinds through this frame too.
-pub(crate) unsafe extern "system-unwind" fn oxibar_cxx_handler(
+pub(crate) unsafe extern "system-unwind" fn foxide2k_cxx_handler(
 	record: *mut EXCEPTION_RECORD,
 	establisher_frame: *mut c_void,
 	_context: *mut CONTEXT,
@@ -318,7 +318,7 @@ mod tests {
 	#[test]
 	#[ignore = "child process of access_violation_is_not_caught"]
 	fn child_access_violation() {
-		if std::env::var_os("OXIBAR_CHILD").is_none() {
+		if std::env::var_os("FOXIDE2K_CHILD").is_none() {
 			return;
 		}
 		crate::testing_support::suppress_crash_dialogs();
@@ -335,7 +335,7 @@ mod tests {
 				"--ignored",
 				"--nocapture",
 			])
-			.env("OXIBAR_CHILD", "1")
+			.env("FOXIDE2K_CHILD", "1")
 			.status()
 			.unwrap();
 		#[allow(clippy::cast_possible_wrap)]

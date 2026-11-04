@@ -1,4 +1,4 @@
-//! Helpers for OxiBar's own unit tests.
+//! Helpers for Foxide2k's own unit tests.
 
 use crate::bindings::Windows::Win32::{
 	SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode,

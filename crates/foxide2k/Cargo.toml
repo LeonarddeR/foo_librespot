@@ -1,5 +1,5 @@
 [package]
-name = "oxibar"
+name = "foxide2k"
 description = "Rust bindings for writing foobar2000 components"
 version.workspace = true
 edition.workspace = true

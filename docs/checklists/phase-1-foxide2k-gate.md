@@ -1,4 +1,4 @@
-# Phase 1 gate: OxiBar in a real foobar2000
+# Phase 1 gate: Foxide2k in a real foobar2000
 
 This checklist proves that a foobar2000 component written entirely in Rust works in the real player before any Spotify work starts.
 If any item fails, stop: record what happened and the console output here, and don't start phase 2.
@@ -20,10 +20,10 @@ These were checked by starting the portable foobar2000 from the command line and
 No audio was played.
 
 - [x] foobar2000 loads foo_oxitone with no error dialog.
-- [x] The console shows `foo_oxitone: loaded (OxiBar 0.1.0)`.
+- [x] The console shows `foo_oxitone: loaded (Foxide2k 0.1.0)`.
 - [x] `oxitone://440` appears in the playlist as "foo_oxitone - Test tone 440 Hz", length 0:10.
 - [x] Adding `oxitone://abc` adds an entry without info, and foobar2000 keeps running: it caught the `exception_io_unsupported_format` that foo_oxitone threw.
-- [x] Adding `oxitone://hostcheck` logs `foo_oxitone: caught .?AVexception_io_not_found@foobar2000_io@@ from foobar2000: Object not found`, and foobar2000 keeps running. That exception was thrown by foobar2000's own filesystem, caught by OxiBar's pure-Rust catcher and thrown back.
+- [x] Adding `oxitone://hostcheck` logs `foo_oxitone: caught .?AVexception_io_not_found@foobar2000_io@@ from foobar2000: Object not found`, and foobar2000 keeps running. That exception was thrown by foobar2000's own filesystem, caught by Foxide2k's pure-Rust catcher and thrown back.
 - [x] `foobar2000.exe /exit` closes foobar2000 cleanly, with no crash report in the profile.
 
 Expected noise: each `oxitone://` path also logs "Error walking directory (Invalid path)", because foobar2000 first tries an unknown scheme as a folder.

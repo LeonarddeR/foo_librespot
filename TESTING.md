@@ -30,14 +30,14 @@ Name the test after the behaviour it checks, not after the function it calls.
 Some behaviour can only be checked by letting a process crash, such as "`try_host` does not catch an access violation".
 Run the crashing part in a child process:
 
-1. Write the crashing test as `#[ignore]` and make it return at once unless the `OXIBAR_CHILD` environment variable is set. Call `testing_support::suppress_crash_dialogs()` first, so Windows shows no crash dialog.
-2. In the real test, start `std::env::current_exe()` with `--exact <full test path> --ignored --nocapture` and `OXIBAR_CHILD=1`, and assert its exit code, for example `0xC0000005` for an access violation.
+1. Write the crashing test as `#[ignore]` and make it return at once unless the `FOXIDE2K_CHILD` environment variable is set. Call `testing_support::suppress_crash_dialogs()` first, so Windows shows no crash dialog.
+2. In the real test, start `std::env::current_exe()` with `--exact <full test path> --ignored --nocapture` and `FOXIDE2K_CHILD=1`, and assert its exit code, for example `0xC0000005` for an access violation.
 
 `cxx::catch::tests::access_violation_is_not_caught` is the example.
 
 ## Testing a component DLL
 
-`oxibar::testing` (the `testing` feature) is a fake foobar2000.
+`foxide2k::testing` (the `testing` feature) is a fake foobar2000.
 `FakeApi` plays the host: it registers services, records console output and reports a temporary profile folder.
 `LoadedComponent::load` loads a built component DLL into it the way foobar2000 does: it calls `foobar2000_get_interface`, `set_library_path` and `services_init(true)`, and can then create every registered service.
 Tests call the services through their vtables, so they exercise the same code paths foobar2000 does.
@@ -53,7 +53,7 @@ Set `FOO_OXITONE_DLL_PATH` to test a DLL from somewhere else, such as a CI artif
 
 ## Tests that create windows
 
-Dialog tests create real, hidden windows, owned by `oxibar::testing::hidden_window()`, and some check which control has keyboard focus.
+Dialog tests create real, hidden windows, owned by `foxide2k::testing::hidden_window()`, and some check which control has keyboard focus.
 They run one at a time, in the `windows` test group in `.config/nextest.toml`: a window of another test process that takes the foreground takes focus from theirs.
 Add a new module with window tests to that group's filter.
 
@@ -67,7 +67,7 @@ pwsh tools/fb2k-portable.ps1 -Install foo_oxitone
 pwsh tools/fb2k-portable.ps1 -Run /add oxitone://440
 ```
 
-Each milestone has a manual checklist in `docs/checklists/`, starting with [the phase 1 gate](docs/checklists/phase-1-oxibar-gate.md).
+Each milestone has a manual checklist in `docs/checklists/`, starting with [the phase 1 gate](docs/checklists/phase-1-foxide2k-gate.md).
 
 ## Testing `foo_librespot_core`
 
@@ -91,7 +91,7 @@ The phase 2 checklist is in [docs/checklists/phase-2-core.md](docs/checklists/ph
 
 ## Testing `foo_librespot`
 
-The component's services run against a fake `Backend` in the unit tests, and its DLL tests load the built `foo_librespot.dll` into OxiBar's fake foobar2000; neither needs Spotify.
+The component's services run against a fake `Backend` in the unit tests, and its DLL tests load the built `foo_librespot.dll` into Foxide2k's fake foobar2000; neither needs Spotify.
 
 To try it in the portable foobar2000, install it, start it, and log in from File > Preferences > Tools > foo_librespot, or add a link and use the login window that opens:
 

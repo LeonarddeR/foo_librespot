@@ -1,4 +1,5 @@
-//! Rust bindings for writing foobar2000 2.x components without C++.
+//! Rust bindings for writing foobar2000 2.25+ components without C++. The name is foobar2000
+//! plus oxide, which is what rust is.
 
 pub mod abi;
 pub mod abort;
@@ -42,7 +43,7 @@ pub mod testing;
 #[cfg(test)]
 mod testing_support;
 
-/// This version of OxiBar.
+/// This version of Foxide2k.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The `FOOBAR2000_TARGET_VERSION` of the SDK these bindings are transcribed from (2.0).

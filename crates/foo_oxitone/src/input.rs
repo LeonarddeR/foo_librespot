@@ -2,21 +2,21 @@
 
 use std::ffi::CStr;
 
-use oxibar::abort::Abort;
-use oxibar::audio_chunk::{AudioChunk, CHANNEL_MASK_STEREO};
-use oxibar::console;
-use oxibar::cxx::ExceptionKind;
-use oxibar::error::{Error, Result};
-use oxibar::file_info::FileInfo;
-use oxibar::filesystem::get_stats;
-use oxibar::guid::Guid;
-use oxibar::host::host;
-use oxibar::input::{Input, OpenReason};
+use foxide2k::abort::Abort;
+use foxide2k::audio_chunk::{AudioChunk, CHANNEL_MASK_STEREO};
+use foxide2k::console;
+use foxide2k::cxx::ExceptionKind;
+use foxide2k::error::{Error, Result};
+use foxide2k::file_info::FileInfo;
+use foxide2k::filesystem::get_stats;
+use foxide2k::guid::Guid;
+use foxide2k::host::host;
+use foxide2k::input::{Input, OpenReason};
 
 use crate::tone::{CHUNK_FRAMES, DURATION_SECONDS, SAMPLE_RATE, Tone, ToneSpec, has_scheme, parse};
 
 /// Makes foobar2000 throw one of its own C++ exceptions, by asking its filesystem about a file
-/// that does not exist, and returns it as the error to throw back: proof that OxiBar can catch
+/// that does not exist, and returns it as the error to throw back: proof that Foxide2k can catch
 /// foobar2000's exceptions and rethrow them with their type intact.
 fn host_check(abort: &Abort) -> Error {
 	let profile = host().profile_path();

@@ -12,13 +12,13 @@ use std::fmt::Write as _;
 use foo_librespot_core::CoreError;
 use foo_librespot_core::link::{Link, LinkKind, PATH_SCHEME, parse_link, track_path};
 use foo_librespot_core::resolve::Skipped;
-use oxibar::abort::Abort;
-use oxibar::console;
-use oxibar::error::{Error, Result};
-use oxibar::file_info_impl::FileInfoImpl;
-use oxibar::filesystem_service::Filesystem;
-use oxibar::playlist_loader::{LoaderCallback, PlaylistLoader};
-use oxibar::popup::{self, PopupIcon};
+use foxide2k::abort::Abort;
+use foxide2k::console;
+use foxide2k::error::{Error, Result};
+use foxide2k::file_info_impl::FileInfoImpl;
+use foxide2k::filesystem_service::Filesystem;
+use foxide2k::playlist_loader::{LoaderCallback, PlaylistLoader};
+use foxide2k::popup::{self, PopupIcon};
 
 use crate::backend::backend;
 use crate::errors::host_error;
@@ -145,12 +145,12 @@ mod tests {
 
 	use foo_librespot_core::resolve::{Resolved, SkipReason, Skipped};
 	use foo_librespot_core::{CoreError, SpotifyId};
-	use oxibar::abi::file::OPEN_MODE_READ;
-	use oxibar::cxx::ExceptionKind;
-	use oxibar::filesystem_service::filesystem_service;
-	use oxibar::playlist_loader::playlist_loader_service;
-	use oxibar::popup::PopupIcon;
-	use oxibar::testing::{
+	use foxide2k::abi::file::OPEN_MODE_READ;
+	use foxide2k::cxx::ExceptionKind;
+	use foxide2k::filesystem_service::filesystem_service;
+	use foxide2k::playlist_loader::playlist_loader_service;
+	use foxide2k::popup::PopupIcon;
+	use foxide2k::testing::{
 		FakeAbort, FakeApi, FakeLoaderCallback, FilesystemHandle, PlaylistLoaderHandle,
 	};
 
@@ -380,7 +380,7 @@ mod tests {
 		assert_eq!(error.kind, ExceptionKind::Aborted);
 	}
 
-	fn import_album(abort: &FakeAbort) -> oxibar::error::Result<usize> {
+	fn import_album(abort: &FakeAbort) -> foxide2k::error::Result<usize> {
 		let (callback, record) = FakeLoaderCallback::new();
 		loader().open(&format!("spotify:album:{ALBUM}"), callback, abort)?;
 		Ok(record.lock().unwrap().entries.len())

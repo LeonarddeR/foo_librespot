@@ -30,7 +30,7 @@ pub enum ArtKind {
 	Disc,
 	Icon,
 	Artist,
-	/// A kind this version of OxiBar has no name for.
+	/// A kind this version of Foxide2k has no name for.
 	Other(Guid),
 }
 

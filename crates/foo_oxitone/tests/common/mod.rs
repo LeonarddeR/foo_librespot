@@ -1,8 +1,8 @@
-//! Loading the built foo_oxitone DLL into OxiBar's fake foobar2000.
+//! Loading the built foo_oxitone DLL into Foxide2k's fake foobar2000.
 
 use std::path::PathBuf;
 
-use oxibar::testing::{FakeApi, LoadedComponent};
+use foxide2k::testing::{FakeApi, LoadedComponent};
 
 /// The DLL under test: `FOO_OXITONE_DLL_PATH`, or the workspace's debug build.
 pub fn dll_path() -> PathBuf {

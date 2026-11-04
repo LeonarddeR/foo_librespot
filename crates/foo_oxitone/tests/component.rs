@@ -2,9 +2,9 @@
 
 mod common;
 
-use oxibar::abi::componentversion::IID as COMPONENTVERSION;
-use oxibar::abi::initquit::IID as INITQUIT;
-use oxibar::testing::{CountedService, component_version_strings, on_init};
+use foxide2k::abi::componentversion::IID as COMPONENTVERSION;
+use foxide2k::abi::initquit::IID as INITQUIT;
+use foxide2k::testing::{CountedService, component_version_strings, on_init};
 
 #[test]
 fn client_reports_version_81() {
@@ -38,7 +38,7 @@ fn on_init_prints_loaded_line() {
 	let initquit = component.create_all(&INITQUIT).pop().expect("an initquit service");
 	on_init(&initquit);
 	assert!(
-		api.console_lines().iter().any(|line| line == "foo_oxitone: loaded (OxiBar 0.1.0)"),
+		api.console_lines().iter().any(|line| line == "foo_oxitone: loaded (Foxide2k 0.1.0)"),
 		"{:?}",
 		api.console_lines()
 	);

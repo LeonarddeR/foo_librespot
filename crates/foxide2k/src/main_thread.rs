@@ -42,7 +42,7 @@ unsafe extern "C-unwind" fn callback_run(this: *mut ServiceBase) {
 			if let Some(work) = work
 				&& catch_unwind(AssertUnwindSafe(work)).is_err()
 			{
-				console::print("OxiBar: work on the main thread panicked");
+				console::print("Foxide2k: work on the main thread panicked");
 			}
 			Ok(())
 		});

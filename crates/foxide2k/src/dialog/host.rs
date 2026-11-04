@@ -242,7 +242,7 @@ fn call<R>(window: HWND, f: impl FnOnce(&mut dyn DialogHandler, &Dialog) -> R) -
 			call(window, DialogHandler::refresh);
 		}
 	}
-	result.map_err(|_| console::print("OxiBar: a dialog handler panicked")).ok()
+	result.map_err(|_| console::print("Foxide2k: a dialog handler panicked")).ok()
 }
 
 unsafe extern "system" fn dialog_proc(
@@ -253,7 +253,7 @@ unsafe extern "system" fn dialog_proc(
 ) -> isize {
 	catch_unwind(AssertUnwindSafe(|| handle(window, message, wparam, lparam))).unwrap_or_else(
 		|_| {
-			console::print("OxiBar: a dialog procedure panicked");
+			console::print("Foxide2k: a dialog procedure panicked");
 			0
 		},
 	)

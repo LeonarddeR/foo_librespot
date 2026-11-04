@@ -3,9 +3,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use foo_librespot_core::CoreError;
-use oxibar::console;
-use oxibar::cxx::ExceptionKind;
-use oxibar::error::Error;
+use foxide2k::console;
+use foxide2k::cxx::ExceptionKind;
+use foxide2k::error::Error;
 
 /// What the user reads when nobody is logged in.
 const NOT_LOGGED_IN: &str =
@@ -51,9 +51,9 @@ pub fn youtube_hint(components: &[String]) -> Option<String> {
 mod tests {
 	use foo_librespot_core::CoreError;
 	use foo_librespot_core::link::LinkError;
-	use oxibar::cxx::ExceptionKind;
+	use foxide2k::cxx::ExceptionKind;
 
-	use oxibar::testing::FakeApi;
+	use foxide2k::testing::FakeApi;
 
 	use super::{host_error, youtube_hint};
 

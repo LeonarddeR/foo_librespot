@@ -5,13 +5,13 @@ use std::ffi::CStr;
 use foo_librespot_core::audio::decoder::{CHANNELS, SAMPLE_RATE};
 use foo_librespot_core::link::parse_track_path;
 use foo_librespot_core::{CoreError, SpotifyId};
-use oxibar::abort::Abort;
-use oxibar::audio_chunk::{AudioChunk, CHANNEL_MASK_STEREO};
-use oxibar::cxx::ExceptionKind;
-use oxibar::error::{Error, Result};
-use oxibar::file_info::FileInfo;
-use oxibar::guid::Guid;
-use oxibar::input::{Input, OpenReason};
+use foxide2k::abort::Abort;
+use foxide2k::audio_chunk::{AudioChunk, CHANNEL_MASK_STEREO};
+use foxide2k::cxx::ExceptionKind;
+use foxide2k::error::{Error, Result};
+use foxide2k::file_info::FileInfo;
+use foxide2k::guid::Guid;
+use foxide2k::input::{Input, OpenReason};
 
 use crate::backend::backend;
 use crate::errors::host_error;
@@ -148,13 +148,13 @@ mod tests {
 	use std::time::{Duration, Instant};
 
 	use foo_librespot_core::CoreError;
-	use oxibar::abi::input::INFO_READER;
-	use oxibar::abi::live_info::SCOPE_INFO;
-	use oxibar::audio_chunk::CHANNEL_MASK_STEREO;
-	use oxibar::cxx::ExceptionKind;
-	use oxibar::file_info_impl::FileInfoImpl;
-	use oxibar::input::entry_service;
-	use oxibar::testing::{
+	use foxide2k::abi::input::INFO_READER;
+	use foxide2k::abi::live_info::SCOPE_INFO;
+	use foxide2k::audio_chunk::CHANNEL_MASK_STEREO;
+	use foxide2k::cxx::ExceptionKind;
+	use foxide2k::file_info_impl::FileInfoImpl;
+	use foxide2k::input::entry_service;
+	use foxide2k::testing::{
 		DecoderHandle, FakeAbort, FakeAudioChunk, FakeLiveInfoList, InputEntryHandle,
 	};
 

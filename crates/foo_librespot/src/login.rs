@@ -324,8 +324,8 @@ static CONTROLLER: OnceLock<LoginController> = OnceLock::new();
 pub fn controller() -> &'static LoginController {
 	CONTROLLER.get_or_init(|| {
 		LoginController::new(Box::new(|url: &str| {
-			if let Err(error) = oxibar::shell::open_url(url) {
-				oxibar::console::print(&format!("foo_librespot: {}", error.message));
+			if let Err(error) = foxide2k::shell::open_url(url) {
+				foxide2k::console::print(&format!("foo_librespot: {}", error.message));
 			}
 		}))
 	})

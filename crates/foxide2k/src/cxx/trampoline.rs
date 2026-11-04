@@ -6,10 +6,10 @@
 
 use std::ffi::c_void;
 
-use crate::cxx::catch::oxibar_cxx_handler;
+use crate::cxx::catch::foxide2k_cxx_handler;
 
-// oxibar_cxx_try(data, call, slot) calls `call(data)` and returns 0. If oxibar_cxx_handler catches
-// a C++ exception, it unwinds to oxibar_cxx_try_landing, which returns 1.
+// foxide2k_cxx_try(data, call, slot) calls `call(data)` and returns 0. If foxide2k_cxx_handler catches
+// a C++ exception, it unwinds to foxide2k_cxx_try_landing, which returns 1.
 //
 // Frame: `sub rsp, 40` keeps rsp 16-byte aligned at the call and reserves the 32-byte home area
 // plus one slot at [rsp + 32] for `slot`. With no frame pointer, the establisher frame the
@@ -17,13 +17,13 @@ use crate::cxx::catch::oxibar_cxx_handler;
 std::arch::global_asm!(
 	".text",
 	".p2align 4",
-	".globl oxibar_cxx_try",
-	".def oxibar_cxx_try",
+	".globl foxide2k_cxx_try",
+	".def foxide2k_cxx_try",
 	".scl 2",
 	".type 32",
 	".endef",
-	"oxibar_cxx_try:",
-	".seh_proc oxibar_cxx_try",
+	"foxide2k_cxx_try:",
+	".seh_proc foxide2k_cxx_try",
 	".seh_handler {handler}, @except",
 	"sub rsp, 40",
 	".seh_stackalloc 40",
@@ -34,19 +34,19 @@ std::arch::global_asm!(
 	"2:",
 	"add rsp, 40",
 	"ret",
-	".globl oxibar_cxx_try_landing",
-	"oxibar_cxx_try_landing:",
+	".globl foxide2k_cxx_try_landing",
+	"foxide2k_cxx_try_landing:",
 	"mov eax, 1",
 	"jmp 2b",
 	".seh_endproc",
-	handler = sym oxibar_cxx_handler,
+	handler = sym foxide2k_cxx_handler,
 );
 
 /// Where the handler finds the `slot` argument, relative to the establisher frame.
 pub(crate) const SLOT_OFFSET: usize = 32;
 
 unsafe extern "C-unwind" {
-	pub(crate) fn oxibar_cxx_try(
+	pub(crate) fn foxide2k_cxx_try(
 		data: *mut c_void,
 		call: unsafe extern "C-unwind" fn(*mut c_void),
 		slot: *mut c_void,
@@ -54,10 +54,10 @@ unsafe extern "C-unwind" {
 }
 
 unsafe extern "C" {
-	static oxibar_cxx_try_landing: u8;
+	static foxide2k_cxx_try_landing: u8;
 }
 
 /// The address `RtlUnwindEx` resumes at after a catch.
 pub(crate) fn landing() -> *const c_void {
-	(&raw const oxibar_cxx_try_landing).cast()
+	(&raw const foxide2k_cxx_try_landing).cast()
 }

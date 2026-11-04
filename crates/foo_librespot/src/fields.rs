@@ -2,9 +2,9 @@
 
 use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::replaygain::ReplayGain;
-use oxibar::abi::file_info::ReplayGainInfo;
-use oxibar::error::Result;
-use oxibar::file_info::FileInfo;
+use foxide2k::abi::file_info::ReplayGainInfo;
+use foxide2k::error::Result;
+use foxide2k::file_info::FileInfo;
 
 /// Writes `track` into `info` with foobar2000's standard field names, so existing layouts,
 /// sorting and ReplayGain work as for any local file.
@@ -53,7 +53,7 @@ pub fn replaygain_info(gain: ReplayGain) -> ReplayGainInfo {
 
 #[cfg(test)]
 mod tests {
-	use oxibar::file_info_impl::FileInfoImpl;
+	use foxide2k::file_info_impl::FileInfoImpl;
 
 	use super::fill_info;
 	use crate::testing::{track_id, track_info};
@@ -91,6 +91,6 @@ mod tests {
 		assert!(info.meta("TRACKNUMBER").is_empty());
 		assert!(info.meta("DISCNUMBER").is_empty());
 		assert!(info.meta("DATE").is_empty());
-		assert_eq!(info.replaygain(), oxibar::file_info_impl::REPLAYGAIN_UNSET);
+		assert_eq!(info.replaygain(), foxide2k::file_info_impl::REPLAYGAIN_UNSET);
 	}
 }

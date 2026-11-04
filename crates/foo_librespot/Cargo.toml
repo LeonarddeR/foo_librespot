@@ -14,10 +14,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 foo_librespot_core = { path = "../foo_librespot_core" }
 log = { workspace = true }
-oxibar = { path = "../oxibar" }
+foxide2k = { path = "../foxide2k" }
 
 [dev-dependencies]
-oxibar = { path = "../oxibar", features = ["testing"] }
+foxide2k = { path = "../foxide2k", features = ["testing"] }
 
 [lints]
 workspace = true

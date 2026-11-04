@@ -356,7 +356,7 @@ pub fn cancel_login_when_started(fake: &FakeBackend) -> std::thread::JoinHandle<
 }
 
 /// Lets another thread press Stop on a `FakeAbort` the test keeps alive.
-struct StopLater(*const oxibar::testing::FakeAbort);
+struct StopLater(*const foxide2k::testing::FakeAbort);
 
 // SAFETY: every test joins the thread before its FakeAbort is dropped.
 unsafe impl Send for StopLater {}
@@ -364,7 +364,7 @@ unsafe impl Send for StopLater {}
 /// Presses Stop on `abort` after `delay`, from another thread. Join the handle before `abort`
 /// goes out of scope.
 pub fn stop_after(
-	abort: &oxibar::testing::FakeAbort,
+	abort: &foxide2k::testing::FakeAbort,
 	delay: std::time::Duration,
 ) -> std::thread::JoinHandle<()> {
 	let target = StopLater(abort);

@@ -49,7 +49,7 @@ Checked by starting the portable foobar2000 from the command line and reading it
 ## Found
 
 - With foo_youtube installed (as in the maintainer's own profile), an `open.spotify.com` album link becomes one dead `fy+https://open.spotify.com/…` entry: foo_youtube claims the link first and refuses it ("[DRM] The requested site is known to use DRM protection"). `spotify:` URIs are not affected. To fix before release.
-- The console shows `foo_librespot: loaded (OxiBar 0.1.0)` and `foo_librespot: added 35 tracks from Keith & Kristyn Getty - Give Us This Day Our Daily Hymns`.
+- The console shows `foo_librespot: loaded (Foxide2k 0.1.0)` and `foo_librespot: added 35 tracks from Keith & Kristyn Getty - Give Us This Day Our Daily Hymns`.
 
 ## Result
 

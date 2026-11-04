@@ -1,6 +1,6 @@
 [package]
 name = "foo_oxitone"
-description = "A test-tone foobar2000 component that proves the OxiBar bindings"
+description = "A test-tone foobar2000 component that proves the Foxide2k bindings"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,10 +12,10 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-oxibar = { path = "../oxibar" }
+foxide2k = { path = "../foxide2k" }
 
 [dev-dependencies]
-oxibar = { path = "../oxibar", features = ["testing"] }
+foxide2k = { path = "../foxide2k", features = ["testing"] }
 
 [lints]
 workspace = true

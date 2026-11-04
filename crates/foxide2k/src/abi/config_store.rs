@@ -21,20 +21,31 @@
 // CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! `abort_callback` (`SDK\abort_callback.h:24-73`): foobar2000's cancellation signal. Its
-//! `check()` helper is inline in the SDK and throws `exception_aborted`; OxiBar reimplements it
-//! as a `Result` instead.
+//! `fb2k::configStore` (`SDK\configStore.h:22-36`): foobar2000's own settings store. Only the
+//! slots up to `setConfigInt` are declared; Foxide2k calls no later ones.
 
-use std::ffi::c_void;
+use std::ffi::c_char;
+
+use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
+use crate::guid::Guid;
+
+pub const IID: Guid = Guid::from_u128(0x97aad7fd_b216_4286_9eb3_188d35ee841c);
 
 #[repr(C)]
-pub struct AbortCallback {
-	pub vtbl: *const AbortCallbackVtbl,
-}
-
-#[repr(C)]
-pub struct AbortCallbackVtbl {
-	pub is_aborting: unsafe extern "C-unwind" fn(this: *const AbortCallback) -> bool,
-	/// A Windows event `HANDLE` that becomes signalled on abort. Must not be closed, set or reset.
-	pub get_abort_event: unsafe extern "C-unwind" fn(this: *const AbortCallback) -> *mut c_void,
+pub struct ConfigStoreVtbl {
+	pub base: ServiceBaseVtbl,
+	/// `fb2k::objRef acquireTransactionScope()`, returned through a hidden pointer. Not called.
+	pub acquire_transaction_scope: unsafe extern "C-unwind" fn(
+		this: *mut ServiceBase,
+		ret: *mut *mut ServiceBase,
+	) -> *mut *mut ServiceBase,
+	/// `void commitBlocking()`. Not called.
+	pub commit_blocking: unsafe extern "C-unwind" fn(this: *mut ServiceBase),
+	pub get_config_int: unsafe extern "C-unwind" fn(
+		this: *mut ServiceBase,
+		name: *const c_char,
+		default: i64,
+	) -> i64,
+	pub set_config_int:
+		unsafe extern "C-unwind" fn(this: *mut ServiceBase, name: *const c_char, value: i64),
 }

@@ -2,14 +2,14 @@
 //! account button, the code and page fields and "Open browser". They show the login
 //! controller's state and follow it as it changes.
 
-use oxibar::console;
-use oxibar::dialog::accessibility::{announce, make_live_region};
-use oxibar::dialog::host::{Dialog, refresh_poster};
-use oxibar::dialog::notify::{BN_CLICKED, BN_SETFOCUS, EN_SETFOCUS};
-use oxibar::dialog::style::{
+use foxide2k::console;
+use foxide2k::dialog::accessibility::{announce, make_live_region};
+use foxide2k::dialog::host::{Dialog, refresh_poster};
+use foxide2k::dialog::notify::{BN_CLICKED, BN_SETFOCUS, EN_SETFOCUS};
+use foxide2k::dialog::style::{
 	BS_NOTIFY, ES_AUTOHSCROLL, ES_READONLY, SS_NOPREFIX, WS_BORDER, WS_TABSTOP,
 };
-use oxibar::dialog::template::{ControlClass, DialogItem};
+use foxide2k::dialog::template::{ControlClass, DialogItem};
 
 use crate::login::{controller, view};
 

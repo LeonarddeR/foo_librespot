@@ -31,7 +31,7 @@ pub struct Factory {
 	instance: Instance,
 }
 
-// foobar2000 reads factories from any thread; OxiBar only writes `next` while linking the list
+// foobar2000 reads factories from any thread; Foxide2k only writes `next` while linking the list
 // in the entry point, before foobar2000 has seen it.
 unsafe impl Sync for Factory {}
 
@@ -189,7 +189,7 @@ unsafe extern "C-unwind" fn get_service_list(_this: *mut Client) -> *mut Factory
 	SERVICE_LIST.load(Ordering::Acquire)
 }
 
-// OxiBar keeps no configuration in foobar2000's legacy cfg_var stream.
+// Foxide2k keeps no configuration in foobar2000's legacy cfg_var stream.
 unsafe extern "C-unwind" fn get_config(
 	_this: *mut Client,
 	_stream: *mut c_void,
@@ -236,7 +236,7 @@ unsafe extern "C-unwind" fn is_debug(_this: *mut Client) -> bool {
 /// component's `componentversion` plus the given service factories.
 ///
 /// ```ignore
-/// oxibar::component! {
+/// foxide2k::component! {
 ///     name: "foo_example",
 ///     version: env!("CARGO_PKG_VERSION"),
 ///     about: "What it does.",

@@ -18,14 +18,14 @@ mod settings;
 mod testing;
 mod worker;
 
-use oxibar::album_art::album_art_factory;
-use oxibar::component::Factory;
-use oxibar::filesystem_service::filesystem_factory;
-use oxibar::initquit::{InitQuit, InitQuitService};
-use oxibar::input::input_factory;
-use oxibar::playlist_loader::playlist_loader_factory;
-use oxibar::preferences::preferences_page_factory;
-use oxibar::service::Singleton;
+use foxide2k::album_art::album_art_factory;
+use foxide2k::component::Factory;
+use foxide2k::filesystem_service::filesystem_factory;
+use foxide2k::initquit::{InitQuit, InitQuitService};
+use foxide2k::input::input_factory;
+use foxide2k::playlist_loader::playlist_loader_factory;
+use foxide2k::preferences::preferences_page_factory;
+use foxide2k::service::Singleton;
 
 const ABOUT: &str = "Plays Spotify tracks, albums and playlists from their links. Needs Spotify Premium.
 
@@ -38,9 +38,9 @@ struct Startup;
 impl InitQuit for Startup {
 	fn on_init(&self) {
 		logging::init();
-		log::info!("loaded (OxiBar {})", oxibar::VERSION);
-		if let Some(hint) = errors::youtube_hint(&oxibar::host::host().loaded_components()) {
-			oxibar::console::print(&format!("foo_librespot: {hint}"));
+		log::info!("loaded (Foxide2k {})", foxide2k::VERSION);
+		if let Some(hint) = errors::youtube_hint(&foxide2k::host::host().loaded_components()) {
+			foxide2k::console::print(&format!("foo_librespot: {hint}"));
 		}
 	}
 
@@ -51,7 +51,7 @@ impl InitQuit for Startup {
 
 static STARTUP: Singleton<InitQuitService<Startup>> = Singleton::new(InitQuitService::new(Startup));
 
-oxibar::component! {
+foxide2k::component! {
 	name: "foo_librespot",
 	version: env!("CARGO_PKG_VERSION"),
 	about: ABOUT,

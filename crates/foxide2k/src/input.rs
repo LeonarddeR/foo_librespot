@@ -358,7 +358,7 @@ unsafe extern "C-unwind" fn can_seek<T: Input>(this: *mut ServiceBase) -> bool {
 	unsafe { guard(|| Ok(Decoder::<T>::of(this).input()?.can_seek())) }
 }
 
-/// Replaced by `poll_live_info` in foobar2000 2.25, the oldest version OxiBar supports.
+/// Replaced by `poll_live_info` in foobar2000 2.25, the oldest version Foxide2k supports.
 unsafe extern "C-unwind" fn get_dynamic_info(
 	_this: *mut ServiceBase,
 	_out: *mut RawFileInfo,
@@ -444,7 +444,7 @@ mod tests {
 
 	impl Input for TestInput {
 		const GUID: Guid = TEST_GUID;
-		const NAME: &'static CStr = c"OxiBar test input";
+		const NAME: &'static CStr = c"Foxide2k test input";
 
 		fn is_our_path(path: &str) -> bool {
 			path.starts_with("test://")
@@ -511,7 +511,7 @@ mod tests {
 	fn entry_reports_guid_name_and_flags() {
 		let entry = entry();
 		assert_eq!(entry.guid(), TEST_GUID);
-		assert_eq!(entry.name(), "OxiBar test input");
+		assert_eq!(entry.name(), "Foxide2k test input");
 		assert_eq!(entry.flags(), 0);
 		assert_eq!(entry.preferences_guid(), Guid::NULL);
 		assert!(!entry.is_low_merit());

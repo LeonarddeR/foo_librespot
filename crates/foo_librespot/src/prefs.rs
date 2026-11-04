@@ -3,17 +3,17 @@
 use std::ffi::CStr;
 
 use foo_librespot_core::audio::format::Bitrate;
-use oxibar::abi::preferences::{GUID_TOOLS, STATE_CHANGED, STATE_RESETTABLE};
-use oxibar::console;
-use oxibar::dialog::host::{Dialog, DialogHandler, create_child_dialog};
-use oxibar::dialog::notify::CBN_SELCHANGE;
-use oxibar::dialog::style::{
+use foxide2k::abi::preferences::{GUID_TOOLS, STATE_CHANGED, STATE_RESETTABLE};
+use foxide2k::console;
+use foxide2k::dialog::host::{Dialog, DialogHandler, create_child_dialog};
+use foxide2k::dialog::notify::CBN_SELCHANGE;
+use foxide2k::dialog::style::{
 	BS_GROUPBOX, CBS_DROPDOWNLIST, DS_CONTROL, WS_CHILD, WS_TABSTOP, WS_VSCROLL,
 };
-use oxibar::dialog::template::{ControlClass, DialogTemplate};
-use oxibar::error::Result;
-use oxibar::guid::Guid;
-use oxibar::preferences::{PageChanged, PageInstance, PreferencesPage};
+use foxide2k::dialog::template::{ControlClass, DialogTemplate};
+use foxide2k::error::Result;
+use foxide2k::guid::Guid;
+use foxide2k::preferences::{PageChanged, PageInstance, PreferencesPage};
 
 use crate::account::{self, AccountPanel, LoginControls, item};
 use crate::settings::{self, bitrate_at, bitrate_index};
@@ -142,11 +142,11 @@ mod tests {
 	use std::sync::{Arc, Mutex, PoisonError};
 
 	use foo_librespot_core::login::DeviceCode;
-	use oxibar::abi::preferences::{GUID_TOOLS, STATE_CHANGED, STATE_RESETTABLE};
-	use oxibar::dialog::host::Dialog;
-	use oxibar::dialog::notify::{BN_CLICKED, CBN_SELCHANGE};
-	use oxibar::preferences::preferences_page_service;
-	use oxibar::testing::{
+	use foxide2k::abi::preferences::{GUID_TOOLS, STATE_CHANGED, STATE_RESETTABLE};
+	use foxide2k::dialog::host::Dialog;
+	use foxide2k::dialog::notify::{BN_CLICKED, CBN_SELCHANGE};
+	use foxide2k::preferences::preferences_page_service;
+	use foxide2k::testing::{
 		FakeApi, FakePageCallback, PageInstanceHandle, PreferencesHandle, hidden_window,
 		pump_messages, send_command, wants_all_keys,
 	};
@@ -362,7 +362,7 @@ mod tests {
 		assert_eq!(page.parent_guid(), GUID_TOOLS);
 		assert_eq!(
 			page.guid(),
-			oxibar::guid::Guid::from_u128(0xcbd58b0a_b483_4deb_a487_38dfdb3e106e)
+			foxide2k::guid::Guid::from_u128(0xcbd58b0a_b483_4deb_a487_38dfdb3e106e)
 		);
 		assert_eq!(page.help_url().as_deref(), Some("https://github.com/LeonarddeR/foo_librespot"));
 	}

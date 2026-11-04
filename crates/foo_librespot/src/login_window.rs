@@ -9,16 +9,16 @@
 
 use std::cell::Cell;
 
-use oxibar::dialog::host::{
+use foxide2k::dialog::host::{
 	Dialog, DialogHandler, create_modeless_dialog, destroy, refresh_poster,
 };
-use oxibar::dialog::notify::IDCANCEL;
-use oxibar::dialog::style::{
+use foxide2k::dialog::notify::IDCANCEL;
+use foxide2k::dialog::style::{
 	DS_CENTER, DS_MODALFRAME, WS_CAPTION, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
 };
-use oxibar::dialog::template::{ControlClass, DialogTemplate};
-use oxibar::error::Result;
-use oxibar::main_thread::{add_modeless, remove_modeless};
+use foxide2k::dialog::template::{ControlClass, DialogTemplate};
+use foxide2k::error::Result;
+use foxide2k::main_thread::{add_modeless, remove_modeless};
 
 use crate::account::{self, AccountPanel, CODE, LoginControls, item};
 use crate::login::{LoginState, controller};
@@ -121,9 +121,9 @@ impl Drop for LoginWindow {
 
 #[cfg(test)]
 mod tests {
-	use oxibar::dialog::host::destroy;
-	use oxibar::dialog::notify::IDCANCEL;
-	use oxibar::testing::{hidden_window, pump_messages, send_close};
+	use foxide2k::dialog::host::destroy;
+	use foxide2k::dialog::notify::IDCANCEL;
+	use foxide2k::testing::{hidden_window, pump_messages, send_close};
 
 	use foo_librespot_core::CoreError;
 	use foo_librespot_core::login::LoginError;

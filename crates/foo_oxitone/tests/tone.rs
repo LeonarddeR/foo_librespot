@@ -4,9 +4,9 @@ mod common;
 
 use std::f64::consts::PI;
 
-use oxibar::abi::input::{DECODER, INFO_READER, INPUT_ENTRY};
-use oxibar::cxx::ExceptionKind;
-use oxibar::testing::{
+use foxide2k::abi::input::{DECODER, INFO_READER, INPUT_ENTRY};
+use foxide2k::cxx::ExceptionKind;
+use foxide2k::testing::{
 	DecoderHandle, FakeAbort, FakeAudioChunk, FakeFileInfo, FakeLiveInfoList, InputEntryHandle,
 };
 
@@ -168,7 +168,7 @@ fn panicking_input_open_reaches_host_as_bug_check() {
 #[test]
 fn hostcheck_rethrows_host_not_found_and_logs() {
 	let (api, component) = common::load();
-	api.add_service(oxibar::abi::filesystem::IID, oxibar::testing::FakeFilesystem::service());
+	api.add_service(foxide2k::abi::filesystem::IID, foxide2k::testing::FakeFilesystem::service());
 	let entry = InputEntryHandle::new(
 		component.create_all(&INPUT_ENTRY).pop().expect("an input_entry service"),
 	);

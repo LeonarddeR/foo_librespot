@@ -1,10 +1,10 @@
 //! Album covers for Spotify tracks.
 
-use oxibar::abort::Abort;
-use oxibar::album_art::{AlbumArt, ArtKind};
-use oxibar::error::{Error, Result};
-use oxibar::guid::Guid;
-use oxibar::input::Input;
+use foxide2k::abort::Abort;
+use foxide2k::album_art::{AlbumArt, ArtKind};
+use foxide2k::error::{Error, Result};
+use foxide2k::guid::Guid;
+use foxide2k::input::Input;
 
 use crate::backend::backend;
 use crate::errors::host_error;
@@ -32,11 +32,11 @@ impl AlbumArt for SpotifyArt {
 
 #[cfg(test)]
 mod tests {
-	use oxibar::abi::album_art::{ARTIST, COVER_BACK, COVER_FRONT};
-	use oxibar::album_art::album_art_service;
-	use oxibar::cxx::ExceptionKind;
-	use oxibar::input::Input;
-	use oxibar::testing::AlbumArtHandle;
+	use foxide2k::abi::album_art::{ARTIST, COVER_BACK, COVER_FRONT};
+	use foxide2k::album_art::album_art_service;
+	use foxide2k::cxx::ExceptionKind;
+	use foxide2k::input::Input;
+	use foxide2k::testing::AlbumArtHandle;
 
 	use super::SpotifyArt;
 	use crate::backend;

@@ -5,9 +5,9 @@
 use std::sync::OnceLock;
 
 use foo_librespot_core::CoreError;
-use oxibar::console;
-use oxibar::host::host;
-use oxibar::main_thread;
+use foxide2k::console;
+use foxide2k::host::host;
+use foxide2k::main_thread;
 
 use crate::login::controller;
 use crate::login_window;
