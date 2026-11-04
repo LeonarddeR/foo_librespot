@@ -3,3 +3,4 @@
 pub mod decoder;
 pub mod format;
 pub mod header;
+pub mod track;
