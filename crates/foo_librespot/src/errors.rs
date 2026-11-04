@@ -9,7 +9,7 @@ use foxide2k::error::Error;
 
 /// What the user reads when nobody is logged in.
 const NOT_LOGGED_IN: &str =
-	"Not logged in to Spotify. Log in from File > Preferences > Tools > foo_librespot.";
+	"Not logged in to Spotify. Log in from File > Preferences > Tools > Spotify.";
 
 /// Whether the console was told about the missing login yet; once per session is enough.
 static TOLD_NOT_LOGGED_IN: AtomicBool = AtomicBool::new(false);
@@ -22,7 +22,7 @@ pub fn host_error(error: CoreError) -> Error {
 		CoreError::NotLoggedIn => {
 			if !TOLD_NOT_LOGGED_IN.swap(true, Ordering::SeqCst) {
 				console::print(
-					"foo_librespot: not logged in to Spotify; log in from File > Preferences > Tools > foo_librespot.",
+					"foo_librespot: not logged in to Spotify; log in from File > Preferences > Tools > Spotify.",
 				);
 			}
 			return Error::new(ExceptionKind::Io, NOT_LOGGED_IN);
@@ -63,7 +63,7 @@ mod tests {
 		assert_eq!(error.kind, ExceptionKind::Io);
 		assert_eq!(
 			error.message,
-			"Not logged in to Spotify. Log in from File > Preferences > Tools > foo_librespot."
+			"Not logged in to Spotify. Log in from File > Preferences > Tools > Spotify."
 		);
 	}
 
@@ -78,7 +78,7 @@ mod tests {
 			.iter()
 			.filter(|line| {
 				*line
-					== "foo_librespot: not logged in to Spotify; log in from File > Preferences > Tools > foo_librespot."
+					== "foo_librespot: not logged in to Spotify; log in from File > Preferences > Tools > Spotify."
 			})
 			.count();
 		assert_eq!(told, 1, "{:?}", api.console_lines());

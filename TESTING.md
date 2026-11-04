@@ -93,7 +93,7 @@ The phase 2 checklist is in [docs/checklists/phase-2-core.md](docs/checklists/ph
 
 The component's services run against a fake `Backend` in the unit tests, and its DLL tests load the built `foo_librespot.dll` into Foxide2k's fake foobar2000; neither needs Spotify.
 
-To try it in the portable foobar2000, install it, start it, and log in from File > Preferences > Tools > foo_librespot, or add a link and use the login window that opens:
+To try it in the portable foobar2000, install it, start it, and log in from File > Preferences > Tools > Spotify, or add a link and use the login window that opens:
 
 ```
 pwsh tools/fb2k-portable.ps1 -Install foo_librespot

@@ -58,7 +58,7 @@ pub struct SpotifyPage;
 impl PreferencesPage for SpotifyPage {
 	const GUID: Guid = Guid::from_u128(0xcbd58b0a_b483_4deb_a487_38dfdb3e106e);
 	const PARENT: Guid = GUID_TOOLS;
-	const NAME: &'static CStr = c"foo_librespot";
+	const NAME: &'static CStr = c"Spotify";
 	const HELP_URL: &'static str = "https://github.com/LeonarddeR/foo_librespot";
 
 	fn create(parent: isize, changed: PageChanged) -> Result<Box<dyn PageInstance>> {
@@ -358,7 +358,7 @@ mod tests {
 	#[test]
 	fn page_registers_under_tools() {
 		let page = PreferencesHandle::new(preferences_page_service::<SpotifyPage>());
-		assert_eq!(page.name(), "foo_librespot");
+		assert_eq!(page.name(), "Spotify");
 		assert_eq!(page.parent_guid(), GUID_TOOLS);
 		assert_eq!(
 			page.guid(),

@@ -294,7 +294,7 @@ mod tests {
 		let decoder = entry().open_v3(&INFO_READER, &path(), None, None, &abort).unwrap();
 		let error = decoder.get_info(0, &mut FileInfoImpl::new(), &abort).unwrap_err();
 		assert_eq!(error.kind, ExceptionKind::Io);
-		assert!(error.message.contains("Preferences > Tools > foo_librespot"), "{}", error.message);
+		assert!(error.message.contains("Preferences > Tools > Spotify"), "{}", error.message);
 	}
 
 	#[test]
@@ -325,7 +325,7 @@ mod tests {
 		assert_eq!(error.kind, ExceptionKind::Io);
 		assert_eq!(
 			error.message,
-			"Not logged in to Spotify. Log in from File > Preferences > Tools > foo_librespot."
+			"Not logged in to Spotify. Log in from File > Preferences > Tools > Spotify."
 		);
 	}
 

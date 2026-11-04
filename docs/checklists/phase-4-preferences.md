@@ -29,7 +29,7 @@ These were checked by reading foobar2000's windows through UI Automation (`winap
 
 ### The preferences page
 
-- [x] File > Preferences > Tools lists "foo_librespot", and selecting it opens the page without an error.
+- [x] File > Preferences > Tools lists "Spotify", and selecting it opens the page without an error.
 - [x] Each control has the name and role a screen reader announces:
   - Group "Account".
   - Text "Logged in to Spotify as …".
@@ -48,7 +48,7 @@ These were run with the stored login moved aside; it was restored byte-for-byte 
 - [x] Adding the album while logged out (`foobar2000.exe /add spotify:album:4wPtS24asgBAG4VOmYYB9O`) opens the "Log in to Spotify" window. foobar2000's "Processing Files" waits behind it.
 - [x] The window gets a real code from Spotify. The status reads "Press Open browser, or open the page below yourself, and confirm the code there." Open browser is enabled.
 - [x] No browser opened by itself.
-- [x] Pressing Close cancels the login and closes the window. foobar2000 then reports: "Not logged in to Spotify. Log in from File > Preferences > Tools > foo_librespot."
+- [x] Pressing Close cancels the login and closes the window. foobar2000 then reports: "Not logged in to Spotify. Log in from File > Preferences > Tools > Spotify."
 
 ### Links
 
@@ -57,7 +57,7 @@ These were run with the stored login moved aside; it was restored byte-for-byte 
 ### The console
 
 - [x] At startup, with foo_youtube loaded: "foo_librespot: foo_youtube may take open.spotify.com links before foo_librespot sees them. Add the line "deny spotify.com" to foo_youtube's host filter in its preferences; spotify: links work either way."
-- [x] Once per session while logged out: "foo_librespot: not logged in to Spotify; log in from File > Preferences > Tools > foo_librespot."
+- [x] Once per session while logged out: "foo_librespot: not logged in to Spotify; log in from File > Preferences > Tools > Spotify."
 
 ### Found
 
@@ -74,7 +74,7 @@ These were run with the stored login moved aside; it was restored byte-for-byte 
 Each step lists what you should hear.
 
 1. **Tab order on the page, logged in.**
-   - Open File > Preferences, go to Tools > foo_librespot, and press Tab from the page tree.
+   - Open File > Preferences, go to Tools > Spotify, and press Tab from the page tree.
    - You should hear "Log out", then "Preferred bitrate:" with its value. Nothing else: there is no login waiting.
    - Alt+O reaches Log out and Alt+P the bitrate.
 2. **Logging out and in.**
@@ -111,7 +111,7 @@ Each step lists what you should hear.
 
 foobar2000 shows errors from adding a link in the "Processing Files" window. It reports errors from playing a track itself. Both also go to the console (View > Console).
 
-- **"Not logged in to Spotify. Log in from File > Preferences > Tools > foo_librespot."** Log out, add a link, and close the login window with Escape (step 7). Playing a track after that shows it too.
+- **"Not logged in to Spotify. Log in from File > Preferences > Tools > Spotify."** Log out, add a link, and close the login window with Escape (step 7). Playing a track after that shows it too.
 - **The once-per-session console line "foo_librespot: not logged in to Spotify; …".** The same as above; it appears once per run of foobar2000.
 - **The skipped-items popup.** Add a Spotify playlist that holds something foo_librespot can't add: a podcast episode, a local file from the Spotify app, or a track that isn't available in your country. In the Spotify app, add a podcast episode and a Getty song to a new playlist, then add that playlist's link. One popup says "Added 1 track from …" and lists the episode with the reason. The console lists every skipped item.
 - **"Spotify: …" when the network is gone.** Turn off the network and play a Spotify track that hasn't played yet. foobar2000 reports the error instead of hanging; Stop works at once.
