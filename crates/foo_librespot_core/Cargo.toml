@@ -21,7 +21,8 @@ librespot-protocol = { workspace = true }
 log = { workspace = true }
 protobuf = { workspace = true }
 serde_json = { workspace = true }
-symphonia = { workspace = true, features = ["mp3", "ogg", "vorbis"] }
+# all-meta lets the probe skip ID3 and APE tags, which MP3 episodes can start with.
+symphonia = { workspace = true, features = ["all-meta", "mp3", "ogg", "vorbis"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 windows-core = { workspace = true }

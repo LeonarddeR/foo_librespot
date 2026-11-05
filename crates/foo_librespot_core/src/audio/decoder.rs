@@ -5,13 +5,14 @@
 
 use std::io;
 
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{Decoder, DecoderOptions};
-use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo};
+use symphonia::core::audio::Channels;
+use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
+use symphonia::core::errors::{Error as SymphoniaError, SeekErrorKind};
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::{MediaSource, MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
+use symphonia::core::units::Timestamp;
 
 use crate::CoreError;
 
@@ -28,15 +29,14 @@ const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 /// Decodes one track to interleaved stereo `f64` frames.
 pub struct PcmDecoder {
 	format: Box<dyn FormatReader>,
-	decoder: Box<dyn Decoder>,
+	decoder: Box<dyn AudioDecoder>,
 	track_id: u32,
 	total_frames: Option<u64>,
 	/// The frame the next `read` returns first.
 	position: u64,
-	/// Decoded samples at and after `position` not yet returned.
+	/// The last decoded packet's samples; those from `pending_start` on are not yet returned.
 	pending: Vec<f64>,
 	pending_start: usize,
-	samples: Option<SampleBuffer<f64>>,
 	ended: bool,
 	/// An error that came after some frames of a read; the next read returns it.
 	failed: Option<CoreError>,
@@ -52,16 +52,21 @@ impl PcmDecoder {
 		if let Some(mime_type) = mime_type {
 			hint.mime_type(mime_type);
 		}
-		let format_options = FormatOptions { enable_gapless: true, ..FormatOptions::default() };
-		let probed = symphonia::default::get_probe()
-			.format(&hint, stream, &format_options, &MetadataOptions::default())
+		let format = symphonia::default::get_probe()
+			.probe(&hint, stream, FormatOptions::default(), MetadataOptions::default())
 			.map_err(setup_error)?;
-		let format = probed.format;
-		let track =
-			format.default_track().ok_or_else(|| CoreError::Decode("no audio track".to_owned()))?;
-		let params = track.codec_params.clone();
+		let track = format
+			.default_track(TrackType::Audio)
+			.ok_or_else(|| CoreError::Decode("no audio track".to_owned()))?;
+		let params = track
+			.codec_params
+			.as_ref()
+			.and_then(|params| params.audio())
+			.ok_or_else(|| CoreError::Decode("no audio codec parameters".to_owned()))?;
 		let track_id = track.id;
-		let channels = params.channels.map(symphonia::core::audio::Channels::count);
+		// Without the frames the decoder drops for gapless playback.
+		let total_frames = track.num_frames;
+		let channels = params.channels.as_ref().map(Channels::count);
 		if params.sample_rate != Some(SAMPLE_RATE) || channels != Some(CHANNELS) {
 			return Err(CoreError::Decode(format!(
 				"expected {SAMPLE_RATE} Hz stereo, got {} Hz with {} channels",
@@ -69,18 +74,18 @@ impl PcmDecoder {
 				channels.map_or_else(|| "unknown".to_owned(), |count| count.to_string()),
 			)));
 		}
+		// Gapless by default: the decoder drops the encoder's delay and padding frames.
 		let decoder = symphonia::default::get_codecs()
-			.make(&params, &DecoderOptions::default())
+			.make_audio_decoder(params, &AudioDecoderOptions::default())
 			.map_err(setup_error)?;
 		Ok(Self {
 			format,
 			decoder,
 			track_id,
-			total_frames: params.n_frames,
+			total_frames,
 			position: 0,
 			pending: Vec::new(),
 			pending_start: 0,
-			samples: None,
 			ended: false,
 			failed: None,
 		})
@@ -142,15 +147,14 @@ impl PcmDecoder {
 			return Ok(());
 		}
 		self.ended = false;
-		let ts = frame.saturating_sub(PREROLL_FRAMES);
+		let ts =
+			Timestamp::new(i64::try_from(frame.saturating_sub(PREROLL_FRAMES)).unwrap_or(i64::MAX));
 		match self
 			.format
-			.seek(SeekMode::Accurate, SeekTo::TimeStamp { ts, track_id: self.track_id })
+			.seek(SeekMode::Accurate, SeekTo::Timestamp { ts, track_id: self.track_id })
 		{
 			Ok(_) => {}
-			Err(SymphoniaError::IoError(error)) if error.kind() == io::ErrorKind::UnexpectedEof => {
-				self.ended = true;
-			}
+			Err(SymphoniaError::SeekError(SeekErrorKind::OutOfRange)) => self.ended = true,
 			Err(error) => return Err(stream_error(error)),
 		}
 		self.decoder.reset();
@@ -162,15 +166,12 @@ impl PcmDecoder {
 	fn decode_next(&mut self) -> Result<bool, CoreError> {
 		loop {
 			let packet = match self.format.next_packet() {
-				Ok(packet) => packet,
-				Err(SymphoniaError::IoError(error))
-					if error.kind() == io::ErrorKind::UnexpectedEof =>
-				{
-					return Ok(false);
-				}
+				Ok(Some(packet)) => packet,
+				Ok(None) => return Ok(false),
+				// Running out of data before the end is an error, such as a cut-off download.
 				Err(error) => return Err(stream_error(error)),
 			};
-			if packet.track_id() != self.track_id {
+			if packet.track_id != self.track_id {
 				continue;
 			}
 			let decoded = match self.decoder.decode(&packet) {
@@ -183,21 +184,18 @@ impl PcmDecoder {
 				Err(error) => return Err(stream_error(error)),
 			};
 			let frames = decoded.frames() as u64;
-			let start = packet.ts();
+			// `pts` is where the packet's whole block starts; the decoder drops `trim_start` frames
+			// from its front, and a negative `pts` marks the encoder's delay frames.
+			let start = packet.pts.get().saturating_add_unsigned(packet.trim_start.get());
+			let start = u64::try_from(start).unwrap_or(0);
 			if frames == 0 || start + frames <= self.position {
 				continue;
 			}
-			let samples = match &mut self.samples {
-				Some(samples) if samples.capacity() >= decoded.capacity() * CHANNELS => samples,
-				slot => slot.insert(SampleBuffer::new(decoded.capacity() as u64, *decoded.spec())),
-			};
-			samples.copy_interleaved_ref(decoded);
+			decoded.copy_to_vec_interleaved(&mut self.pending);
 			// Normally `start == position`; after a seek the packet starts before the target.
 			self.position = self.position.max(start);
-			let skip = usize::try_from(self.position - start).unwrap_or(usize::MAX) * CHANNELS;
-			self.pending.clear();
-			self.pending.extend_from_slice(&samples.samples()[skip.min(samples.len())..]);
-			self.pending_start = 0;
+			let skip = usize::try_from(self.position - start).unwrap_or(usize::MAX);
+			self.pending_start = skip.saturating_mul(CHANNELS).min(self.pending.len());
 			return Ok(true);
 		}
 	}
