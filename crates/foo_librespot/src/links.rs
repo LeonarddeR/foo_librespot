@@ -122,7 +122,8 @@ impl PlaylistLoader for SpotifyLoader {
 			Err(LinkError::NotSpotify) => {
 				return Err(Error::unsupported_format(format!("not a Spotify link: {path}")));
 			}
-			// foobar2000 drops a loader's error without a word, so the user is told here.
+			// A Spotify link that can't be played. The user is told here, and the link counts as
+			// handled with nothing added: refused, foobar2000 would add it as an empty entry.
 			Err(error) => {
 				let link = as_pasted(path);
 				console::print(&format!("foo_librespot: {link}: {error}"));
@@ -134,7 +135,7 @@ impl PlaylistLoader for SpotifyLoader {
 				if let Err(shown) = popup::show("foo_librespot", &message, PopupIcon::Information) {
 					console::print(&format!("foo_librespot: {}", shown.message));
 				}
-				return Err(Error::unsupported_format(error.to_string()));
+				return Ok(());
 			}
 		};
 		callback.on_progress(path)?;
@@ -511,8 +512,9 @@ mod tests {
 		let stub = filesystem().open("spotify:local:a:b:c:180", OPEN_MODE_READ).unwrap();
 		assert_eq!(stub.content_type().as_deref(), Some(CONTENT_TYPE));
 		let (callback, record) = FakeLoaderCallback::new();
-		let error = loader().open(path, callback, &FakeAbort::new(false)).unwrap_err();
-		assert_eq!(error.kind, ExceptionKind::IoUnsupportedFormat, "{path}");
+		// Handled, with nothing added: refused as an unsupported format, foobar2000 tries other
+		// ways to add the link and ends up adding it as an empty entry.
+		loader().open(path, callback, &FakeAbort::new(false)).unwrap();
 		assert!(record.lock().unwrap().entries.is_empty());
 		let popups = api.popups();
 		assert_eq!(popups.len(), 1, "{path}: {popups:?}");
