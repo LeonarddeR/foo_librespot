@@ -9,15 +9,12 @@ They are roughly in order of value to users.
   - foo_spotify answered foobar2000's request for an artist picture with the Spotify picture of the track's first artist.
   - foo_librespot only has a front cover. `SpotifyArt::query` in `crates/foo_librespot/src/art.rs` returns nothing for any other kind of art.
   - librespot's artist metadata has the pictures, in `Artist::portraits` and `Artist::portrait_group`.
-- [ ] Keep played audio in a cache on disk
-  - foo_spotify kept the audio it played in a cache in the foobar2000 profile. A track played before started from disk. Preferences limited the cache by size in MB (2048 by default) and by a share of the free disk space (10% by default).
-  - foo_librespot makes its librespot `Cache` without any folders (`crates/foo_librespot_core/src/session.rs`), so every play downloads the whole file again.
-  - librespot's `Cache::new` takes a folder for audio files and a size limit, and `AudioFile::open` reads from it and saves to it by itself.
-  - librespot stores the files as Spotify sends them, still encrypted, so a cache doesn't put decrypted audio in a file. Check this again before relying on it.
-- [ ] Connect through a proxy
+- [ ] Follow Windows' proxy settings
   - foo_spotify had a proxy address, user name and password in Advanced preferences, under Tools > Spotify Integration > Network. A change needed a restart.
-  - foo_librespot has no proxy setting. librespot's `SessionConfig` has a `proxy` field, which foo_librespot leaves empty.
-  - Every connection foo_librespot makes would need to use the proxy: the session, the login and the cover downloads.
+  - foo_librespot always connects directly. librespot's `SessionConfig` has a `proxy` field, which foo_librespot leaves empty.
+  - foo_librespot can't use foobar2000's own proxy setting. The SDK gives components no way to read it, and foobar2000's web client can't carry librespot's connection to Spotify, which isn't ordinary web traffic.
+  - The decision: follow Windows' proxy settings, as foobar2000 does when its proxy choice is "Use system proxy settings". There is no setting of our own. A proxy typed only into foobar2000's preferences is not used.
+  - Windows can name the proxy outright or through an automatic configuration script; WinHTTP's `WinHttpGetIEProxyConfigForCurrentUser` and `WinHttpGetProxyForUrl` answer both. Every connection foo_librespot makes must use it: the session, the login and the cover downloads.
 - [ ] Say when the account's explicit-content filter blocks a track
   - foo_spotify gave a reason when a track couldn't play: not available in your country, not available for your subscription type, or explicit while the account is set not to play explicit content.
   - foo_librespot gives the country reason when it adds a track. It doesn't check the explicit filter then: `available_for_user` in `crates/foo_librespot_core/src/metadata.rs` knows nothing about explicit content.
@@ -30,18 +27,67 @@ They are roughly in order of value to users.
 - [ ] Tell users about new versions
   - foo_spotify told Auto Check for Component Updates (foo_acfu) where its GitHub releases are, so users heard about new versions.
   - foo_librespot doesn't, so users only learn of a new version from the releases page.
-  - Alternatively, foobar2000's own component update check may cover it once the component is listed on foobar2000.org.
+  - The decision: list foo_librespot on foobar2000.org's component pages. foobar2000 now checks for updates of listed components by itself, so foo_acfu isn't needed.
 - [ ] A switch for detailed logging
   - foo_spotify had Advanced settings to log its Spotify requests, the responses and debug messages.
   - foo_librespot always logs its own messages from info level and librespot's from warning level (`crates/foo_librespot/src/logging.rs`). A user can't collect a detailed log for a bug report.
+  - Consider the `tracing` crate for this. librespot logs through the `log` crate, which `tracing` can take in, so one switch could raise the detail for both.
   - Detailed logging must still never show credentials: librespot logs access tokens at trace level.
-- [ ] Keep covers on disk
-  - foo_spotify kept album covers and artist pictures in a cache in the profile, so they showed without a network after the first time.
-  - foo_librespot downloads the cover every time foobar2000 asks for it (`Spotify::cover` in `crates/foo_librespot_core/src/spotify.rs`). Without a network there is no cover.
-- [ ] Tell former foo_spotify users where volume normalisation went
-  - foo_spotify had Spotify's own volume normalisation, on by default.
-  - foo_librespot gives each track Spotify's loudness as ReplayGain, so foobar2000's ReplayGain playback setting decides whether volume is adjusted. A user who relied on foo_spotify's default hears unadjusted volume until they set it.
-  - A line in the README would do.
+- [ ] Download each album cover once
+  - foo_librespot downloads the cover every time foobar2000 asks for it (`Spotify::cover` in `crates/foo_librespot_core/src/spotify.rs`). An album's tracks all share the album's cover, so playing a 12-track album downloads the same image at least 12 times.
+  - Keeping downloaded covers in memory, by the image's ID, makes that one download per album while foobar2000 runs. The memory needs a limit.
+  - foo_spotify also kept covers on disk, so they showed offline. That part is ruled out.
+
+## Ideas from what librespot offers
+
+librespot can do more than foo_librespot uses. The ideas below stay within librespot's own Spotify connection, without Spotify's Web API.
+They are roughly in order of value to users, which is a guess.
+
+- [ ] Menu commands in foxide2k
+  - Several ideas below need a command in a menu: the right-click menu on playlist entries, or foobar2000's main menu. Some also need to create or change foobar2000 playlists.
+  - foxide2k has no bindings for menus or for foobar2000's playlist manager yet. This comes first for the items marked "needs menus".
+- [ ] Add your Liked Songs
+  - librespot's `SpClient::get_context` lists the Liked Songs of the logged-in user (`spotify:user:<user>:collection`), and the liked songs by one artist (`spotify:user:<user>:collection:artist:<id>`).
+  - Spotify's web link for Liked Songs is `https://open.spotify.com/collection/tracks`. foo_librespot's link parser doesn't know it. Accepting that link would need no menus.
+- [ ] More track info from the metadata we already fetch
+  - foo_librespot already fetches each track's and album's full metadata from Spotify, but writes only the title, artists, album, numbers, date, genre and ReplayGain.
+  - Spotify also gives:
+    - the recording's ISRC (`Track::external_ids`) and the album's barcode (`Album::external_ids`)
+    - the label (`Album::label`) and the copyright lines (`Album::copyrights`)
+    - whether the album is an album, a single or a compilation (`Album::album_type`)
+    - composers, conductors, orchestras, remixers and featured artists (`Track::artists_with_role`)
+    - whether the track is explicit (`Track::is_explicit`), and the language it is sung in (`Track::language_of_performance`)
+    - for episodes, the show's publisher and language (`Show::publisher`, `Show::language`)
+  - These need no extra requests. Field names should follow what other taggers use, such as `ISRC`, `BARCODE`, `LABEL`, `COPYRIGHT`, `RELEASETYPE`, `COMPOSER`, `CONDUCTOR` and `LANGUAGE`.
+- [ ] Add your own playlists (needs menus)
+  - librespot's `SpClient::get_rootlist` lists the logged-in user's playlists, with their names.
+  - A command could list them and add the chosen ones as foobar2000 playlists, each named after its Spotify playlist. Today a user has to copy each playlist's link from Spotify.
+  - This browses the user's library, which was out of scope when foo_librespot started.
+- [ ] Search Spotify
+  - librespot's `SpClient::get_context` also answers searches (`spotify:search:<words>`). librespot's notes say the results depend heavily on the query, so check how useful they are before building on them.
+  - A first step needs no menus: accept Spotify's search link, `https://open.spotify.com/search/<words>`, and add what it finds. A search window would need menus.
+- [ ] Radio from a track (needs menus)
+  - librespot's `SpClient::get_radio_for_track` gives a Spotify playlist of tracks like a given one, as Spotify's "Go to song radio" does.
+  - A right-click command on a Spotify track could add that radio.
+- [ ] An artist's whole discography
+  - An artist link adds the artist's popular tracks. librespot's `SpClient::get_context` for an artist gives the popular tracks and then pages of the artist's albums.
+  - Adding all the albums could be a second command or a setting. A discography can be large, so it may need a warning first.
+- [ ] Play from the Spotify app on foobar2000 (Spotify Connect)
+  - The `librespot-connect` crate makes a program show up as a Spotify Connect speaker, so the Spotify app on a phone can play on it.
+  - In foobar2000 this would mean letting the Spotify app drive foobar2000's playback. That is a big feature and a different way of using foobar2000; consider it last.
+  - It is feasible, but awkward. librespot's Connect code (`Spirc::new`) only works with librespot's own player, which decodes the audio itself and hands it to an output. foo_librespot would supply that output and pass the audio to foobar2000 as one endless stream of whatever the Spotify app picks, with the track info changing as tracks change. The Spotify tracks wouldn't be separate playlist entries.
+  - Logging in comes with it. The `librespot-discovery` crate is what makes foobar2000 show up in the Spotify app's device list on the same network. Picking foobar2000 there hands it the app's login, without a browser or a code. Windows Firewall will ask once whether foobar2000 may accept network connections.
+
+## Ruled out
+
+The maintainer ruled these out in November 2026.
+
+- Keeping played audio in a cache on disk, as foo_spotify did, so a replayed track starts from disk.
+- Keeping covers on disk, as foo_spotify did, so they show offline.
+- A README line telling former foo_spotify users to turn on foobar2000's ReplayGain, now that Spotify's own volume normalisation is gone.
+- Lyrics from Spotify in a `LYRICS` field (`SpClient::get_lyrics`).
+- Updating a foobar2000 playlist when its Spotify playlist changes (`Playlist::revision`, `Playlist::diff`).
+- Adding similar tracks when a playlist ends, as Spotify's Autoplay does (`SpClient::get_autoplay_context`).
 
 ## Can't be done
 
@@ -65,3 +111,9 @@ These depend on Spotify, not on foo_librespot. Last checked in November 2026.
 - One track at a time. libspotify could decode only one track at a time, so foo_spotify refused a second decoder. foo_librespot has no such limit.
 - Stream details. foo_spotify showed the channels, sample rate and bitrate while playing. foo_librespot sets the channels and sample rate when a track is added, and shows the codec and bitrate of the file Spotify sent while it plays.
 - Private and collaborative playlists. foo_spotify needed the Web API's permission to read them. foo_librespot reads playlists through the logged-in librespot session, and a private collaborative playlist imports.
+
+## Not checked
+
+- Silence between tracks. librespot's own player starts loading the next track 30 seconds before the current one ends. foo_librespot starts fetching a track only when foobar2000 opens it. Check whether an album that should play without breaks gets a short silence between Spotify tracks. If it does, foo_librespot could start fetching the next track early.
+- Spotify's made-for-you playlists, such as Discover Weekly and the Daily Mixes. They are playlists owned by Spotify. Check that their links add their tracks.
+- Audiobooks. Spotify marks an audiobook as a show (`Show::is_audiobook`) and its chapters as episodes (`Episode::is_audiobook_chapter`). Check what happens when you add an audiobook link.
