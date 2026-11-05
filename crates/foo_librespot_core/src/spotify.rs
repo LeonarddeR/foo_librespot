@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::CoreError;
-use crate::art::fetch_cover;
+use crate::art::{CoverCache, fetch_cover};
 use crate::audio::format::Bitrate;
 use crate::audio::track::{SpotifyTrack, fetch_track};
 use crate::link::{ItemId, Link};
@@ -30,6 +30,7 @@ pub struct Core {
 	sessions: Arc<SessionManager<LibrespotConnector>>,
 	cache: TrackCache,
 	totals: AlbumTotalsCache,
+	covers: CoverCache,
 }
 
 impl Core {
@@ -43,6 +44,7 @@ impl Core {
 			sessions: Arc::new(sessions),
 			cache: TrackCache::default(),
 			totals: AlbumTotalsCache::default(),
+			covers: CoverCache::default(),
 		})
 	}
 
@@ -154,7 +156,8 @@ impl Core {
 	}
 
 	/// The largest album cover of a track, or cover of an episode, as JPEG bytes; `None` when it
-	/// has none.
+	/// has none. Each image is downloaded once and kept in memory, up to
+	/// [`COVER_CACHE_LIMIT`](crate::art::COVER_CACHE_LIMIT) bytes.
 	pub fn cover(
 		&self,
 		id: ItemId,
@@ -164,15 +167,14 @@ impl Core {
 		let Some(cover) = largest_cover(&info.covers).cloned() else {
 			return Ok(None);
 		};
-		self.runtime
-			.block_on(
-				async {
-					let session = self.sessions.session().await?;
-					fetch_cover(&session, &cover).await
-				},
-				is_aborting,
-			)?
-			.map(Some)
+		let jpeg = self.runtime.block_on(
+			self.covers.get_or_fetch(cover.file_id, move || async move {
+				let session = self.sessions.session().await?;
+				fetch_cover(&session, &cover).await
+			}),
+			is_aborting,
+		)??;
+		Ok(Some(jpeg.to_vec()))
 	}
 
 	/// Stops the runtime; foobar2000 calls this when it quits.

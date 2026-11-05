@@ -8,7 +8,7 @@ The cheapest wins come first.
 
 ### Small changes
 
-- [ ] Download each album cover once
+- [x] Download each album cover once
   - foo_librespot downloads the cover every time foobar2000 asks for it (`Spotify::cover` in `crates/foo_librespot_core/src/spotify.rs`). An album's tracks all share the album's cover, so playing a 12-track album downloads the same image at least 12 times.
   - Keeping downloaded covers in memory, by the image's ID, makes that one download per album while foobar2000 runs. The memory needs a limit.
   - foo_spotify also kept covers on disk, so they showed offline. That part is ruled out.
