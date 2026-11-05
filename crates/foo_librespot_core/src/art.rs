@@ -115,15 +115,12 @@ impl StoredCovers {
 		if jpeg.len() > self.limit {
 			return;
 		}
-		while self.size + jpeg.len() > self.limit {
-			let Some(oldest) =
-				self.images.iter().min_by_key(|(_, cover)| cover.last_read).map(|(id, _)| *id)
-			else {
-				break;
-			};
-			if let Some(dropped) = self.images.remove(&oldest) {
-				self.size -= dropped.jpeg.len();
-			}
+		while self.size + jpeg.len() > self.limit
+			&& let Some((&oldest, cover)) =
+				self.images.iter().min_by_key(|(_, cover)| cover.last_read)
+		{
+			self.size -= cover.jpeg.len();
+			self.images.remove(&oldest);
 		}
 		let now = self.tick();
 		self.size += jpeg.len();
