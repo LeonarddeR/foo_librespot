@@ -88,10 +88,6 @@ Nobody has checked these yet. Any new work they show waits for a later round.
   - librespot's `SpClient::get_rootlist` lists the logged-in user's playlists, with their names.
   - A command could list them and add the chosen ones as foobar2000 playlists, each named after its Spotify playlist. Today a user has to copy each playlist's link from Spotify.
   - This browses the user's library, which was out of scope when foo_librespot started.
-- [ ] A native build for Windows on ARM (ARM64EC)
-  - foobar2000 for Windows on ARM is an ARM64EC program. It loads foo_librespot's x64 build and runs it through Windows' x64 emulation.
-  - An ARM64EC build would run without emulation. foxide2k's C++ exception catcher is written in x64 assembly (`crates/foxide2k/src/cxx/trampoline.rs`), so it needs an ARM64EC version first.
-  - Check how foobar2000 expects an ARM64EC build inside a `.fb2k-component` package, and whether librespot and its dependencies build for Rust's `arm64ec-pc-windows-msvc` target.
 - [ ] Play from the Spotify app on foobar2000 (Spotify Connect)
   - The `librespot-connect` crate makes a program show up as a Spotify Connect speaker, so the Spotify app on a phone can play on it.
   - In foobar2000 this would mean letting the Spotify app drive foobar2000's playback. That is a big feature and a different way of using foobar2000; consider it last.
@@ -117,6 +113,8 @@ The maintainer ruled these out in November 2026.
 - Lyrics from Spotify in a `LYRICS` field (`SpClient::get_lyrics`).
 - Updating a foobar2000 playlist when its Spotify playlist changes (`Playlist::revision`, `Playlist::diff`).
 - Adding similar tracks when a playlist ends, as Spotify's Autoplay does (`SpClient::get_autoplay_context`).
+- A native build for Windows on ARM (ARM64EC). foobar2000 for Windows on ARM runs the x64 build through emulation, and foo_librespot spends its time waiting on the network, so a native build gains nothing noticeable. librespot can't build for ARM64EC yet either: its `sysinfo` dependency pulls in `winapi` 0.3.9, which doesn't support it.
+- A version for foobar2000 for Mac. It would mean porting foxide2k's C++ interop, the preferences page, the login window and the stored login, for no gain worth that work.
 
 ## Can't be done
 
