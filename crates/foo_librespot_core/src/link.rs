@@ -114,6 +114,12 @@ pub fn parse_item(text: &str) -> Option<ItemId> {
 fn parse_uri(uri: &str) -> Result<Link, LinkError> {
 	// librespot only accepts the lowercase scheme.
 	let rest = strip_prefix_ignore_case(uri, "spotify:").ok_or(LinkError::NotSpotify)?;
+	// A profile, spotify:user:<name>. Old playlist URIs go on after the name.
+	let mut parts = rest.split(':');
+	if parts.next().is_some_and(|kind| kind.eq_ignore_ascii_case("user")) && parts.nth(1).is_none()
+	{
+		return Err(LinkError::Unsupported { kind: "user".to_owned() });
+	}
 	let uri = SpotifyUri::from_uri(&format!("spotify:{rest}")).map_err(|_| LinkError::InvalidId)?;
 	match uri {
 		SpotifyUri::Track { id } => Ok(Link { kind: LinkKind::Track, id }),
@@ -301,6 +307,9 @@ mod tests {
 		assert_eq!(parse_link("spotify:local:a:b:c:180"), unsupported("local"));
 		// A user's profile page; old playlist links also start with /user/<name>/.
 		assert_eq!(parse_link("https://open.spotify.com/user/someone"), unsupported("user"));
+		// The same profile as a URI, as Spotify's "Copy Spotify URI" gives it.
+		assert_eq!(parse_link("spotify:user:someone"), unsupported("user"));
+		assert_eq!(parse_link("sptf://spotify:user:someone"), unsupported("user"));
 	}
 
 	#[test]
