@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A track link is added with its title and other info straight away, and asks for a login when you're logged out, like an album link.
 - Importing a podcast skips the episodes Spotify blocks in your country or hasn't released yet, with the reason, as it already did for tracks. An episode that plays from the podcast's own website is still added.
 - A Spotify link that can't be played, such as a local file or a profile page, now shows a popup saying why, instead of doing nothing.
+- The popup after an import that skipped items is titled "Some Spotify items weren't added" instead of "foo_librespot", so a screen reader says what happened first.
 - Pressing Play right after a big import waits for Spotify's request limit instead of failing at once.
 - The Spotify page in Preferences says why the stored login can't be read as soon as it opens.
 - The Spotify page and the login window use the font of Windows' own dialogs.

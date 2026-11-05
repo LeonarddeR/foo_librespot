@@ -132,7 +132,9 @@ impl PlaylistLoader for SpotifyLoader {
 
 {error}."
 				);
-				if let Err(shown) = popup::show("foo_librespot", &message, PopupIcon::Information) {
+				if let Err(shown) =
+					popup::show("Can't add this Spotify link", &message, PopupIcon::Information)
+				{
 					console::print(&format!("foo_librespot: {}", shown.message));
 				}
 				return Ok(());
@@ -167,7 +169,9 @@ impl PlaylistLoader for SpotifyLoader {
 		));
 		if !resolved.skipped.is_empty() {
 			let message = skipped_message(added, source, &resolved.skipped);
-			if let Err(error) = popup::show("foo_librespot", &message, PopupIcon::Information) {
+			if let Err(error) =
+				popup::show("Some Spotify items weren't added", &message, PopupIcon::Information)
+			{
 				console::print(&format!("foo_librespot: {}", error.message));
 			}
 		}
@@ -518,6 +522,8 @@ mod tests {
 		assert!(record.lock().unwrap().entries.is_empty());
 		let popups = api.popups();
 		assert_eq!(popups.len(), 1, "{path}: {popups:?}");
+		// A screen reader reads the title first, so it says what happened.
+		assert_eq!(popups[0].0, "Can't add this Spotify link", "{path}");
 		assert!(popups[0].1.contains("can't be played"), "{path}: {popups:?}");
 		assert!(
 			api.console_lines().iter().any(|line| line.contains("can't be played")),
@@ -582,7 +588,7 @@ mod tests {
 		let popups = api.popups();
 		assert_eq!(popups.len(), 1, "{popups:?}");
 		let (title, message, icon) = &popups[0];
-		assert_eq!(title, "foo_librespot");
+		assert_eq!(title, "Some Spotify items weren't added");
 		assert_eq!(*icon, PopupIcon::Information);
 		assert_eq!(
 			message,
