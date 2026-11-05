@@ -40,6 +40,12 @@ fn canonical(link: &Link) -> String {
 	format!("{PATH_SCHEME}{}", link.uri().to_uri())
 }
 
+/// `path` without our `sptf://` scheme: the link as the user pasted it.
+fn as_pasted(path: &str) -> &str {
+	let path = path.trim();
+	strip_prefix_ignore_case(path, PATH_SCHEME).unwrap_or(path)
+}
+
 /// Claims `sptf://` paths, `spotify:` URIs and Spotify's web links.
 pub struct SpotifyFilesystem;
 
@@ -53,7 +59,13 @@ impl Filesystem for SpotifyFilesystem {
 	}
 
 	fn canonical_path(path: &str) -> Option<String> {
-		parse_link(path).ok().map(|link| canonical(&link))
+		if let Ok(link) = parse_link(path) {
+			return Some(canonical(&link));
+		}
+		// A spotify: link we can't play goes into our own scheme too, so no other component, such
+		// as foo_youtube, takes it before our loader says why it can't be played.
+		let link = as_pasted(path);
+		starts_with_ignore_case(link, "spotify:").then(|| format!("{PATH_SCHEME}{link}"))
 	}
 
 	fn display_path(path: &str) -> Option<String> {
@@ -112,9 +124,10 @@ impl PlaylistLoader for SpotifyLoader {
 			}
 			// foobar2000 drops a loader's error without a word, so the user is told here.
 			Err(error) => {
-				console::print(&format!("foo_librespot: {path}: {error}"));
+				let link = as_pasted(path);
+				console::print(&format!("foo_librespot: {link}: {error}"));
 				let message = format!(
-					"{path}
+					"{link}
 
 {error}."
 				);
@@ -267,6 +280,28 @@ mod tests {
 			filesystem.display_path(&canonical).as_deref(),
 			Some(&canonical["sptf://".len()..])
 		);
+	}
+
+	#[test]
+	fn a_spotify_uri_that_cant_be_played_stays_in_our_scheme() {
+		// Left as spotify:local:…, another component such as foo_youtube can take the link before
+		// our loader gets to say why it can't be played; sptf:// paths are only ours.
+		let filesystem = filesystem();
+		for path in ["spotify:local:a:b:c:180", "sptf://spotify:local:a:b:c:180"] {
+			assert_eq!(
+				filesystem.canonical_path(path).as_deref(),
+				Some("sptf://spotify:local:a:b:c:180"),
+				"{path}"
+			);
+		}
+		assert_eq!(
+			filesystem.display_path("sptf://spotify:user:someone").as_deref(),
+			Some("spotify:user:someone")
+		);
+		// foobar2000 asks every filesystem for a canonical path, also for links we don't claim:
+		// a profile page stays with foobar2000's HTTP filesystem.
+		assert!(!filesystem.is_our_path("https://open.spotify.com/user/someone"));
+		assert_eq!(filesystem.canonical_path("https://open.spotify.com/user/someone"), None);
 	}
 
 	#[test]
@@ -498,6 +533,28 @@ mod tests {
 	#[test]
 	fn a_user_profile_page_says_why_it_cant_be_played() {
 		says_why_it_cant_play("https://open.spotify.com/user/someone");
+	}
+
+	#[test]
+	fn a_user_profile_uri_says_why_it_cant_be_played() {
+		says_why_it_cant_play("sptf://spotify:user:someone");
+	}
+
+	#[test]
+	fn the_popup_names_the_link_as_pasted() {
+		// The loader gets the canonical sptf:// path; the user pasted the spotify: link.
+		let api = FakeApi::new();
+		api.install();
+		let _fake = installed_backend();
+		let (callback, _record) = FakeLoaderCallback::new();
+		let _ = loader().open("sptf://spotify:local:a:b:c:180", callback, &FakeAbort::new(false));
+		let popups = api.popups();
+		assert!(popups[0].1.starts_with("spotify:local:a:b:c:180\n"), "{popups:?}");
+		let lines = api.console_lines();
+		assert!(
+			lines.iter().any(|line| line.starts_with("foo_librespot: spotify:local:a:b:c:180: ")),
+			"{lines:?}"
+		);
 	}
 
 	#[test]
