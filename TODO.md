@@ -97,6 +97,9 @@ Nobody has checked these yet. Any new work they show waits for a later round.
   - librespot's `SpClient::get_rootlist` lists the logged-in user's playlists, with their names.
   - A command could list them and add the chosen ones as foobar2000 playlists, each named after its Spotify playlist. Today a user has to copy each playlist's link from Spotify.
   - This browses the user's library, which was out of scope when foo_librespot started.
+- [ ] Open the current track's artist or album (needs menus)
+  - Commands under File > Spotify, such as "Open current artist" and "Open current album", would open the current Spotify track's artist or album as a foobar2000 playlist, the way an artist or album link does. Music you like would then be one command away, without copying a link from Spotify.
+  - Still to decide: whether "current" means the playing track or the selected one.
 - [ ] Play from the Spotify app on foobar2000 (Spotify Connect)
   - The `librespot-connect` crate makes a program show up as a Spotify Connect speaker, so the Spotify app on a phone can play on it.
   - In foobar2000 this would mean letting the Spotify app drive foobar2000's playback. That is a big feature and a different way of using foobar2000; consider it last.
