@@ -172,6 +172,7 @@ pub async fn resolve<S: MetadataSource>(
 	link: &Link,
 	artist_tracks: ArtistTracks,
 ) -> Result<Resolved, CoreError> {
+	let mut first_error = None;
 	let (name, entries) = match link {
 		Link::Id { kind: LinkKind::Track | LinkKind::Episode, .. } => {
 			(None, link.item().map(Entry::Item).into_iter().collect::<Vec<_>>())
@@ -190,7 +191,9 @@ pub async fn resolve<S: MetadataSource>(
 		}
 		Link::Id { kind: LinkKind::Artist, id } if artist_tracks == ArtistTracks::Discography => {
 			let (name, releases) = source.discography(*id).await?;
-			(Some(name), discography_entries(source, releases).await)
+			let (entries, error) = discography_entries(source, releases).await;
+			first_error = error;
+			(Some(name), entries)
 		}
 		Link::Id { kind: LinkKind::Artist, id } => {
 			let (name, ids) = source.artist(*id).await?;
@@ -223,7 +226,6 @@ pub async fn resolve<S: MetadataSource>(
 		.into_iter();
 
 	let mut resolved = Resolved { name, tracks: Vec::new(), skipped: Vec::new(), duplicates: 0 };
-	let mut first_error = None;
 	let discography = artist_tracks == ArtistTracks::Discography
 		&& matches!(link, Link::Id { kind: LinkKind::Artist, .. });
 	let mut recordings = HashSet::new();
@@ -279,30 +281,34 @@ fn playlist_entry(uri: &SpotifyUri) -> Entry {
 	Entry::Skip(Skipped { uri: uri.to_uri(), reason })
 }
 
-/// The tracks of `releases` in order, each release's in album order; a release that fails to
-/// load is skipped with its reason.
+/// The tracks of `releases` in order, each release's in album order, and the first error; a
+/// release that fails to load is skipped with its reason.
 async fn discography_entries<S: MetadataSource>(
 	source: &S,
 	releases: Vec<SpotifyId>,
-) -> Vec<Entry> {
+) -> (Vec<Entry>, Option<CoreError>) {
 	let albums: Vec<_> = stream::iter(releases)
 		.map(|release| async move { (release, source.album(release).await) })
 		.buffered(BATCH_CONCURRENCY)
 		.collect()
 		.await;
 	let mut entries = Vec::new();
+	let mut first_error = None;
 	for (release, album) in albums {
 		match album {
 			Ok((_, ids)) => {
 				entries.extend(ids.into_iter().map(|id| Entry::Item(ItemId::Track(id))));
 			}
-			Err(error) => entries.push(Entry::Skip(Skipped {
-				uri: SpotifyUri::Album { id: release }.to_uri(),
-				reason: SkipReason::Unavailable(error.to_string()),
-			})),
+			Err(error) => {
+				entries.push(Entry::Skip(Skipped {
+					uri: SpotifyUri::Album { id: release }.to_uri(),
+					reason: SkipReason::Unavailable(error.to_string()),
+				}));
+				first_error.get_or_insert(error);
+			}
 		}
 	}
-	entries
+	(entries, first_error)
 }
 
 /// `newest_first`, the order Spotify lists a show's episodes in, put in the order the show is
@@ -1177,6 +1183,16 @@ mod tests {
 		assert_eq!(titles(&resolved.tracks), ["Track 1", "Track 2", "Track 4"]);
 		assert_eq!(resolved.skipped.len(), 1);
 		assert_eq!(resolved.skipped[0].uri, SpotifyUri::Album { id: id(101) }.to_uri());
+	}
+
+	#[tokio::test]
+	async fn a_discography_whose_releases_all_fail_is_the_first_error() {
+		let mut source = getty_discography();
+		source.albums.insert(id(100), Err("first"));
+		source.albums.insert(id(101), Err("second"));
+		source.albums.insert(id(102), Err("third"));
+		let result = resolve(&source, &artist_link(), ArtistTracks::Discography).await;
+		assert!(matches!(&result, Err(CoreError::Unavailable(message)) if message == "first"));
 	}
 
 	fn group(bytes: &[u8]) -> AlbumGroupMessage {
