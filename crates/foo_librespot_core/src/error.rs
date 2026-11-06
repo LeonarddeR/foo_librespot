@@ -17,6 +17,10 @@ pub enum CoreError {
 	Link(#[from] LinkError),
 	#[error("{0}")]
 	Unavailable(String),
+	/// Spotify refused the key that decrypts a track's audio. The code is Spotify's own, which it
+	/// doesn't document. librespot asks again for about a minute before it passes on a code 2.
+	#[error("Spotify refused the key that decrypts this track (code {code})")]
+	KeyRefused { code: u16 },
 	#[error("{0}")]
 	Spotify(#[from] librespot_core::Error),
 	#[error("can't decode the audio: {0}")]

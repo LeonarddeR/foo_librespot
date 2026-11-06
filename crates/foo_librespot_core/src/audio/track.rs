@@ -2,6 +2,7 @@
 
 use librespot_audio::{AudioDecrypt, AudioFile, StreamLoaderController};
 use librespot_core::Session;
+use librespot_core::audio_key::AudioKeyError;
 use librespot_core::error::ErrorKind;
 use librespot_metadata::MetadataError;
 use librespot_metadata::audio::{AudioFileFormat, AudioFiles, AudioItem};
@@ -95,7 +96,7 @@ pub async fn fetch_track(
 					// The next call connects again instead of reusing the dead connection.
 					session.shutdown();
 				}
-				return Err(CoreError::Spotify(error));
+				return Err(key_error(error));
 			}
 		},
 	};
@@ -135,6 +136,14 @@ async fn find_alternative(session: &Session, alternatives: Vec<SpotifyUri>) -> O
 		}
 	}
 	None
+}
+
+/// librespot's error for an audio key, with Spotify's refusal told apart from other failures.
+fn key_error(error: librespot_core::Error) -> CoreError {
+	match error.error.downcast_ref::<AudioKeyError>() {
+		Some(AudioKeyError::AesKey(code)) => CoreError::KeyRefused { code: *code },
+		_ => CoreError::Spotify(error),
+	}
 }
 
 /// librespot's error for an audio item, with its refusal of an explicit item for an account set
@@ -225,9 +234,12 @@ mod tests {
 	use librespot_metadata::availability::UnavailabilityReason;
 	use librespot_metadata::track::Tracks;
 
+	use librespot_core::audio_key::AudioKeyError;
 	use librespot_core::error::ErrorKind;
 
-	use super::{KeyFailure, Playability, audio_item_error, on_key_failure, playability};
+	use super::{
+		KeyFailure, Playability, audio_item_error, key_error, on_key_failure, playability,
+	};
 	use crate::metadata::EXPLICIT_FILTERED;
 	use crate::{CoreError, FileId, SpotifyId, SpotifyUri};
 
@@ -317,6 +329,19 @@ mod tests {
 	fn other_audio_item_errors_stay_spotify_errors() {
 		let error =
 			audio_item_error(librespot_core::Error::unavailable(MetadataError::NonPlayable));
+		assert!(matches!(&error, CoreError::Spotify(_)), "{error:?}");
+	}
+
+	#[test]
+	fn a_refused_key_says_so_with_spotifys_code() {
+		let error = key_error(AudioKeyError::AesKey(1).into());
+		assert!(matches!(error, CoreError::KeyRefused { code: 1 }), "{error:?}");
+		assert_eq!(error.to_string(), "Spotify refused the key that decrypts this track (code 1)");
+	}
+
+	#[test]
+	fn other_key_errors_stay_spotify_errors() {
+		let error = key_error(AudioKeyError::Timeout.into());
 		assert!(matches!(&error, CoreError::Spotify(_)), "{error:?}");
 	}
 }

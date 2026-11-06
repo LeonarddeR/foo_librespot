@@ -13,6 +13,8 @@ use foxide2k::error::{Error, Result};
 use foxide2k::file_info::FileInfo;
 use foxide2k::guid::Guid;
 use foxide2k::input::{Input, OpenReason};
+use foxide2k::popup::{self, PopupIcon};
+use foxide2k::{main_thread, playback};
 
 use crate::backend::backend;
 use crate::errors::host_error;
@@ -25,6 +27,40 @@ const NOT_FOR_PLAYBACK: &str = "Spotify audio can only be played: foo_librespot 
 
 /// A tenth of a second per `decode_run`, as foobar2000's own inputs deliver.
 const CHUNK_FRAMES: usize = 4410;
+
+/// The title of the popup after Spotify refused a track's key; a screen reader reads it first.
+const REFUSED_KEY_TITLE: &str = "Spotify refused to play a track";
+
+/// Why playback stopped after Spotify refused the key with `code`.
+fn refused_key_message(code: u16) -> String {
+	// librespot asks again for about a minute before it passes on a code 2, which Spotify sends
+	// when many keys are asked for at once.
+	if code == 2 {
+		"Spotify refused the key that decrypts this track for about a minute, so playback stopped. Spotify does this when many tracks are asked for in a short time. Wait a few minutes before you press Play again.".to_owned()
+	} else {
+		format!(
+			"Spotify refused the key that decrypts this track (code {code}), so playback stopped. Spotify doesn't say why. If it refuses every track, it may be refusing this account."
+		)
+	}
+}
+
+/// Stops playback after Spotify refused a track's key, and says why. Otherwise foobar2000 opens
+/// the next track at once, Spotify refuses its key too, and so on through the playlist: a burst
+/// of requests that keeps the refusals going.
+fn stop_after_refused_key(code: u16) {
+	let message = refused_key_message(code);
+	let queued = main_thread::run(Box::new(move || {
+		if let Err(error) = playback::stop() {
+			log::warn!("couldn't stop playback after a refused key: {}", error.message);
+		}
+		if let Err(error) = popup::show(REFUSED_KEY_TITLE, &message, PopupIcon::Error) {
+			log::warn!("couldn't say why playback stopped: {}", error.message);
+		}
+	}));
+	if let Err(error) = queued {
+		log::warn!("couldn't stop playback after a refused key: {}", error.message);
+	}
+}
 
 /// The track or episode `path` names (see [`parse_item`]), or the error foobar2000 expects for a
 /// path that isn't ours.
@@ -83,7 +119,12 @@ impl Input for SpotifyInput {
 				.and_then(|()| backend().open_track(self.id, &is_aborting)),
 			opened => opened,
 		}
-		.map_err(host_error)?;
+		.map_err(|error| {
+			if let CoreError::KeyRefused { code } = error {
+				stop_after_refused_key(code);
+			}
+			host_error(error)
+		})?;
 		self.track = Some(AbortableTrack::new(track).map_err(host_error)?);
 		Ok(())
 	}
@@ -142,10 +183,11 @@ mod tests {
 		INFO_READER, INPUT_FLAG_PLAYBACK, INPUT_FLAG_SIMPLEDECODE, INPUT_FLAG_TESTING_INTEGRITY,
 	};
 	use foxide2k::audio_chunk::CHANNEL_MASK_STEREO;
-	use foxide2k::cxx::ExceptionKind;
+	use foxide2k::cxx::{ExceptionKind, HostException};
 	use foxide2k::file_info_impl::FileInfoImpl;
 	use foxide2k::input::entry_service;
-	use foxide2k::testing::{DecoderHandle, FakeAbort, FakeAudioChunk, InputEntryHandle};
+	use foxide2k::popup::PopupIcon;
+	use foxide2k::testing::{DecoderHandle, FakeAbort, FakeApi, FakeAudioChunk, InputEntryHandle};
 
 	use super::SpotifyInput;
 
@@ -301,6 +343,64 @@ mod tests {
 		assert!(decoder.run(&mut FakeAudioChunk::new(), &abort).unwrap());
 		assert_eq!(prompt.shown(), 1);
 		assert_eq!(fake.logins_started(), 1);
+	}
+
+	/// Plays the track while the backend fails with `error`, and returns the error foobar2000 got.
+	fn play_failing_with(api: &'static FakeApi, error: fn() -> CoreError) -> HostException {
+		api.install();
+		let fake = installed_backend();
+		fake.fail_with(error);
+		let abort = FakeAbort::new(false);
+		let decoder = entry().open_for_decoding(&path(), &abort).unwrap();
+		decoder.initialize(0, INPUT_FLAG_PLAYBACK, &abort).unwrap_err()
+	}
+
+	#[test]
+	fn a_refused_key_stops_playback_and_says_why() {
+		let api = FakeApi::new();
+		let error = play_failing_with(api, || CoreError::KeyRefused { code: 1 });
+		assert_eq!(error.kind, ExceptionKind::Io);
+		assert_eq!(error.message, "Spotify refused the key that decrypts this track (code 1)");
+		// Stopping is main-thread work: otherwise foobar2000 opens the next track, whose key
+		// request Spotify refuses too, and so on through the playlist.
+		assert_eq!(api.playback_stops(), 0);
+		assert_eq!(api.run_main_thread(), 1);
+		assert_eq!(api.playback_stops(), 1);
+		assert_eq!(
+			api.popups(),
+			[(
+				"Spotify refused to play a track".to_owned(),
+				"Spotify refused the key that decrypts this track (code 1), so playback stopped. Spotify doesn't say why. If it refuses every track, it may be refusing this account.".to_owned(),
+				PopupIcon::Error
+			)]
+		);
+	}
+
+	#[test]
+	fn a_key_refused_for_a_minute_says_to_wait() {
+		let api = FakeApi::new();
+		play_failing_with(api, || CoreError::KeyRefused { code: 2 });
+		assert_eq!(api.run_main_thread(), 1);
+		assert_eq!(api.playback_stops(), 1);
+		assert_eq!(
+			api.popups(),
+			[(
+				"Spotify refused to play a track".to_owned(),
+				"Spotify refused the key that decrypts this track for about a minute, so playback stopped. Spotify does this when many tracks are asked for in a short time. Wait a few minutes before you press Play again.".to_owned(),
+				PopupIcon::Error
+			)]
+		);
+	}
+
+	#[test]
+	fn other_failures_leave_playback_to_foobar2000() {
+		let api = FakeApi::new();
+		play_failing_with(api, || {
+			CoreError::Unavailable("not available in your country (NL)".to_owned())
+		});
+		assert_eq!(api.run_main_thread(), 0);
+		assert_eq!(api.playback_stops(), 0);
+		assert!(api.popups().is_empty(), "{:?}", api.popups());
 	}
 
 	#[test]

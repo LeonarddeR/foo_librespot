@@ -31,6 +31,7 @@ pub fn host_error(error: CoreError) -> Error {
 		CoreError::Decode(_) => ExceptionKind::IoData,
 		CoreError::Link(_) => ExceptionKind::IoUnsupportedFormat,
 		CoreError::NotPremium { .. }
+		| CoreError::KeyRefused { .. }
 		| CoreError::Spotify(_)
 		| CoreError::Io(_)
 		| CoreError::Profile(_)

@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - For developers: `foxide2k::playback::stop` stops foobar2000's playback.
 
+### Fixed
+
+- When Spotify refuses the key that decrypts a track, playback stops and a popup says why. Before, foobar2000 went on to the next track at once, Spotify refused that key too, and so on through the playlist: a burst of requests that kept Spotify refusing. When Spotify refuses because many tracks were asked for in a short time, foo_librespot waits and asks again for about a minute before it gives up, and asks for one key at a time.
+
 ## [0.2.0] - 2026-11-06
 
 ### Added
