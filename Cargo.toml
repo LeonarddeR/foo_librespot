@@ -12,7 +12,7 @@ repository = "https://github.com/LeonarddeR/foo_librespot"
 [workspace.dependencies]
 futures-util = { version = "0.3.34", default-features = false }
 libloading = "0.9"
-# librespot is pinned to PR #1855's branch; see [patch.crates-io] below.
+# librespot is pinned to a branch that combines PRs #1855 and #1844; see [patch.crates-io] below.
 librespot-audio = { version = "0.8.0", default-features = false, features = ["native-tls"] }
 librespot-core = { version = "0.8.0", default-features = false, features = ["native-tls"] }
 librespot-metadata = { version = "0.8.0", default-features = false, features = ["native-tls"] }
@@ -56,12 +56,15 @@ opt-level = "s"
 # must be able to unwind through Rust frames; panic = "abort" would kill the host.
 panic = "unwind"
 
-# Stock librespot calls std::process::exit(1) when a non-Premium account logs in, which would
-# close foobar2000. librespot-org/librespot PR #1855 shuts the session down instead. Use its
-# branch until the fix is released, then drop this table.
+# Two unreleased librespot fixes, merged on the foo_librespot branch of LeonarddeR/librespot:
+# - Stock librespot calls std::process::exit(1) when a non-Premium account logs in, which would
+#   close foobar2000. librespot-org/librespot PR #1855 shuts the session down instead.
+# - Spotify refuses audio keys with code 2 when many are asked for at once, and asking again at
+#   once keeps the refusals going. PR #1844 asks for keys one at a time and waits after a refusal.
+# When both are released, drop this table.
 [patch.crates-io]
-librespot-audio = { git = "https://github.com/Neppkun/librespot", rev = "175614f4245b390c23e1bc21691a023c0d5ce224" }
-librespot-core = { git = "https://github.com/Neppkun/librespot", rev = "175614f4245b390c23e1bc21691a023c0d5ce224" }
-librespot-metadata = { git = "https://github.com/Neppkun/librespot", rev = "175614f4245b390c23e1bc21691a023c0d5ce224" }
-librespot-oauth = { git = "https://github.com/Neppkun/librespot", rev = "175614f4245b390c23e1bc21691a023c0d5ce224" }
-librespot-protocol = { git = "https://github.com/Neppkun/librespot", rev = "175614f4245b390c23e1bc21691a023c0d5ce224" }
+librespot-audio = { git = "https://github.com/LeonarddeR/librespot", rev = "551f6562c4cb2e15bbd652c6cabb7240bbf0c843" }
+librespot-core = { git = "https://github.com/LeonarddeR/librespot", rev = "551f6562c4cb2e15bbd652c6cabb7240bbf0c843" }
+librespot-metadata = { git = "https://github.com/LeonarddeR/librespot", rev = "551f6562c4cb2e15bbd652c6cabb7240bbf0c843" }
+librespot-oauth = { git = "https://github.com/LeonarddeR/librespot", rev = "551f6562c4cb2e15bbd652c6cabb7240bbf0c843" }
+librespot-protocol = { git = "https://github.com/LeonarddeR/librespot", rev = "551f6562c4cb2e15bbd652c6cabb7240bbf0c843" }
