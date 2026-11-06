@@ -396,10 +396,18 @@ impl Page {
 	}
 }
 
+/// The tracks of a context, in order.
+#[derive(Debug)]
+struct ContextTracks {
+	uris: Vec<SpotifyUri>,
+	/// Pages were left after [`MAX_CONTEXT_PAGES`] fetches.
+	cut_off: bool,
+}
+
 /// The tracks of `pages` in order. A page without tracks but with a `page_url` is fetched in its
 /// place, and a page's `next_page_url` is fetched right after it, through `fetch`, for at most
 /// [`MAX_CONTEXT_PAGES`] fetches.
-async fn context_tracks<F, Fut>(pages: Vec<Page>, fetch: F) -> Result<Vec<SpotifyUri>, CoreError>
+async fn context_tracks<F, Fut>(pages: Vec<Page>, fetch: F) -> Result<ContextTracks, CoreError>
 where
 	F: Fn(String) -> Fut,
 	Fut: Future<Output = Result<Page, CoreError>>,
@@ -412,7 +420,7 @@ where
 			&& let Some(url) = page.tracks_url.take()
 		{
 			if fetches == MAX_CONTEXT_PAGES {
-				break;
+				return Ok(ContextTracks { uris, cut_off: true });
 			}
 			fetches += 1;
 			let mut loaded = fetch(url).await?;
@@ -424,13 +432,13 @@ where
 		uris.extend(page.uris());
 		if let Some(url) = page.next_url {
 			if fetches == MAX_CONTEXT_PAGES {
-				break;
+				return Ok(ContextTracks { uris, cut_off: true });
 			}
 			fetches += 1;
 			queue.push_front(fetch(url).await?);
 		}
 	}
-	Ok(uris)
+	Ok(ContextTracks { uris, cut_off: false })
 }
 
 /// Runs `request` again while librespot refuses it for its own rate limit, waiting longer each
@@ -857,7 +865,13 @@ impl MetadataSource for LibrespotMetadata {
 		let uri = format!("spotify:user:{}:collection", self.session.username());
 		let context = retry_rate_limited(|| self.session.spclient().get_context(&uri)).await?;
 		let pages = context.pages.iter().map(Page::of).collect();
-		context_tracks(pages, |url| self.context_page(url)).await
+		let tracks = context_tracks(pages, |url| self.context_page(url)).await?;
+		if tracks.cut_off {
+			log::warn!(
+				"stopped reading Liked Songs after {MAX_CONTEXT_PAGES} pages; the tracks after them weren't added"
+			);
+		}
+		Ok(tracks.uris)
 	}
 
 	async fn search(&self, words: &str) -> Result<Vec<SpotifyUri>, CoreError> {
@@ -1281,22 +1295,24 @@ mod tests {
 			page(&[], Some("hm://page/2"), None),
 			page(&[4], None, None),
 		];
-		let uris = context_tracks(pages, fetch).await.unwrap();
-		assert_eq!(uris, [track_uri(1), track_uri(2), track_uri(3), track_uri(4)]);
+		let tracks = context_tracks(pages, fetch).await.unwrap();
+		assert_eq!(tracks.uris, [track_uri(1), track_uri(2), track_uri(3), track_uri(4)]);
+		assert!(!tracks.cut_off);
 		assert_eq!(*asked.lock().unwrap(), ["hm://page/2", "hm://page/3"]);
 	}
 
 	#[tokio::test]
-	async fn context_paging_stops_after_its_limit() {
+	async fn context_paging_stops_after_its_limit_and_says_so() {
 		let calls = AtomicUsize::new(0);
 		let endless = |_: String| {
 			calls.fetch_add(1, Ordering::SeqCst);
 			async { Ok::<_, CoreError>(page(&[1], None, Some("hm://again"))) }
 		};
-		let uris =
+		let tracks =
 			context_tracks(vec![page(&[1], None, Some("hm://again"))], endless).await.unwrap();
 		assert_eq!(calls.load(Ordering::SeqCst), MAX_CONTEXT_PAGES);
-		assert_eq!(uris.len(), MAX_CONTEXT_PAGES + 1);
+		assert_eq!(tracks.uris.len(), MAX_CONTEXT_PAGES + 1);
+		assert!(tracks.cut_off);
 	}
 
 	#[test]
