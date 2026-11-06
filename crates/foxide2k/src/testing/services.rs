@@ -1,8 +1,9 @@
 //! Fakes of foobar2000's core services that every [`FakeApi`](super::FakeApi) registers:
-//! popups, the settings store, the main thread and the modeless window list.
+//! popups, the settings store, the main thread, the modeless window list and the player.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char, c_void};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::FakeApi;
@@ -12,6 +13,7 @@ use crate::abi::main_thread::{
 	MANAGER_IID, MODELESS_IID, MainThreadCallbackManagerVtbl, MainThreadCallbackVtbl,
 	ModelessDialogManagerVtbl,
 };
+use crate::abi::playback_control::{self, PlaybackControlVtbl};
 use crate::abi::popup::{self, PopupMessageVtbl};
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 use crate::cxx::try_host;
@@ -27,6 +29,7 @@ pub(super) struct FakeState {
 	config: Mutex<HashMap<String, i64>>,
 	main_thread: Mutex<Vec<ServicePtr>>,
 	modeless: Mutex<Vec<isize>>,
+	playback_stops: AtomicUsize,
 }
 
 pub(super) fn register(api: &FakeApi, state: &Arc<FakeState>) {
@@ -34,6 +37,7 @@ pub(super) fn register(api: &FakeApi, state: &Arc<FakeState>) {
 	api.add_service(config_store::IID, new_service(FakeConfigStore(Arc::clone(state))));
 	api.add_service(MANAGER_IID, new_service(FakeMainThread(Arc::clone(state))));
 	api.add_service(MODELESS_IID, new_service(FakeModeless(Arc::clone(state))));
+	api.add_service(playback_control::IID, new_service(FakePlayback(Arc::clone(state))));
 }
 
 impl FakeApi {
@@ -75,6 +79,11 @@ impl FakeApi {
 	/// The windows registered with the modeless dialog manager.
 	pub fn modeless_windows(&self) -> Vec<isize> {
 		self.state.modeless.lock().unwrap_or_else(PoisonError::into_inner).clone()
+	}
+
+	/// How many times playback was stopped.
+	pub fn playback_stops(&self) -> usize {
+		self.state.playback_stops.load(Ordering::SeqCst)
 	}
 }
 
@@ -193,4 +202,31 @@ unsafe extern "C-unwind" fn modeless_add(this: *mut ServiceBase, window: *mut c_
 unsafe extern "C-unwind" fn modeless_remove(this: *mut ServiceBase, window: *mut c_void) {
 	let state = &unsafe { ServiceObject::<FakeModeless>::value(this) }.0;
 	state.modeless.lock().unwrap_or_else(PoisonError::into_inner).retain(|&w| w != window as isize);
+}
+
+struct FakePlayback(Arc<FakeState>);
+
+unsafe impl ServiceImpl for FakePlayback {
+	type Vtbl = PlaybackControlVtbl;
+	const IIDS: &'static [Guid] = &[playback_control::IID];
+	const VTBL: &'static PlaybackControlVtbl = &PlaybackControlVtbl {
+		base: ServiceBaseVtbl::new::<Self>(),
+		get_now_playing: playback_get_now_playing,
+		start: playback_start,
+		stop: playback_stop,
+	};
+}
+
+unsafe extern "C-unwind" fn playback_get_now_playing(
+	_this: *mut ServiceBase,
+	_out: *mut *mut ServiceBase,
+) -> bool {
+	false
+}
+
+unsafe extern "C-unwind" fn playback_start(_this: *mut ServiceBase, _command: i32, _paused: bool) {}
+
+unsafe extern "C-unwind" fn playback_stop(this: *mut ServiceBase) {
+	let state = &unsafe { ServiceObject::<FakePlayback>::value(this) }.0;
+	state.playback_stops.fetch_add(1, Ordering::SeqCst);
 }

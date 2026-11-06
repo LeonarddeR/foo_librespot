@@ -16,6 +16,7 @@ pub mod input;
 pub mod live_info;
 pub mod main_thread;
 pub mod pfc_list;
+pub mod playback_control;
 pub mod playlist_loader;
 pub mod popup;
 pub mod preferences;
