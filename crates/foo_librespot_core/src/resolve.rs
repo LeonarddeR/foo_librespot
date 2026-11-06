@@ -131,6 +131,9 @@ pub trait MetadataSource: Send + Sync {
 	/// The logged-in account's username.
 	fn username(&self) -> String;
 
+	/// Whether the logged-in account is set not to play explicit content.
+	fn filter_explicit(&self) -> bool;
+
 	/// The track and episode URIs Spotify finds first for `words`: the first page of its search.
 	fn search(
 		&self,
@@ -675,12 +678,21 @@ impl<S: MetadataSource> MetadataSource for CachedSource<S> {
 		} else {
 			self.inner.items(&missing_items).await.into_iter()
 		};
+		let filter_explicit = self.inner.filter_explicit();
 		items
 			.iter()
 			.zip(cached)
 			.map(|(item, info)| {
 				if let Some(info) = info {
-					return Ok(info);
+					// A cached item is checked against the account's current explicit filter.
+					return Ok(match explicit_allowed(info.explicit, filter_explicit) {
+						Ok(()) => info,
+						Err(reason) => {
+							let mut info = (*info).clone();
+							info.unavailable = Some(reason);
+							Arc::new(info)
+						}
+					});
 				}
 				let result = fetched.next().unwrap_or_else(|| Err(missing(*item)));
 				// Whether an item plays changes with the clock and the account's country, so an
@@ -729,6 +741,10 @@ impl<S: MetadataSource> MetadataSource for CachedSource<S> {
 
 	fn username(&self) -> String {
 		self.inner.username()
+	}
+
+	fn filter_explicit(&self) -> bool {
+		self.inner.filter_explicit()
 	}
 
 	fn search(
@@ -1002,6 +1018,10 @@ impl MetadataSource for LibrespotMetadata {
 		self.session.username()
 	}
 
+	fn filter_explicit(&self) -> bool {
+		self.session.filter_explicit_content()
+	}
+
 	async fn search(&self, words: &str) -> Result<Vec<SpotifyUri>, CoreError> {
 		let uri = Link::Search(words.to_owned()).uri();
 		let context = retry_rate_limited(|| self.session.spclient().get_context(&uri)).await?;
@@ -1058,7 +1078,7 @@ pub fn extension_values(response: BatchedExtensionResponse) -> HashMap<String, E
 #[cfg(test)]
 mod tests {
 	use std::collections::HashMap;
-	use std::sync::atomic::{AtomicUsize, Ordering};
+	use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 	use std::sync::{Arc, Mutex};
 	use std::time::Duration;
 
@@ -1176,6 +1196,7 @@ mod tests {
 		searches: HashMap<String, Vec<SpotifyUri>>,
 		discographies: HashMap<SpotifyId, (String, Vec<Vec<SpotifyId>>)>,
 		username: String,
+		filter_explicit: AtomicBool,
 		track_calls: AtomicUsize,
 		/// Each album asked for, in the order asked.
 		albums_asked: Mutex<Vec<SpotifyId>>,
@@ -1256,6 +1277,10 @@ mod tests {
 
 		fn username(&self) -> String {
 			self.username.clone()
+		}
+
+		fn filter_explicit(&self) -> bool {
+			self.filter_explicit.load(Ordering::SeqCst)
 		}
 
 		async fn discography(
@@ -2173,6 +2198,25 @@ mod tests {
 		.await;
 		assert!(
 			matches!(&result, Err(CoreError::Unavailable(message)) if message == "no such album")
+		);
+	}
+
+	#[tokio::test]
+	async fn a_remembered_explicit_track_is_skipped_once_the_filter_is_on() {
+		let mut inner = FakeSource::with_tracks(&[1]);
+		let mut explicit = info(2);
+		explicit.explicit = true;
+		inner.tracks.insert(id(2), (Ok(explicit), Duration::ZERO));
+		inner.albums.insert(id(100), Ok(("The Album".to_owned(), vec![id(1), id(2)])));
+		let source = CachedSource::new(inner, TrackCache::default());
+		let link = Link::Id { kind: LinkKind::Album, id: id(100) };
+		resolve(&source, &link, ArtistTracks::Popular).await.unwrap();
+		source.inner().filter_explicit.store(true, Ordering::SeqCst);
+		let resolved = resolve(&source, &link, ArtistTracks::Popular).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
+		assert_eq!(
+			resolved.skipped[0].reason,
+			SkipReason::Unavailable(EXPLICIT_FILTERED.to_owned())
 		);
 	}
 
