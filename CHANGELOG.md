@@ -9,21 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- For developers: `foxide2k::playback::stop` stops foobar2000's playback.
-
-### Fixed
-
-- When Spotify refuses the key that decrypts a track, playback stops and a popup says why. Before, foobar2000 went on to the next track at once, Spotify refused that key too, and so on through the playlist: a burst of requests that kept Spotify refusing. When Spotify refuses because many tracks were asked for in a short time, foo_librespot waits and asks again for about a minute before it gives up, and asks for one key at a time.
-
-## [0.2.0] - 2026-11-06
-
-### Added
-
 - An artist link adds the artist's whole discography: their albums, singles, EPs and compilations, each recording once. When Spotify has a release in more than one edition, such as explicit and clean, the first edition that plays in full is added, so an account that filters explicit content gets the clean one. Uncheck "Artist links add the whole discography" under File > Preferences > Tools > Spotify to add their popular tracks in your country instead, as the artist's Spotify page lists them.
 - Tracks show more of what Spotify knows: ISRC, barcode, label, copyright and release type, the composer, conductor, orchestra and remixer where Spotify credits them, and ITUNESADVISORY for explicit tracks and episodes. Tracks added earlier get these when they're added again or their info is reloaded.
 - A Liked Songs link, `https://open.spotify.com/collection/tracks` or `spotify:collection:tracks`, adds your Liked Songs.
 - A search link, `https://open.spotify.com/search/<words>` or `spotify:search:<words>`, adds the 20 tracks Spotify finds first, named after the words.
 - For developers: `foxide2k` dialogs can hold checkboxes (`Dialog::is_checked`, `Dialog::set_checked`).
+- For developers: `foxide2k::playback::stop` stops foobar2000's playback.
 
 ### Changed
 
@@ -39,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- When Spotify refuses the key that decrypts a track, playback stops and a popup says why. Before, foobar2000 went on to the next track at once, Spotify refused that key too, and so on through the playlist: a burst of requests that kept Spotify refusing. When Spotify refuses because many tracks were asked for in a short time, foo_librespot waits and asks again for about a minute before it gives up, and asks for one key at a time.
 - Error messages say "Spotify:" once, instead of starting with "Spotify: not available on Spotify:" or "Spotify: Spotify:".
 - A temporary error on Spotify's side no longer deletes your login.
 - Logging out sticks, also when a track was starting at that moment.
