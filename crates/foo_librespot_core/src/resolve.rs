@@ -612,6 +612,11 @@ impl TrackCache {
 pub struct AlbumDetailsCache(Arc<Mutex<HashMap<String, AlbumDetails>>>);
 
 impl AlbumDetailsCache {
+	/// Stores the details of `album`, a `spotify:album:` URI, fetched along with something else.
+	pub fn insert(&self, album: String, details: AlbumDetails) {
+		self.0.lock().unwrap_or_else(PoisonError::into_inner).insert(album, details);
+	}
+
 	/// The details of `albums`, asking `fetch` only for the albums not seen before. Albums `fetch`
 	/// has no details for are asked for again next time.
 	pub async fn get_or_fetch<F, Fut>(
@@ -970,6 +975,7 @@ impl MetadataSource for LibrespotMetadata {
 		let uri = SpotifyUri::Album { id };
 		let album = retry_rate_limited(|| Album::get(&self.session, &uri)).await?;
 		let ids = album.tracks().map(SpotifyId::try_from).collect::<Result<Vec<_>, _>>()?;
+		self.albums.insert(uri.to_uri(), AlbumDetails::of(&album));
 		Ok((album.name, ids))
 	}
 
@@ -2148,6 +2154,20 @@ mod tests {
 		let third = cache.get_or_fetch(vec!["a".to_owned()], fetch).await;
 		assert_eq!((first.len(), second.len(), third.len()), (2, 2, 1));
 		assert_eq!(*asked.lock().unwrap(), [vec!["a", "b"], vec!["c"]]);
+	}
+
+	#[tokio::test]
+	async fn album_details_stored_ahead_are_not_asked_for() {
+		let cache = AlbumDetailsCache::default();
+		cache.insert("a".to_owned(), some_details());
+		let asked = Mutex::new(Vec::new());
+		let fetch = |albums: Vec<String>| {
+			asked.lock().unwrap().push(albums.clone());
+			async move { albums.into_iter().map(|album| (album, some_details())).collect() }
+		};
+		let found = cache.get_or_fetch(vec!["a".to_owned(), "b".to_owned()], fetch).await;
+		assert_eq!(found.len(), 2);
+		assert_eq!(*asked.lock().unwrap(), [vec!["b"]]);
 	}
 
 	#[tokio::test]
