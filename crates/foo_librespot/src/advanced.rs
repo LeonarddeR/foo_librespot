@@ -2,7 +2,7 @@
 //! switch for detailed logging.
 
 use foxide2k::abi::advconfig::GUID_BRANCH_TOOLS;
-use foxide2k::advconfig::{AdvconfigBranch, AdvconfigCheckbox};
+use foxide2k::advconfig::{AdvconfigBranch, AdvconfigCheckbox, AdvconfigEntry};
 use foxide2k::guid::Guid;
 
 use crate::{logging, settings};
@@ -10,19 +10,24 @@ use crate::{logging, settings};
 /// Advanced > Tools > Spotify.
 pub struct SpotifyBranch;
 
-impl AdvconfigBranch for SpotifyBranch {
+impl AdvconfigEntry for SpotifyBranch {
 	const GUID: Guid = Guid::from_u128(0x131920cd_ef5c_4d81_8c36_9f4736ee9aea);
 	const PARENT: Guid = GUID_BRANCH_TOOLS;
 	const NAME: &'static str = "Spotify";
 }
 
+impl AdvconfigBranch for SpotifyBranch {}
+
 /// The switch for detailed logging.
 pub struct DetailedLogging;
 
-impl AdvconfigCheckbox for DetailedLogging {
+impl AdvconfigEntry for DetailedLogging {
 	const GUID: Guid = Guid::from_u128(0xcf7aa8cf_1a02_479f_99c3_67e589d31bcb);
 	const PARENT: Guid = SpotifyBranch::GUID;
 	const NAME: &'static str = "Log details to the console, for bug reports";
+}
+
+impl AdvconfigCheckbox for DetailedLogging {
 	const DEFAULT: bool = false;
 
 	fn state() -> bool {

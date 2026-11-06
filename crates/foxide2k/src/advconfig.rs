@@ -14,8 +14,8 @@ use crate::guid::Guid;
 use crate::service::{ServiceImpl, ServicePtr, new_service};
 use crate::strings::set_string;
 
-/// A branch in Advanced preferences, holding other entries.
-pub trait AdvconfigBranch: 'static {
+/// What every entry in Advanced preferences has.
+pub trait AdvconfigEntry: 'static {
 	const GUID: Guid;
 	/// The branch it sits in, such as `abi::advconfig::GUID_BRANCH_TOOLS`.
 	const PARENT: Guid;
@@ -24,14 +24,11 @@ pub trait AdvconfigBranch: 'static {
 	const SORT_PRIORITY: f64 = 0.0;
 }
 
+/// A branch in Advanced preferences, holding other entries.
+pub trait AdvconfigBranch: AdvconfigEntry {}
+
 /// A checkbox in Advanced preferences. foobar2000 calls `set_state` when the user applies a change.
-pub trait AdvconfigCheckbox: 'static {
-	const GUID: Guid;
-	/// The branch it sits in.
-	const PARENT: Guid;
-	const NAME: &'static str;
-	/// Where it sorts among its parent's entries: lower comes first.
-	const SORT_PRIORITY: f64 = 0.0;
+pub trait AdvconfigCheckbox: AdvconfigEntry {
 	/// The state Reset puts back.
 	const DEFAULT: bool;
 	fn state() -> bool;
@@ -65,38 +62,12 @@ unsafe impl<T: AdvconfigBranch> ServiceImpl for Branch<T> {
 	const IIDS: &'static [Guid] = &[BRANCH_IID, ENTRY_IID];
 	const VTBL: &'static EntryVtbl = &EntryVtbl {
 		base: ServiceBaseVtbl::new::<Self>(),
-		get_name: get_name::<BranchEntry<T>>,
-		get_guid: guid::<BranchEntry<T>>,
-		get_parent: parent::<BranchEntry<T>>,
+		get_name: get_name::<T>,
+		get_guid: guid::<T>,
+		get_parent: parent::<T>,
 		reset: branch_reset,
-		get_sort_priority: sort_priority::<BranchEntry<T>>,
+		get_sort_priority: sort_priority::<T>,
 	};
-}
-
-/// The constants every entry has.
-trait Entry {
-	const GUID: Guid;
-	const PARENT: Guid;
-	const NAME: &'static str;
-	const SORT_PRIORITY: f64;
-}
-
-struct BranchEntry<T>(PhantomData<fn() -> T>);
-
-impl<T: AdvconfigBranch> Entry for BranchEntry<T> {
-	const GUID: Guid = T::GUID;
-	const PARENT: Guid = T::PARENT;
-	const NAME: &'static str = T::NAME;
-	const SORT_PRIORITY: f64 = T::SORT_PRIORITY;
-}
-
-struct CheckboxEntry<T>(PhantomData<fn() -> T>);
-
-impl<T: AdvconfigCheckbox> Entry for CheckboxEntry<T> {
-	const GUID: Guid = T::GUID;
-	const PARENT: Guid = T::PARENT;
-	const NAME: &'static str = T::NAME;
-	const SORT_PRIORITY: f64 = T::SORT_PRIORITY;
 }
 
 struct Checkbox<T>(PhantomData<fn() -> T>);
@@ -107,11 +78,11 @@ unsafe impl<T: AdvconfigCheckbox> ServiceImpl for Checkbox<T> {
 	const VTBL: &'static CheckboxVtbl = &CheckboxVtbl {
 		entry: EntryVtbl {
 			base: ServiceBaseVtbl::new::<Self>(),
-			get_name: get_name::<CheckboxEntry<T>>,
-			get_guid: guid::<CheckboxEntry<T>>,
-			get_parent: parent::<CheckboxEntry<T>>,
+			get_name: get_name::<T>,
+			get_guid: guid::<T>,
+			get_parent: parent::<T>,
 			reset: checkbox_reset::<T>,
-			get_sort_priority: sort_priority::<CheckboxEntry<T>>,
+			get_sort_priority: sort_priority::<T>,
 		},
 		get_state: get_state::<T>,
 		set_state: set_state::<T>,
@@ -121,21 +92,30 @@ unsafe impl<T: AdvconfigCheckbox> ServiceImpl for Checkbox<T> {
 	};
 }
 
-unsafe extern "C-unwind" fn get_name<T: Entry>(_this: *mut ServiceBase, out: *mut StringBase) {
+unsafe extern "C-unwind" fn get_name<T: AdvconfigEntry>(
+	_this: *mut ServiceBase,
+	out: *mut StringBase,
+) {
 	unsafe { guard(|| set_string(out, T::NAME)) }
 }
 
-unsafe extern "C-unwind" fn guid<T: Entry>(_this: *mut ServiceBase, ret: *mut Guid) -> *mut Guid {
+unsafe extern "C-unwind" fn guid<T: AdvconfigEntry>(
+	_this: *mut ServiceBase,
+	ret: *mut Guid,
+) -> *mut Guid {
 	unsafe { ret.write(T::GUID) };
 	ret
 }
 
-unsafe extern "C-unwind" fn parent<T: Entry>(_this: *mut ServiceBase, ret: *mut Guid) -> *mut Guid {
+unsafe extern "C-unwind" fn parent<T: AdvconfigEntry>(
+	_this: *mut ServiceBase,
+	ret: *mut Guid,
+) -> *mut Guid {
 	unsafe { ret.write(T::PARENT) };
 	ret
 }
 
-unsafe extern "C-unwind" fn sort_priority<T: Entry>(_this: *mut ServiceBase) -> f64 {
+unsafe extern "C-unwind" fn sort_priority<T: AdvconfigEntry>(_this: *mut ServiceBase) -> f64 {
 	T::SORT_PRIORITY
 }
 
@@ -170,7 +150,8 @@ mod tests {
 	use std::sync::atomic::{AtomicBool, Ordering};
 
 	use super::{
-		AdvconfigBranch, AdvconfigCheckbox, advconfig_branch_service, advconfig_checkbox_service,
+		AdvconfigBranch, AdvconfigCheckbox, AdvconfigEntry, advconfig_branch_service,
+		advconfig_checkbox_service,
 	};
 	use crate::abi::advconfig::{
 		BRANCH_IID, CHECKBOX_IID, CHECKBOX_V2_IID, ENTRY_IID, GUID_BRANCH_TOOLS,
@@ -184,19 +165,24 @@ mod tests {
 
 	struct TestBranch;
 
-	impl AdvconfigBranch for TestBranch {
+	impl AdvconfigEntry for TestBranch {
 		const GUID: Guid = Guid::from_u128(0x6f1c2a77_3b8e_4d0a_9c51_2e7f04b8d913);
 		const PARENT: Guid = GUID_BRANCH_TOOLS;
 		const NAME: &'static str = "Spotify";
 		const SORT_PRIORITY: f64 = 2.5;
 	}
 
+	impl AdvconfigBranch for TestBranch {}
+
 	struct TestCheckbox;
 
-	impl AdvconfigCheckbox for TestCheckbox {
+	impl AdvconfigEntry for TestCheckbox {
 		const GUID: Guid = Guid::from_u128(0x0d4e8b62_95a1_4f3c_b7e0_6c2d19f4a758);
 		const PARENT: Guid = TestBranch::GUID;
 		const NAME: &'static str = "Log details";
+	}
+
+	impl AdvconfigCheckbox for TestCheckbox {
 		const DEFAULT: bool = false;
 
 		fn state() -> bool {
@@ -211,10 +197,13 @@ mod tests {
 
 	struct FailingCheckbox;
 
-	impl AdvconfigCheckbox for FailingCheckbox {
+	impl AdvconfigEntry for FailingCheckbox {
 		const GUID: Guid = Guid::from_u128(0x0d4e8b62_95a1_4f3c_b7e0_6c2d19f4a759);
 		const PARENT: Guid = TestBranch::GUID;
 		const NAME: &'static str = "Can't store";
+	}
+
+	impl AdvconfigCheckbox for FailingCheckbox {
 		const DEFAULT: bool = false;
 
 		fn state() -> bool {
