@@ -34,8 +34,9 @@ fn held_back(target: &str, message: &str) -> bool {
 	HELD_BACK.iter().any(|&(held, start)| target == held && message.starts_with(start))
 }
 
-/// `message` with each `http://` or `https://` URL's query string replaced by `?…` and any
-/// `user:password@` by `…@`. A URL ends at whitespace, a quote, `<`, `>` or the end.
+/// `message` with each URL's query string replaced by `?…` and any `user:password@` by `…@`. A
+/// URL starts at a scheme, such as `https://` or `wss://` in any case, and ends at whitespace, a
+/// quote, `<`, `>` or the end.
 fn redact_urls(message: &str) -> Cow<'_, str> {
 	let Some(mut start) = url_start(message) else {
 		return Cow::Borrowed(message);
@@ -59,29 +60,47 @@ fn redact_urls(message: &str) -> Cow<'_, str> {
 	Cow::Owned(redacted)
 }
 
+/// Where the first URL in `text` starts: at its scheme, the letters, digits, `+`, `-` and `.`
+/// right before a `://`, from the first letter.
 fn url_start(text: &str) -> Option<usize> {
-	[text.find("http://"), text.find("https://")].into_iter().flatten().min()
+	let bytes = text.as_bytes();
+	let mut from = 0;
+	while let Some(found) = text[from..].find("://") {
+		let separator = from + found;
+		let run = bytes[..separator]
+			.iter()
+			.rposition(|&byte| {
+				!(byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+			})
+			.map_or(0, |before| before + 1);
+		if let Some(letter) = bytes[run..separator].iter().position(u8::is_ascii_alphabetic) {
+			return Some(run + letter);
+		}
+		from = separator + "://".len();
+	}
+	None
 }
 
-/// Appends `url`, which starts with its scheme, without its query string and password.
+/// Appends `url`, which starts with its scheme, without its query string and password. The
+/// password ends at the last `@` before the first `/`, so a `?` in it is cut too.
 fn redact_url(url: &str, out: &mut String) {
 	let (scheme, after) = url.split_once("://").unwrap_or(("", url));
-	let (before_query, query) =
-		after.split_once('?').map_or((after, false), |(head, _)| (head, true));
-	let (authority, path) =
-		before_query.split_at(before_query.find('/').unwrap_or(before_query.len()));
 	out.push_str(scheme);
 	out.push_str("://");
-	match authority.rfind('@') {
+	let authority_end = after.find('/').unwrap_or(after.len());
+	let rest = match after[..authority_end].rfind('@') {
 		Some(at) => {
 			out.push('…');
-			out.push_str(&authority[at..]);
+			&after[at..]
 		}
-		None => out.push_str(authority),
-	}
-	out.push_str(path);
-	if query {
-		out.push_str("?…");
+		None => after,
+	};
+	match rest.split_once('?') {
+		Some((head, _)) => {
+			out.push_str(head);
+			out.push_str("?…");
+		}
+		None => out.push_str(rest),
 	}
 }
 
@@ -206,6 +225,30 @@ mod tests {
 		let plain = redact_urls("Connecting to AP \"ap-gew4.spotify.com:4070\"");
 		assert_eq!(plain, "Connecting to AP \"ap-gew4.spotify.com:4070\"");
 		assert!(matches!(plain, Cow::Borrowed(_)));
+	}
+
+	#[test]
+	fn every_scheme_in_any_case_loses_its_query() {
+		assert_eq!(
+			redact_urls("Fetching HTTPS://audio4-fa.scdn.co/audio/ab12?1700000000_Sig-x"),
+			"Fetching HTTPS://audio4-fa.scdn.co/audio/ab12?…"
+		);
+		assert_eq!(
+			redact_urls("Connecting to wss://dealer.spotify.com:443/?access_token=abc"),
+			"Connecting to wss://dealer.spotify.com:443/?…"
+		);
+		assert_eq!(
+			redact_urls("unknown subscription uri=hm://pusher/v1/connections/x?y=1"),
+			"unknown subscription uri=hm://pusher/v1/connections/x?…"
+		);
+	}
+
+	#[test]
+	fn a_password_with_a_question_mark_is_cut_whole() {
+		assert_eq!(
+			redact_urls("Using proxy \"http://me:pa?ss@proxy.local:8080/\""),
+			"Using proxy \"http://…@proxy.local:8080/\""
+		);
 	}
 
 	#[test]
