@@ -25,7 +25,8 @@ use protobuf::{EnumOrUnknown, Message};
 use crate::genre::parse_genres;
 use crate::link::{ItemId, Link, LinkKind};
 use crate::metadata::{
-	AlbumTotals, TrackInfo, availability, episode_availability, episode_info, track_info,
+	AlbumTotals, TrackInfo, availability, episode_availability, episode_info, explicit_allowed,
+	track_info,
 };
 use crate::replaygain::parse_audio_files;
 use crate::{CoreError, SpotifyId, SpotifyUri};
@@ -407,6 +408,8 @@ pub struct LibrespotMetadata {
 struct Viewer {
 	country: String,
 	catalogue: String,
+	/// The account is set not to play explicit content.
+	filter_explicit: bool,
 	now: Date,
 }
 
@@ -448,8 +451,11 @@ impl LibrespotMetadata {
 				let track =
 					Track::try_from(&TrackMessage::parse_from_bytes(bytes).map_err(parse_error)?)?;
 				let mut info = track_info(&track)?;
-				info.unavailable =
-					availability(&track, &viewer.country, &viewer.catalogue, &viewer.now).err();
+				info.unavailable = explicit_allowed(track.is_explicit, viewer.filter_explicit)
+					.and_then(|()| {
+						availability(&track, &viewer.country, &viewer.catalogue, &viewer.now)
+					})
+					.err();
 				info.replay_gain = values.audio_files.as_deref().and_then(parse_audio_files);
 				info.genres = values.descriptors.as_deref().map(parse_genres).unwrap_or_default();
 				Ok((info, Some(track.album.id.to_uri())))
@@ -458,17 +464,22 @@ impl LibrespotMetadata {
 				let message = EpisodeMessage::parse_from_bytes(bytes).map_err(parse_error)?;
 				let episode = Episode::try_from(&message)?;
 				let mut info = episode_info(&episode)?;
-				// One Spotify doesn't host plays from the podcast's own link, where Spotify's
-				// restrictions don't apply.
-				if info.external_url.is_none() {
-					info.unavailable = episode_availability(
-						&episode,
-						&viewer.country,
-						&viewer.catalogue,
-						&viewer.now,
-					)
+				// `external_url` is set only for an episode Spotify doesn't host.
+				let hosted = info.external_url.is_none();
+				info.unavailable = explicit_allowed(episode.is_explicit, viewer.filter_explicit)
+					.and_then(|()| {
+						if hosted {
+							episode_availability(
+								&episode,
+								&viewer.country,
+								&viewer.catalogue,
+								&viewer.now,
+							)
+						} else {
+							Ok(())
+						}
+					})
 					.err();
-				}
 				Ok((info, None))
 			}
 		}
@@ -560,6 +571,7 @@ impl MetadataSource for LibrespotMetadata {
 				.map_or("premium", String::as_str)
 				.to_owned(),
 			country: user.country,
+			filter_explicit: self.session.filter_explicit_content(),
 			now: Date::now_utc(),
 		};
 		let infos: Vec<_> = items
@@ -681,7 +693,11 @@ mod tests {
 	use librespot_metadata::show::ShowConsumptionOrder;
 
 	use librespot_core::date::Date;
-	use librespot_protocol::metadata::{Album as AlbumMessage, Track as TrackMessage};
+	use librespot_protocol::metadata::audio_file::Format;
+	use librespot_protocol::metadata::{
+		Album as AlbumMessage, AudioFile as AudioFileMessage, Episode as EpisodeMessage,
+		Restriction as RestrictionMessage, Track as TrackMessage,
+	};
 	use protobuf::{CodedOutputStream, Message};
 
 	use super::{
@@ -690,7 +706,7 @@ mod tests {
 		retry_rate_limited,
 	};
 	use crate::link::{ItemId, Link, LinkKind};
-	use crate::metadata::{AlbumTotals, TrackInfo};
+	use crate::metadata::{AlbumTotals, EXPLICIT_FILTERED, TrackInfo};
 	use crate::{CoreError, SpotifyId, SpotifyUri};
 
 	fn id(byte: u8) -> SpotifyId {
@@ -1125,14 +1141,90 @@ mod tests {
 			descriptors: Some(genre_descriptor("gospel", 0.9)),
 			..Default::default()
 		};
-		let viewer = Viewer {
+		let item = ItemId::Track(SpotifyId::from_raw(&[0x10; 16]).unwrap());
+		let (info, _) = LibrespotMetadata::info(item, Some(&values), &viewer(false)).unwrap();
+		assert_eq!(info.genres, ["Gospel"]);
+	}
+
+	fn viewer(filter_explicit: bool) -> Viewer {
+		Viewer {
 			country: "NL".to_owned(),
 			catalogue: "premium".to_owned(),
+			filter_explicit,
 			now: Date::now_utc(),
+		}
+	}
+
+	fn explicit_track() -> TrackMessage {
+		let mut album = AlbumMessage::new();
+		album.set_gid(vec![0x20; 16]);
+		let mut track = TrackMessage::new();
+		track.set_gid(vec![0x10; 16]);
+		track.album = MessageField::some(album);
+		track.set_explicit(true);
+		track
+	}
+
+	fn explicit_episode() -> EpisodeMessage {
+		let mut episode = EpisodeMessage::new();
+		episode.set_gid(vec![0x50; 16]);
+		episode.set_explicit(true);
+		let mut file = AudioFileMessage::new();
+		file.set_file_id(vec![7; 20]);
+		file.set_format(Format::OGG_VORBIS_96);
+		episode.audio = vec![file];
+		episode
+	}
+
+	/// Why `info` finds `message` unavailable for an account in the Netherlands.
+	fn unavailable(item: ItemId, message: &impl Message, filter_explicit: bool) -> Option<String> {
+		let values = ExtensionValues {
+			metadata: Some(message.write_to_bytes().unwrap()),
+			..Default::default()
 		};
-		let item = ItemId::Track(SpotifyId::from_raw(&[0x10; 16]).unwrap());
-		let (info, _) = LibrespotMetadata::info(item, Some(&values), &viewer).unwrap();
-		assert_eq!(info.genres, ["Gospel"]);
+		let (info, _) =
+			LibrespotMetadata::info(item, Some(&values), &viewer(filter_explicit)).unwrap();
+		info.unavailable
+	}
+
+	#[test]
+	fn an_explicit_track_is_skipped_when_the_account_filters_explicit_content() {
+		let track = ItemId::Track(id(0x10));
+		assert_eq!(unavailable(track, &explicit_track(), true).as_deref(), Some(EXPLICIT_FILTERED));
+		assert_eq!(unavailable(track, &explicit_track(), false), None);
+	}
+
+	#[test]
+	fn the_explicit_filter_is_named_before_a_country_restriction() {
+		let mut restriction = RestrictionMessage::new();
+		restriction.catalogue_str = vec!["premium".to_owned()];
+		restriction.set_countries_allowed("US".to_owned());
+		let mut message = explicit_track();
+		message.restriction = vec![restriction];
+		let track = ItemId::Track(id(0x10));
+		assert_eq!(unavailable(track, &message, true).as_deref(), Some(EXPLICIT_FILTERED));
+		let reason = unavailable(track, &message, false);
+		assert!(reason.as_deref().is_some_and(|reason| reason.contains("country")), "{reason:?}");
+	}
+
+	#[test]
+	fn an_explicit_episode_spotify_hosts_is_skipped_with_the_filter() {
+		let episode = ItemId::Episode(id(0x50));
+		assert_eq!(
+			unavailable(episode, &explicit_episode(), true).as_deref(),
+			Some(EXPLICIT_FILTERED)
+		);
+		assert_eq!(unavailable(episode, &explicit_episode(), false), None);
+	}
+
+	#[test]
+	fn an_explicit_episode_hosted_elsewhere_is_skipped_with_the_filter() {
+		let mut message = explicit_episode();
+		message.audio.clear();
+		message.set_external_url("https://podcasts.example/12.mp3".to_owned());
+		let episode = ItemId::Episode(id(0x50));
+		assert_eq!(unavailable(episode, &message, true).as_deref(), Some(EXPLICIT_FILTERED));
+		assert_eq!(unavailable(episode, &message, false), None);
 	}
 
 	#[test]

@@ -139,6 +139,16 @@ impl AlbumTotals {
 
 const NOT_RELEASED: &str = "not released on Spotify yet";
 
+/// Why an explicit item doesn't play for an account set not to play explicit content.
+pub(crate) const EXPLICIT_FILTERED: &str =
+	"explicit, and your Spotify account is set not to play explicit content";
+
+/// Whether the account's explicit-content filter lets an item through. librespot refuses the same
+/// items when they play, in `AudioItem::get_file`.
+pub fn explicit_allowed(is_explicit: bool, filter_explicit: bool) -> Result<(), String> {
+	if is_explicit && filter_explicit { Err(EXPLICIT_FILTERED.to_owned()) } else { Ok(()) }
+}
+
 /// Whether Spotify plays `track` for an account in `country` with the given `catalogue`
 /// attribute (usually "premium"). The same rules as librespot-metadata's private
 /// `available_for_user` in `audio/item.rs`, so a playlist import can skip what would only fail
@@ -237,8 +247,8 @@ mod tests {
 	};
 
 	use super::{
-		AlbumTotals, Cover, availability, episode_availability, episode_info, format_date,
-		largest_cover, track_info,
+		AlbumTotals, Cover, EXPLICIT_FILTERED, availability, episode_availability, episode_info,
+		explicit_allowed, format_date, largest_cover, track_info,
 	};
 	use crate::link::ItemId;
 	use crate::{FileId, SpotifyId};
@@ -549,5 +559,20 @@ mod tests {
 		odd.set_duration(-10);
 		let info = track_info(&parse(&odd)).unwrap();
 		assert_eq!((info.track_number, info.disc_number, info.duration_ms), (0, 0, 0));
+	}
+
+	#[test]
+	fn an_explicit_item_is_blocked_when_the_filter_is_on() {
+		assert_eq!(explicit_allowed(true, true), Err(EXPLICIT_FILTERED.to_owned()));
+	}
+
+	#[test]
+	fn an_explicit_item_plays_when_the_filter_is_off() {
+		assert_eq!(explicit_allowed(true, false), Ok(()));
+	}
+
+	#[test]
+	fn a_clean_item_plays_when_the_filter_is_on() {
+		assert_eq!(explicit_allowed(false, true), Ok(()));
 	}
 }

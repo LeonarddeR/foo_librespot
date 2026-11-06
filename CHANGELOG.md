@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Each cover is downloaded once while foobar2000 runs, instead of every time foobar2000 shows it. Up to 32 MB of covers are kept in memory.
+- When your Spotify account is set not to play explicit content, adding a link skips its explicit tracks and episodes and says why. Playing one added earlier gives the same reason, instead of Spotify's technical error.
 - A track link is added with its title and other info straight away, and asks for a login when you're logged out, like an album link.
 - Importing a podcast skips the episodes Spotify blocks in your country or hasn't released yet, with the reason, as it already did for tracks. An episode that plays from the podcast's own website is still added.
 - A Spotify link that can't be played, such as a local file or a profile page, now shows a popup saying why, instead of doing nothing.

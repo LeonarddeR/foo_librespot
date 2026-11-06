@@ -12,11 +12,10 @@ The cheapest wins come first.
   - foo_librespot downloaded the cover every time foobar2000 asked for it (`Core::cover` in `crates/foo_librespot_core/src/spotify.rs`). An album's tracks all share the album's cover, so playing a 12-track album downloaded the same image at least 12 times.
   - Downloaded covers are now kept in memory by the image's ID, up to 32 MB (`CoverCache` in `crates/foo_librespot_core/src/art.rs`), so each cover is downloaded once while foobar2000 runs. When a new cover doesn't fit, the ones read longest ago go first.
   - foo_spotify also kept covers on disk, so they showed offline. That part is ruled out.
-- [ ] Say when the account's explicit-content filter blocks a track
+- [x] Say when the account's explicit-content filter blocks a track
   - foo_spotify gave a reason when a track couldn't play: not available in your country, not available for your subscription type, or explicit while the account is set not to play explicit content.
-  - foo_librespot gives the country reason when it adds a track. It doesn't check the explicit filter then: `available_for_user` in `crates/foo_librespot_core/src/metadata.rs` knows nothing about explicit content.
-  - librespot does check the filter when the track plays, in `AudioItem::get_file`. So an import adds explicit tracks without a word, and playing one fails with librespot's own message.
-  - The import could skip these tracks with a plain reason, as it does for country restrictions.
+  - foo_librespot gave the country reason when it added a track, but didn't check the explicit filter. librespot checks it when the track plays, in `AudioItem::get_file`, so an import added explicit tracks without a word, and playing one failed with librespot's own message.
+  - An import now skips explicit tracks and episodes with the reason "explicit, and your Spotify account is set not to play explicit content" (`explicit_allowed` in `crates/foo_librespot_core/src/metadata.rs`). Playing one added earlier gives the same reason (`audio_item_error` in `crates/foo_librespot_core/src/audio/track.rs`).
 - [ ] Show the artist's picture as album art
   - foo_spotify answered foobar2000's request for an artist picture with the Spotify picture of the track's first artist.
   - foo_librespot only has a front cover. `SpotifyArt::query` in `crates/foo_librespot/src/art.rs` returns nothing for any other kind of art.

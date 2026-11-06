@@ -3,6 +3,7 @@
 use librespot_audio::{AudioDecrypt, AudioFile, StreamLoaderController};
 use librespot_core::Session;
 use librespot_core::error::ErrorKind;
+use librespot_metadata::MetadataError;
 use librespot_metadata::audio::{AudioFileFormat, AudioFiles, AudioItem};
 use librespot_metadata::availability::AudioItemAvailability;
 use librespot_metadata::track::Tracks;
@@ -11,6 +12,7 @@ use super::decoder::PcmDecoder;
 use super::format::{Bitrate, bytes_per_second, header_offset, mime_type, pick_file};
 use super::header::{NormalisationData, Subfile};
 use crate::link::ItemId;
+use crate::metadata::EXPLICIT_FILTERED;
 use crate::replaygain::ReplayGain;
 use crate::resolve::retry_rate_limited;
 use crate::{CoreError, SpotifyUri};
@@ -58,7 +60,9 @@ pub async fn fetch_track(
 	// Waits out librespot's rate limit, as imports do: right after a big import, pressing Play
 	// would otherwise fail at once. An abort (Stop) drops the wait.
 	let uri = item.uri();
-	let item = retry_rate_limited(|| AudioItem::get_file(session, uri.clone())).await?;
+	let item = retry_rate_limited(|| AudioItem::get_file(session, uri.clone()))
+		.await
+		.map_err(audio_item_error)?;
 	let item = match playability(&item.availability, &item.files, item.alternatives.as_ref()) {
 		Playability::Play => item,
 		Playability::TryAlternatives(alternatives) => {
@@ -133,6 +137,19 @@ async fn find_alternative(session: &Session, alternatives: Vec<SpotifyUri>) -> O
 	None
 }
 
+/// librespot's error for an audio item, with its refusal of an explicit item for an account set
+/// not to play explicit content put the way an import puts it.
+fn audio_item_error(error: librespot_core::Error) -> CoreError {
+	if matches!(
+		error.error.downcast_ref::<MetadataError>(),
+		Some(MetadataError::ExplicitContentFiltered)
+	) {
+		CoreError::Unavailable(EXPLICIT_FILTERED.to_owned())
+	} else {
+		CoreError::Spotify(error)
+	}
+}
+
 impl FetchedTrack {
 	/// Reads Spotify's header and opens the decoder. Blocks until the first data arrives.
 	pub fn open(self) -> Result<SpotifyTrack, CoreError> {
@@ -203,14 +220,16 @@ impl Drop for SpotifyTrack {
 mod tests {
 	use std::collections::HashMap;
 
+	use librespot_metadata::MetadataError;
 	use librespot_metadata::audio::{AudioFileFormat, AudioFiles};
 	use librespot_metadata::availability::UnavailabilityReason;
 	use librespot_metadata::track::Tracks;
 
 	use librespot_core::error::ErrorKind;
 
-	use super::{KeyFailure, Playability, on_key_failure, playability};
-	use crate::{FileId, SpotifyId, SpotifyUri};
+	use super::{KeyFailure, Playability, audio_item_error, on_key_failure, playability};
+	use crate::metadata::EXPLICIT_FILTERED;
+	use crate::{CoreError, FileId, SpotifyId, SpotifyUri};
 
 	fn one_file() -> AudioFiles {
 		AudioFiles(HashMap::from([(AudioFileFormat::OGG_VORBIS_320, FileId::from_raw(&[1; 20]))]))
@@ -281,5 +300,23 @@ mod tests {
 			playability(&Ok(()), &AudioFiles::default(), Some(&Tracks::default())),
 			Playability::Unavailable(_)
 		));
+	}
+
+	#[test]
+	fn the_explicit_filter_refusal_becomes_the_plain_reason() {
+		let error = audio_item_error(librespot_core::Error::unavailable(
+			MetadataError::ExplicitContentFiltered,
+		));
+		assert!(
+			matches!(&error, CoreError::Unavailable(reason) if reason == EXPLICIT_FILTERED),
+			"{error:?}"
+		);
+	}
+
+	#[test]
+	fn other_audio_item_errors_stay_spotify_errors() {
+		let error =
+			audio_item_error(librespot_core::Error::unavailable(MetadataError::NonPlayable));
+		assert!(matches!(&error, CoreError::Spotify(_)), "{error:?}");
 	}
 }
