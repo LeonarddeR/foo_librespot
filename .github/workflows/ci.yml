@@ -206,18 +206,21 @@ jobs:
         with:
           name: release-notes
           path: notes
-      - name: Read the version from the tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-      # The package's name carries the crate version, so a tag that doesn't match it finds no file
-      # and fails instead of publishing a package named for another version.
+      # gh creates the release as a draft, uploads the files and only then publishes it, and it
+      # deletes the draft if an upload fails. A release is never published without its files, which
+      # matters when immutable releases are on: files can't be added to a published release.
+      # The package's name carries the crate version, so a tag that doesn't match it finds no file,
+      # and gh fails before it creates anything.
       - name: Publish the GitHub release
-        uses: softprops/action-gh-release@v3
-        with:
-          name: ${{ github.ref_name }}
-          body_path: notes/release-notes.md
-          prerelease: ${{ startsWith(github.ref_name, 'v0.') || contains(github.ref_name, '-') }}
-          fail_on_unmatched_files: true
-          files: |
-            artifacts/foo_librespot-${{ steps.version.outputs.version }}.fb2k-component
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PRERELEASE: ${{ startsWith(github.ref_name, 'v0.') || contains(github.ref_name, '-') }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes/release-notes.md \
+            --prerelease="$PRERELEASE" \
+            "artifacts/foo_librespot-${GITHUB_REF_NAME#v}.fb2k-component" \
             artifacts/foo_librespot.pdb
