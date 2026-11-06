@@ -30,8 +30,8 @@ pub const LIKED_SONGS_URI: &str = "spotify:collection:tracks";
 pub enum Link {
 	/// A track, album, playlist, episode, show or artist, named by its Spotify ID.
 	Id { kind: LinkKind, id: SpotifyId },
-	/// The logged-in account's Liked Songs.
-	LikedSongs,
+	/// Liked Songs: the logged-in account's, or, from an old link, those of the account named.
+	LikedSongs { account: Option<String> },
 	/// A search for these words, decoded and with single spaces.
 	Search(String),
 }
@@ -41,7 +41,10 @@ impl Link {
 	pub fn uri(&self) -> String {
 		match self {
 			Self::Id { kind, id } => id_uri(*kind, *id).to_uri(),
-			Self::LikedSongs => LIKED_SONGS_URI.to_owned(),
+			Self::LikedSongs { account: None } => LIKED_SONGS_URI.to_owned(),
+			Self::LikedSongs { account: Some(account) } => {
+				format!("spotify:user:{account}:collection")
+			}
 			Self::Search(words) => format!("spotify:search:{}", encode_search(words)),
 		}
 	}
@@ -51,7 +54,7 @@ impl Link {
 		match self {
 			Self::Id { kind: LinkKind::Track, id } => Some(ItemId::Track(*id)),
 			Self::Id { kind: LinkKind::Episode, id } => Some(ItemId::Episode(*id)),
-			Self::Id { .. } | Self::LikedSongs | Self::Search(_) => None,
+			Self::Id { .. } | Self::LikedSongs { .. } | Self::Search(_) => None,
 		}
 	}
 }
@@ -102,6 +105,8 @@ pub enum LinkError {
 	Unsupported { kind: String },
 	#[error("this Spotify search link has no words")]
 	NoSearchWords,
+	#[error("this link is another account's Liked Songs; only your own can be added")]
+	AnotherAccount,
 	#[error("this Spotify link has an invalid id")]
 	InvalidId,
 }
@@ -136,7 +141,7 @@ fn parse_uri(uri: &str) -> Result<Link, LinkError> {
 	let mut parts = rest.split(':');
 	let first = parts.next().unwrap_or_default();
 	if first.eq_ignore_ascii_case("collection") {
-		return liked_songs(parts.next(), parts.next());
+		return liked_songs(None, parts.next(), parts.next());
 	}
 	if first.eq_ignore_ascii_case("search") {
 		return search(&decode_search(rest.split_once(':').map_or("", |(_, words)| words), true));
@@ -144,10 +149,11 @@ fn parse_uri(uri: &str) -> Result<Link, LinkError> {
 	if first.eq_ignore_ascii_case("user") {
 		// A profile is spotify:user:<name>. Old playlist URIs go on after the name, and
 		// spotify:user:<name>:collection is that account's Liked Songs.
-		match parts.nth(1) {
+		let account = parts.next();
+		match parts.next() {
 			None => return Err(LinkError::Unsupported { kind: "user".to_owned() }),
 			Some(kind) if kind.eq_ignore_ascii_case("collection") => {
-				return liked_songs(Some("tracks"), parts.next());
+				return liked_songs(account, Some("tracks"), parts.next());
 			}
 			Some(_) => {}
 		}
@@ -182,9 +188,10 @@ fn parse_url(url: &str) -> Result<Link, LinkError> {
 	if parts.peek().is_some_and(|part| strip_prefix_ignore_case(part, "intl-").is_some()) {
 		parts.next();
 	}
+	let mut account = None;
 	if parts.peek().is_some_and(|part| part.eq_ignore_ascii_case("user")) {
 		parts.next();
-		parts.next();
+		account = parts.next();
 		// Old playlist links go on after the user name; a profile page ends there.
 		if parts.peek().is_none() {
 			return Err(LinkError::Unsupported { kind: "user".to_owned() });
@@ -192,7 +199,7 @@ fn parse_url(url: &str) -> Result<Link, LinkError> {
 	}
 	let kind = parts.next().ok_or(LinkError::NotSpotify)?.to_ascii_lowercase();
 	if kind == "collection" {
-		return liked_songs(parts.next(), parts.next());
+		return liked_songs(account, parts.next(), parts.next());
 	}
 	if kind == "search" {
 		return search(&decode_search(parts.next().unwrap_or_default(), false));
@@ -211,11 +218,15 @@ fn parse_url(url: &str) -> Result<Link, LinkError> {
 	Ok(Link::Id { kind, id })
 }
 
-/// Liked Songs for a collection link whose part after `collection` is `what` and whose part after
-/// that is `rest`; other collections, such as podcasts, are unsupported.
-fn liked_songs(what: Option<&str>, rest: Option<&str>) -> Result<Link, LinkError> {
+/// Liked Songs for a collection link of `account`, whose part after `collection` is `what` and
+/// whose part after that is `rest`; other collections, such as podcasts, are unsupported.
+fn liked_songs(
+	account: Option<&str>,
+	what: Option<&str>,
+	rest: Option<&str>,
+) -> Result<Link, LinkError> {
 	if what.is_some_and(|what| what.eq_ignore_ascii_case("tracks")) && rest.is_none() {
-		Ok(Link::LikedSongs)
+		Ok(Link::LikedSongs { account: account.map(str::to_owned) })
 	} else {
 		Err(LinkError::Unsupported { kind: "collection".to_owned() })
 	}
@@ -469,16 +480,29 @@ mod tests {
 
 	const USER: &str = "21e2w4ryeu3jowufvdh5ctyii";
 
+	fn own_liked_songs() -> Link {
+		Link::LikedSongs { account: None }
+	}
+
 	#[test]
 	fn parses_liked_songs_links() {
 		for text in [
-			"https://open.spotify.com/collection/tracks".to_owned(),
-			"spotify:collection:tracks".to_owned(),
-			"sptf://spotify:collection:tracks".to_owned(),
-			format!("spotify:user:{USER}:collection"),
+			"https://open.spotify.com/collection/tracks",
+			"spotify:collection:tracks",
+			"sptf://spotify:collection:tracks",
 		] {
-			assert_eq!(parse_link(&text), Ok(Link::LikedSongs), "{text}");
+			assert_eq!(parse_link(text), Ok(own_liked_songs()), "{text}");
 		}
+	}
+
+	#[test]
+	fn a_liked_songs_link_that_names_an_account_keeps_it() {
+		let named = Ok(Link::LikedSongs { account: Some(USER.to_owned()) });
+		assert_eq!(parse_link(&format!("spotify:user:{USER}:collection")), named);
+		assert_eq!(
+			parse_link(&format!("https://open.spotify.com/user/{USER}/collection/tracks")),
+			named
+		);
 	}
 
 	#[test]
@@ -494,9 +518,12 @@ mod tests {
 
 	#[test]
 	fn liked_songs_are_stored_as_the_collection_uri() {
-		assert_eq!(Link::LikedSongs.uri(), "spotify:collection:tracks");
-		assert_eq!(parse_link(&Link::LikedSongs.uri()), Ok(Link::LikedSongs));
-		assert_eq!(Link::LikedSongs.item(), None);
+		assert_eq!(own_liked_songs().uri(), "spotify:collection:tracks");
+		assert_eq!(parse_link(&own_liked_songs().uri()), Ok(own_liked_songs()));
+		assert_eq!(own_liked_songs().item(), None);
+		let named = Link::LikedSongs { account: Some(USER.to_owned()) };
+		assert_eq!(named.uri(), format!("spotify:user:{USER}:collection"));
+		assert_eq!(parse_link(&named.uri()), Ok(named));
 	}
 
 	#[test]

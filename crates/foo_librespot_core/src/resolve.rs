@@ -23,7 +23,7 @@ use librespot_protocol::metadata::{
 use protobuf::{EnumOrUnknown, Message};
 
 use crate::genre::parse_genres;
-use crate::link::{ItemId, Link, LinkKind};
+use crate::link::{ItemId, Link, LinkError, LinkKind};
 use crate::metadata::{
 	AlbumDetails, TrackInfo, availability, episode_availability, episode_info, explicit_allowed,
 	track_info,
@@ -128,6 +128,9 @@ pub trait MetadataSource: Send + Sync {
 	/// The track and episode URIs of the logged-in account's Liked Songs, in Spotify's order.
 	fn liked_songs(&self) -> impl Future<Output = Result<Vec<SpotifyUri>, CoreError>> + Send;
 
+	/// The logged-in account's username.
+	fn username(&self) -> String;
+
 	/// The track and episode URIs Spotify finds first for `words`: the first page of its search.
 	fn search(
 		&self,
@@ -204,7 +207,13 @@ pub async fn resolve<S: MetadataSource>(
 			let (name, ids) = source.artist(*id).await?;
 			(Some(name), ids.into_iter().map(|id| Entry::Item(ItemId::Track(id))).collect())
 		}
-		Link::LikedSongs => {
+		Link::LikedSongs { account } => {
+			if account
+				.as_ref()
+				.is_some_and(|account| !account.eq_ignore_ascii_case(&source.username()))
+			{
+				return Err(LinkError::AnotherAccount.into());
+			}
 			let uris = source.liked_songs().await?;
 			(Some("Liked Songs".to_owned()), uris.iter().map(playlist_entry).collect())
 		}
@@ -718,6 +727,10 @@ impl<S: MetadataSource> MetadataSource for CachedSource<S> {
 		self.inner.liked_songs()
 	}
 
+	fn username(&self) -> String {
+		self.inner.username()
+	}
+
 	fn search(
 		&self,
 		words: &str,
@@ -985,6 +998,10 @@ impl MetadataSource for LibrespotMetadata {
 		Ok(tracks.uris)
 	}
 
+	fn username(&self) -> String {
+		self.session.username()
+	}
+
 	async fn search(&self, words: &str) -> Result<Vec<SpotifyUri>, CoreError> {
 		let uri = Link::Search(words.to_owned()).uri();
 		let context = retry_rate_limited(|| self.session.spclient().get_context(&uri)).await?;
@@ -1073,7 +1090,7 @@ mod tests {
 		MAX_CONTEXT_PAGES, MetadataSource, Page, SkipReason, TrackCache, Viewer, context_tracks,
 		extension_values, listening_order, releases, resolve, retry_rate_limited,
 	};
-	use crate::link::{ItemId, Link, LinkKind};
+	use crate::link::{ItemId, Link, LinkError, LinkKind};
 	use crate::metadata::{AlbumDetails, EXPLICIT_FILTERED, TrackInfo};
 	use crate::{CoreError, SpotifyId, SpotifyUri};
 
@@ -1158,6 +1175,7 @@ mod tests {
 		liked: Vec<SpotifyUri>,
 		searches: HashMap<String, Vec<SpotifyUri>>,
 		discographies: HashMap<SpotifyId, (String, Vec<Vec<SpotifyId>>)>,
+		username: String,
 		track_calls: AtomicUsize,
 		/// Each album asked for, in the order asked.
 		albums_asked: Mutex<Vec<SpotifyId>>,
@@ -1234,6 +1252,10 @@ mod tests {
 		async fn search(&self, words: &str) -> Result<Vec<SpotifyUri>, CoreError> {
 			tokio::task::yield_now().await;
 			Ok(self.searches.get(words).cloned().unwrap_or_default())
+		}
+
+		fn username(&self) -> String {
+			self.username.clone()
 		}
 
 		async fn discography(
@@ -1477,10 +1499,31 @@ mod tests {
 			SpotifyUri::from_uri("spotify:local:Keith+Getty::In+Christ+Alone:279").unwrap(),
 			track_uri(1),
 		];
-		let resolved = resolve(&source, &Link::LikedSongs, ArtistTracks::Popular).await.unwrap();
+		let link = Link::LikedSongs { account: None };
+		let resolved = resolve(&source, &link, ArtistTracks::Popular).await.unwrap();
 		assert_eq!(resolved.name.as_deref(), Some("Liked Songs"));
 		assert_eq!(titles(&resolved.tracks), ["Track 2", "Track 1"]);
 		assert_eq!(resolved.skipped.len(), 1);
+	}
+
+	#[tokio::test]
+	async fn a_liked_songs_link_that_names_you_adds_yours() {
+		let mut source = FakeSource::with_tracks(&[1]);
+		source.username = "keithgetty".to_owned();
+		source.liked = vec![track_uri(1)];
+		let link = Link::LikedSongs { account: Some("KeithGetty".to_owned()) };
+		let resolved = resolve(&source, &link, ArtistTracks::Popular).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
+	}
+
+	#[tokio::test]
+	async fn another_accounts_liked_songs_are_refused() {
+		let mut source = FakeSource::with_tracks(&[1]);
+		source.username = "keithgetty".to_owned();
+		source.liked = vec![track_uri(1)];
+		let link = Link::LikedSongs { account: Some("kristyngetty".to_owned()) };
+		let result = resolve(&source, &link, ArtistTracks::Popular).await;
+		assert!(matches!(result, Err(CoreError::Link(LinkError::AnotherAccount))), "{result:?}");
 	}
 
 	fn page(tracks: &[u8], page_url: Option<&str>, next_page_url: Option<&str>) -> Page {
