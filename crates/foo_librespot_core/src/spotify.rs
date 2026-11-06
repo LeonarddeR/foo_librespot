@@ -13,7 +13,8 @@ use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
 use crate::metadata::{TrackInfo, largest_cover};
 use crate::profile::Profile;
 use crate::resolve::{
-	AlbumDetailsCache, CachedSource, LibrespotMetadata, Resolved, TrackCache, item, resolve,
+	AlbumDetailsCache, ArtistTracks, CachedSource, LibrespotMetadata, Resolved, TrackCache, item,
+	resolve,
 };
 use crate::runtime::CoreRuntime;
 use crate::session::{LibrespotConnector, SessionManager};
@@ -100,6 +101,7 @@ impl Core {
 	pub fn resolve(
 		&self,
 		link: &Link,
+		artist_tracks: ArtistTracks,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Resolved, CoreError> {
 		self.runtime.block_on(
@@ -109,7 +111,7 @@ impl Core {
 					LibrespotMetadata::new(session, self.albums.clone()),
 					self.cache.clone(),
 				);
-				resolve(&source, link).await
+				resolve(&source, link, artist_tracks).await
 			},
 			is_aborting,
 		)?
@@ -246,6 +248,7 @@ mod tests {
 	use crate::SpotifyId;
 	use crate::audio::track::SpotifyTrack;
 	use crate::link::{Link, LinkKind};
+	use crate::resolve::ArtistTracks;
 
 	#[test]
 	fn a_cancel_before_the_login_is_stored_wins() {
@@ -283,7 +286,7 @@ mod tests {
 	fn resolve_without_login_is_not_logged_in() {
 		let dir = tempfile::tempdir().unwrap();
 		let core = Core::new(dir.path()).unwrap();
-		let result = core.resolve(&album(), &|| false);
+		let result = core.resolve(&album(), ArtistTracks::Popular, &|| false);
 		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
 		core.shutdown();
 	}
@@ -292,7 +295,7 @@ mod tests {
 	fn aborted_call_is_aborted() {
 		let dir = tempfile::tempdir().unwrap();
 		let core = Core::new(dir.path()).unwrap();
-		let result = core.resolve(&album(), &|| true);
+		let result = core.resolve(&album(), ArtistTracks::Popular, &|| true);
 		assert!(matches!(result, Err(CoreError::Aborted)), "{result:?}");
 		core.shutdown();
 	}

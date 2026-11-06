@@ -1,14 +1,16 @@
-//! The foo_librespot page under Preferences > Tools: the Spotify login and the bitrate.
+//! The foo_librespot page under Preferences > Tools: the Spotify login, the bitrate and what
+//! artist links add.
 
 use std::ffi::CStr;
 
 use foo_librespot_core::audio::format::Bitrate;
+use foo_librespot_core::resolve::ArtistTracks;
 use foxide2k::abi::preferences::{GUID_TOOLS, STATE_CHANGED, STATE_RESETTABLE};
 use foxide2k::console;
 use foxide2k::dialog::host::{Dialog, DialogHandler, create_child_dialog};
-use foxide2k::dialog::notify::CBN_SELCHANGE;
+use foxide2k::dialog::notify::{BN_CLICKED, CBN_SELCHANGE};
 use foxide2k::dialog::style::{
-	BS_GROUPBOX, CBS_DROPDOWNLIST, DS_CONTROL, WS_CHILD, WS_TABSTOP, WS_VSCROLL,
+	BS_AUTOCHECKBOX, BS_GROUPBOX, CBS_DROPDOWNLIST, DS_CONTROL, WS_CHILD, WS_TABSTOP, WS_VSCROLL,
 };
 use foxide2k::dialog::template::{ControlClass, DialogTemplate, shell_font};
 use foxide2k::error::Result;
@@ -22,6 +24,8 @@ const ACCOUNT_GROUP: u16 = 100;
 const PLAYBACK_GROUP: u16 = 105;
 const BITRATE_LABEL: u16 = 106;
 const BITRATE: u16 = 107;
+const LINKS_GROUP: u16 = 111;
+const DISCOGRAPHY: u16 = 112;
 
 const BITRATES: [&str; 3] = ["96 kbit/s", "160 kbit/s", "320 kbit/s"];
 
@@ -41,12 +45,20 @@ pub fn page_template() -> DialogTemplate {
 			CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
 			(104, 134, 90, 60),
 		),
+		item(LINKS_GROUP, ControlClass::Button, "Links", BS_GROUPBOX, (7, 165, 318, 34)),
+		item(
+			DISCOGRAPHY,
+			ControlClass::Button,
+			"Artist links add the &whole discography",
+			BS_AUTOCHECKBOX | WS_TABSTOP,
+			(14, 180, 300, 10),
+		),
 	]);
 	DialogTemplate {
 		style: WS_CHILD | DS_CONTROL,
 		title: String::new(),
 		cx: 332,
-		cy: 170,
+		cy: 205,
 		font: shell_font(),
 		items,
 	}
@@ -80,6 +92,7 @@ impl DialogHandler for PageHandler {
 			dialog.combo_add(BITRATE, text);
 		}
 		dialog.combo_select(BITRATE, bitrate_index(settings::bitrate()));
+		dialog.set_checked(DISCOGRAPHY, settings::artist_tracks() == ArtistTracks::Discography);
 		None
 	}
 
@@ -87,7 +100,9 @@ impl DialogHandler for PageHandler {
 		if AccountPanel::command(*dialog, id, notification) {
 			return;
 		}
-		if id == BITRATE && notification == CBN_SELCHANGE {
+		if (id == BITRATE && notification == CBN_SELCHANGE)
+			|| (id == DISCOGRAPHY && notification == BN_CLICKED)
+		{
 			self.changed.on_state_changed();
 		}
 	}
@@ -106,8 +121,16 @@ struct OpenPage {
 }
 
 impl OpenPage {
-	fn chosen(&self) -> Bitrate {
+	fn chosen_bitrate(&self) -> Bitrate {
 		self.dialog.combo_selection(BITRATE).map_or_else(Bitrate::default, bitrate_at)
+	}
+
+	fn chosen_artist_tracks(&self) -> ArtistTracks {
+		if self.dialog.is_checked(DISCOGRAPHY) {
+			ArtistTracks::Discography
+		} else {
+			ArtistTracks::Popular
+		}
 	}
 }
 
@@ -117,7 +140,9 @@ impl PageInstance for OpenPage {
 	}
 
 	fn state(&self) -> u32 {
-		if self.chosen() == settings::bitrate() {
+		if self.chosen_bitrate() == settings::bitrate()
+			&& self.chosen_artist_tracks() == settings::artist_tracks()
+		{
 			STATE_RESETTABLE
 		} else {
 			STATE_RESETTABLE | STATE_CHANGED
@@ -125,14 +150,21 @@ impl PageInstance for OpenPage {
 	}
 
 	fn apply(&self) {
-		if let Err(error) = settings::set_bitrate(self.chosen()) {
+		if let Err(error) = settings::set_bitrate(self.chosen_bitrate()) {
 			console::print(&format!("foo_librespot: can't save the bitrate: {}", error.message));
+		}
+		if let Err(error) = settings::set_artist_tracks(self.chosen_artist_tracks()) {
+			console::print(&format!(
+				"foo_librespot: can't save what artist links add: {}",
+				error.message
+			));
 		}
 		self.changed.on_state_changed();
 	}
 
 	fn reset(&self) {
 		self.dialog.combo_select(BITRATE, bitrate_index(Bitrate::default()));
+		self.dialog.set_checked(DISCOGRAPHY, ArtistTracks::default() == ArtistTracks::Discography);
 		self.changed.on_state_changed();
 	}
 }
@@ -154,11 +186,12 @@ mod tests {
 	use crate::account::{ACCOUNT, BROWSER, CODE, CODE_LABEL, PAGE, PAGE_LABEL, STATUS};
 	use crate::backend;
 	use crate::login::{LoginController, install_controller};
-	use crate::settings::BITRATE_KEY;
+	use crate::settings::{ARTIST_TRACKS_KEY, BITRATE_KEY};
 	use crate::testing::{FakeBackend, device_code};
 
 	const BITRATE: u16 = super::BITRATE;
 	const BITRATE_LABEL: u16 = super::BITRATE_LABEL;
+	const DISCOGRAPHY: u16 = super::DISCOGRAPHY;
 
 	struct Setup {
 		api: &'static FakeApi,
@@ -209,6 +242,8 @@ mod tests {
 		assert_eq!(setup.dialog.text(PAGE_LABEL), "Pa&ge:");
 		assert_eq!(setup.dialog.text(BITRATE_LABEL), "&Preferred bitrate:");
 		assert_eq!(setup.dialog.combo_selection(BITRATE), Some(2));
+		assert_eq!(setup.dialog.text(DISCOGRAPHY), "Artist links add the &whole discography");
+		assert!(setup.dialog.is_checked(DISCOGRAPHY));
 	}
 
 	#[test]
@@ -229,9 +264,9 @@ mod tests {
 	#[test]
 	fn labels_precede_their_controls_in_tab_order() {
 		let setup = open_page();
-		assert_eq!(setup.dialog.tab_order(), [ACCOUNT, BITRATE]);
+		assert_eq!(setup.dialog.tab_order(), [ACCOUNT, BITRATE, DISCOGRAPHY]);
 		confirming(&setup);
-		assert_eq!(setup.dialog.tab_order(), [ACCOUNT, CODE, PAGE, BROWSER, BITRATE]);
+		assert_eq!(setup.dialog.tab_order(), [ACCOUNT, CODE, PAGE, BROWSER, BITRATE, DISCOGRAPHY]);
 		let ids: Vec<u16> = page_template().items.iter().map(|item| item.id).collect();
 		let at = |id| ids.iter().position(|&each| each == id).unwrap();
 		assert_eq!(at(CODE_LABEL) + 1, at(CODE));
@@ -343,6 +378,27 @@ mod tests {
 		setup.dialog.combo_select(BITRATE, 0);
 		setup.instance.reset();
 		assert_eq!(setup.dialog.combo_selection(BITRATE), Some(2));
+		assert_eq!(setup.instance.state(), STATE_RESETTABLE);
+	}
+
+	#[test]
+	fn unchecking_the_discography_marks_the_page_changed_and_apply_stores_it() {
+		let setup = open_page();
+		setup.dialog.set_checked(DISCOGRAPHY, false);
+		send_command(&setup.dialog, DISCOGRAPHY, BN_CLICKED);
+		assert_eq!(setup.callback.calls(), 1);
+		assert_eq!(setup.instance.state(), STATE_RESETTABLE | STATE_CHANGED);
+		setup.instance.apply();
+		assert_eq!(setup.api.config_int(ARTIST_TRACKS_KEY), Some(0));
+		assert_eq!(setup.instance.state(), STATE_RESETTABLE);
+	}
+
+	#[test]
+	fn reset_checks_the_discography() {
+		let setup = open_page();
+		setup.dialog.set_checked(DISCOGRAPHY, false);
+		setup.instance.reset();
+		assert!(setup.dialog.is_checked(DISCOGRAPHY));
 		assert_eq!(setup.instance.state(), STATE_RESETTABLE);
 	}
 

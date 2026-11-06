@@ -17,6 +17,7 @@ use std::sync::mpsc;
 use foo_librespot_core::audio::decoder::SAMPLE_RATE;
 use foo_librespot_core::audio::format::Bitrate;
 use foo_librespot_core::link::parse_link;
+use foo_librespot_core::resolve::ArtistTracks;
 use foo_librespot_core::{Core, CoreError};
 
 const USAGE: &str = "usage: spotify_dev [--profile <folder>] login | logout | resolve <link> | decode <track link> <seconds> [--seek <seconds>]";
@@ -74,7 +75,7 @@ fn login(core: &Core) -> Result<(), CoreError> {
 
 fn resolve(core: &Core, link: &str) -> Result<(), CoreError> {
 	let link = parse_link(link)?;
-	let resolved = core.resolve(&link, &|| false)?;
+	let resolved = core.resolve(&link, ArtistTracks::Popular, &|| false)?;
 	if let Some(name) = &resolved.name {
 		println!("{name}");
 	}

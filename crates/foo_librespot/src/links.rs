@@ -27,6 +27,7 @@ use crate::backend::backend;
 use crate::errors::host_error;
 use crate::fields::fill_info;
 use crate::first_use::login_on_first_use;
+use crate::settings;
 
 /// The content type of the stub file for a Spotify link.
 pub const CONTENT_TYPE: &str = "application/x-foo-librespot";
@@ -142,10 +143,10 @@ impl PlaylistLoader for SpotifyLoader {
 		};
 		callback.on_progress(path)?;
 		let is_aborting = || abort.is_aborting();
-		let resolved = match backend().resolve(&link, &is_aborting) {
+		let resolved = match backend().resolve(&link, settings::artist_tracks(), &is_aborting) {
 			// The first link of a new user: log in, then try once more.
 			Err(CoreError::NotLoggedIn) => login_on_first_use(&is_aborting)
-				.and_then(|()| backend().resolve(&link, &is_aborting)),
+				.and_then(|()| backend().resolve(&link, settings::artist_tracks(), &is_aborting)),
 			resolved => resolved,
 		}
 		.map_err(host_error)?;
@@ -167,6 +168,13 @@ impl PlaylistLoader for SpotifyLoader {
 			"foo_librespot: added {added} {} from {source}",
 			plural(added, "track", "tracks")
 		));
+		if resolved.duplicates > 0 {
+			console::print(&format!(
+				"foo_librespot: left out {} {} already added from another release",
+				resolved.duplicates,
+				plural(resolved.duplicates, "track", "tracks")
+			));
+		}
 		if !resolved.skipped.is_empty() {
 			let message = skipped_message(added, source, &resolved.skipped);
 			if let Err(error) =
@@ -184,7 +192,7 @@ mod tests {
 	use std::sync::Arc;
 	use std::time::{Duration, Instant};
 
-	use foo_librespot_core::resolve::{Resolved, SkipReason, Skipped};
+	use foo_librespot_core::resolve::{ArtistTracks, Resolved, SkipReason, Skipped};
 	use foo_librespot_core::{CoreError, SpotifyId};
 	use foxide2k::abi::file::OPEN_MODE_READ;
 	use foxide2k::cxx::ExceptionKind;
@@ -224,6 +232,7 @@ mod tests {
 				.zip(1u8..)
 				.map(|(title, byte)| Arc::new(track_info(id(byte), title)))
 				.collect(),
+			duplicates: 0,
 			skipped: Vec::new(),
 		}
 	}
@@ -346,6 +355,7 @@ mod tests {
 		fake.resolve_to(Resolved {
 			name: None,
 			tracks: vec![Arc::new(episode_info(id(1), "Our Ransom (Part 1)"))],
+			duplicates: 0,
 			skipped: Vec::new(),
 		});
 		let (callback, _record) = FakeLoaderCallback::new();
@@ -367,6 +377,7 @@ mod tests {
 		fake.resolve_to(Resolved {
 			name: None,
 			tracks: vec![Arc::new(elsewhere)],
+			duplicates: 0,
 			skipped: Vec::new(),
 		});
 		let (callback, record) = FakeLoaderCallback::new();
@@ -386,6 +397,7 @@ mod tests {
 		fake.resolve_to(Resolved {
 			name: Some("Sing! Podcast".to_owned()),
 			tracks: vec![Arc::new(episode_info(id(1), "On Spotify")), Arc::new(elsewhere)],
+			duplicates: 0,
 			skipped: Vec::new(),
 		});
 		let (callback, record) = FakeLoaderCallback::new();
@@ -455,6 +467,7 @@ mod tests {
 				Arc::new(track_info(id(2), "In Christ Alone")),
 				Arc::new(track_info(id(1), "The Power of the Cross")),
 			],
+			duplicates: 0,
 			skipped: Vec::new(),
 		});
 		let (callback, record) = FakeLoaderCallback::new();
@@ -470,6 +483,7 @@ mod tests {
 		fake.resolve_to(Resolved {
 			name: None,
 			tracks: vec![Arc::new(track_info(track_id(), "In Christ Alone"))],
+			duplicates: 0,
 			skipped: Vec::new(),
 		});
 		let (callback, record) = FakeLoaderCallback::new();
@@ -739,5 +753,39 @@ mod tests {
 		assert_eq!(error.kind, ExceptionKind::Io);
 		assert_eq!(prompt.shown(), 1);
 		assert_eq!(fake.logins_started(), 1);
+	}
+
+	const GETTY: &str = "sptf://spotify:artist:0I4Bk2s2BUJyykCwtxx8Xx";
+
+	#[test]
+	fn the_artist_choice_reaches_the_backend() {
+		let api = FakeApi::new();
+		api.install();
+		foxide2k::config_store::set_int(crate::settings::ARTIST_TRACKS_KEY, 0).unwrap();
+		let fake = installed_backend();
+		fake.resolve_to(album());
+		let (callback, _record) = FakeLoaderCallback::new();
+		loader().open(GETTY, callback, &FakeAbort::new(false)).unwrap();
+		assert_eq!(fake.last_artist_tracks(), Some(ArtistTracks::Popular));
+	}
+
+	#[test]
+	fn left_out_duplicates_are_counted_on_the_console() {
+		let api = FakeApi::new();
+		api.install();
+		let fake = installed_backend();
+		let mut resolved = album();
+		resolved.duplicates = 23;
+		fake.resolve_to(resolved);
+		let (callback, _record) = FakeLoaderCallback::new();
+		loader().open(GETTY, callback, &FakeAbort::new(false)).unwrap();
+		let lines = api.console_lines();
+		assert!(
+			lines.iter().any(|line| {
+				line == "foo_librespot: left out 23 tracks already added from another release"
+			}),
+			"{lines:?}"
+		);
+		assert!(api.popups().is_empty(), "{:?}", api.popups());
 	}
 }

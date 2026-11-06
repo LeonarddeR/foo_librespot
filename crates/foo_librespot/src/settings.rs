@@ -1,6 +1,7 @@
 //! The preferences foo_librespot keeps in foobar2000's settings store.
 
 use foo_librespot_core::audio::format::Bitrate;
+use foo_librespot_core::resolve::ArtistTracks;
 use foxide2k::config_store;
 
 /// The preferred bitrate in kbit/s: 96, 160 or 320.
@@ -36,12 +37,40 @@ pub fn bitrate_at(index: usize) -> Bitrate {
 	BITRATES.get(index).copied().unwrap_or_default()
 }
 
+/// What an artist link adds: 0 for the popular tracks, 1 for the whole discography.
+pub const ARTIST_TRACKS_KEY: &str = "foo_librespot.artist_tracks";
+
+const ARTIST_CHOICES: [ArtistTracks; 2] = [ArtistTracks::Popular, ArtistTracks::Discography];
+
+const fn stored(choice: ArtistTracks) -> i64 {
+	match choice {
+		ArtistTracks::Popular => 0,
+		ArtistTracks::Discography => 1,
+	}
+}
+
+/// What an artist link adds. Anything but 0 or 1 in the store gives the default, the whole
+/// discography.
+pub fn artist_tracks() -> ArtistTracks {
+	let value = config_store::get_int(ARTIST_TRACKS_KEY, stored(ArtistTracks::default()));
+	ARTIST_CHOICES.into_iter().find(|&choice| stored(choice) == value).unwrap_or_default()
+}
+
+pub fn set_artist_tracks(choice: ArtistTracks) -> foxide2k::error::Result<()> {
+	config_store::set_int(ARTIST_TRACKS_KEY, stored(choice))
+}
+
 #[cfg(test)]
 mod tests {
 	use foo_librespot_core::audio::format::Bitrate;
 	use foxide2k::testing::FakeApi;
 
-	use super::{BITRATE_KEY, bitrate, bitrate_at, bitrate_index, set_bitrate};
+	use foo_librespot_core::resolve::ArtistTracks;
+
+	use super::{
+		ARTIST_TRACKS_KEY, BITRATE_KEY, artist_tracks, bitrate, bitrate_at, bitrate_index,
+		set_artist_tracks, set_bitrate,
+	};
 
 	#[test]
 	fn default_bitrate_is_320() {
@@ -77,5 +106,32 @@ mod tests {
 			assert_eq!(bitrate_at(index), bitrate);
 		}
 		assert_eq!(bitrate_at(7), Bitrate::Kbps320);
+	}
+
+	#[test]
+	fn artist_links_add_the_whole_discography_by_default() {
+		FakeApi::new().install();
+		assert_eq!(artist_tracks(), ArtistTracks::Discography);
+	}
+
+	#[test]
+	fn the_artist_choice_round_trips() {
+		let api = FakeApi::new();
+		api.install();
+		set_artist_tracks(ArtistTracks::Popular).unwrap();
+		assert_eq!(api.config_int(ARTIST_TRACKS_KEY), Some(0));
+		assert_eq!(artist_tracks(), ArtistTracks::Popular);
+		set_artist_tracks(ArtistTracks::Discography).unwrap();
+		assert_eq!(api.config_int(ARTIST_TRACKS_KEY), Some(1));
+		assert_eq!(artist_tracks(), ArtistTracks::Discography);
+	}
+
+	#[test]
+	fn unknown_artist_choices_give_the_default() {
+		FakeApi::new().install();
+		for stored in [-1, 2, 9999] {
+			foxide2k::config_store::set_int(ARTIST_TRACKS_KEY, stored).unwrap();
+			assert_eq!(artist_tracks(), ArtistTracks::Discography, "{stored}");
+		}
 	}
 }

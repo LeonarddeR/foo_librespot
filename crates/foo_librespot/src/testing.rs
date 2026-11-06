@@ -11,7 +11,7 @@ use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::replaygain::ReplayGain;
-use foo_librespot_core::resolve::Resolved;
+use foo_librespot_core::resolve::{ArtistTracks, Resolved};
 use foo_librespot_core::{CoreError, SpotifyId};
 
 use crate::backend::{Backend, LoginTask, OnCode, OnDone, PcmTrack};
@@ -115,6 +115,8 @@ struct State {
 	/// While set, reading the stored login fails as if Spotify's core couldn't start.
 	start_failure: Mutex<Option<fn() -> CoreError>>,
 	resolved: Mutex<Option<Resolved>>,
+	/// The choice the last resolve was asked with.
+	artist_tracks: Mutex<Option<ArtistTracks>>,
 	cover: Mutex<Option<Vec<u8>>>,
 	/// While set, reads and seeks block, like a Spotify download that has stalled.
 	stalled: AtomicBool,
@@ -169,6 +171,11 @@ impl FakeBackend {
 
 	pub fn resolve_to(&self, resolved: Resolved) {
 		*self.0.resolved.lock().unwrap_or_else(PoisonError::into_inner) = Some(resolved);
+	}
+
+	/// The choice the last resolve was asked with.
+	pub fn last_artist_tracks(&self) -> Option<ArtistTracks> {
+		*self.0.artist_tracks.lock().unwrap_or_else(PoisonError::into_inner)
 	}
 
 	pub fn set_cover(&self, bytes: Vec<u8>) {
@@ -271,7 +278,13 @@ impl FakeBackend {
 }
 
 impl Backend for FakeBackend {
-	fn resolve(&self, _link: &Link, is_aborting: &dyn Fn() -> bool) -> Result<Resolved, CoreError> {
+	fn resolve(
+		&self,
+		_link: &Link,
+		artist_tracks: ArtistTracks,
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<Resolved, CoreError> {
+		*self.0.artist_tracks.lock().unwrap_or_else(PoisonError::into_inner) = Some(artist_tracks);
 		self.enter(is_aborting)?;
 		Ok(self
 			.0

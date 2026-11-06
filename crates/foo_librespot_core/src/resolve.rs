@@ -1,7 +1,7 @@
 //! Turning a track, album, playlist, episode or show link into the tracks and episodes to add
 //! to a foobar2000 playlist.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -77,6 +77,19 @@ pub struct Resolved {
 	pub name: Option<String>,
 	pub tracks: Vec<Arc<TrackInfo>>,
 	pub skipped: Vec<Skipped>,
+	/// Playable tracks left out because an earlier track had the same ISRC; only a discography
+	/// leaves any out.
+	pub duplicates: usize,
+}
+
+/// What an artist link adds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ArtistTracks {
+	/// The artist's popular tracks in the account's country, as their Spotify page lists them.
+	Popular,
+	/// The artist's albums, singles, EPs and compilations, each recording once.
+	#[default]
+	Discography,
 }
 
 /// Where track, episode, album, playlist and show metadata comes from.
@@ -120,6 +133,12 @@ pub trait MetadataSource: Send + Sync {
 		&self,
 		words: &str,
 	) -> impl Future<Output = Result<Vec<SpotifyUri>, CoreError>> + Send;
+
+	/// The artist name and their releases: [`releases`] of their metadata.
+	fn discography(
+		&self,
+		id: SpotifyId,
+	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send;
 }
 
 /// The info of one item.
@@ -148,7 +167,11 @@ fn playable(info: &TrackInfo) -> bool {
 /// Resolves `link` into tracks. Entries that can't be played are skipped with a reason; only
 /// when nothing at all could be resolved is the first error returned instead, so a network
 /// failure never looks like an empty album.
-pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resolved, CoreError> {
+pub async fn resolve<S: MetadataSource>(
+	source: &S,
+	link: &Link,
+	artist_tracks: ArtistTracks,
+) -> Result<Resolved, CoreError> {
 	let (name, entries) = match link {
 		Link::Id { kind: LinkKind::Track | LinkKind::Episode, .. } => {
 			(None, link.item().map(Entry::Item).into_iter().collect::<Vec<_>>())
@@ -164,6 +187,10 @@ pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resol
 		Link::Id { kind: LinkKind::Show, id } => {
 			let (name, ids) = source.show(*id).await?;
 			(Some(name), ids.into_iter().map(|id| Entry::Item(ItemId::Episode(id))).collect())
+		}
+		Link::Id { kind: LinkKind::Artist, id } if artist_tracks == ArtistTracks::Discography => {
+			let (name, releases) = source.discography(*id).await?;
+			(Some(name), discography_entries(source, releases).await)
 		}
 		Link::Id { kind: LinkKind::Artist, id } => {
 			let (name, ids) = source.artist(*id).await?;
@@ -195,8 +222,11 @@ pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resol
 		.await
 		.into_iter();
 
-	let mut resolved = Resolved { name, tracks: Vec::new(), skipped: Vec::new() };
+	let mut resolved = Resolved { name, tracks: Vec::new(), skipped: Vec::new(), duplicates: 0 };
 	let mut first_error = None;
+	let discography = artist_tracks == ArtistTracks::Discography
+		&& matches!(link, Link::Id { kind: LinkKind::Artist, .. });
+	let mut recordings = HashSet::new();
 	for entry in entries {
 		let item = match entry {
 			Entry::Skip(skipped) => {
@@ -206,7 +236,16 @@ pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resol
 			Entry::Item(item) => item,
 		};
 		match fetched.next().unwrap_or_else(|| Err(missing(item))) {
-			Ok(info) if playable(&info) => resolved.tracks.push(info),
+			Ok(info) if playable(&info) => {
+				if discography
+					&& let Some(isrc) = &info.isrc
+					&& !recordings.insert(isrc.clone())
+				{
+					resolved.duplicates += 1;
+				} else {
+					resolved.tracks.push(info);
+				}
+			}
 			Ok(info) => resolved.skipped.push(Skipped {
 				uri: item.uri().to_uri(),
 				reason: SkipReason::Unavailable(info.unavailable.clone().unwrap_or_else(|| {
@@ -240,6 +279,32 @@ fn playlist_entry(uri: &SpotifyUri) -> Entry {
 	Entry::Skip(Skipped { uri: uri.to_uri(), reason })
 }
 
+/// The tracks of `releases` in order, each release's in album order; a release that fails to
+/// load is skipped with its reason.
+async fn discography_entries<S: MetadataSource>(
+	source: &S,
+	releases: Vec<SpotifyId>,
+) -> Vec<Entry> {
+	let albums: Vec<_> = stream::iter(releases)
+		.map(|release| async move { (release, source.album(release).await) })
+		.buffered(BATCH_CONCURRENCY)
+		.collect()
+		.await;
+	let mut entries = Vec::new();
+	for (release, album) in albums {
+		match album {
+			Ok((_, ids)) => {
+				entries.extend(ids.into_iter().map(|id| Entry::Item(ItemId::Track(id))));
+			}
+			Err(error) => entries.push(Entry::Skip(Skipped {
+				uri: SpotifyUri::Album { id: release }.to_uri(),
+				reason: SkipReason::Unavailable(error.to_string()),
+			})),
+		}
+	}
+	entries
+}
+
 /// `newest_first`, the order Spotify lists a show's episodes in, put in the order the show is
 /// meant to be heard: from the first episode for a sequential show, such as a Bible-in-a-year
 /// podcast, and from the newest for the rest.
@@ -251,6 +316,18 @@ pub fn listening_order(
 		newest_first.reverse();
 	}
 	newest_first
+}
+
+/// The releases a discography adds: each album, then each single and EP, then each compilation,
+/// in Spotify's order within each group (newest first), taking each release's first edition.
+/// Albums the artist only appears on are left out.
+pub fn releases(artist: &Artist) -> Vec<SpotifyId> {
+	[&artist.albums, &artist.singles, &artist.compilations]
+		.into_iter()
+		.flat_map(|groups| groups.iter())
+		.filter_map(|group| group.first())
+		.filter_map(|uri| SpotifyId::try_from(uri).ok())
+		.collect()
 }
 
 /// How many further pages of one context foo_librespot fetches at most.
@@ -522,6 +599,13 @@ impl<S: MetadataSource> MetadataSource for CachedSource<S> {
 	) -> impl Future<Output = Result<Vec<SpotifyUri>, CoreError>> + Send {
 		self.inner.search(words)
 	}
+
+	fn discography(
+		&self,
+		id: SpotifyId,
+	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send {
+		self.inner.discography(id)
+	}
 }
 
 /// Metadata straight from Spotify, through librespot.
@@ -775,6 +859,13 @@ impl MetadataSource for LibrespotMetadata {
 		let context = retry_rate_limited(|| self.session.spclient().get_context(&uri)).await?;
 		Ok(context.pages.first().map(|page| Page::of(page).uris()).unwrap_or_default())
 	}
+
+	async fn discography(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
+		let uri = SpotifyUri::Artist { id };
+		let artist = retry_rate_limited(|| Artist::get(&self.session, &uri)).await?;
+		let releases = releases(&artist);
+		Ok((artist.name, releases))
+	}
 }
 
 /// The raw values of the extensions Spotify sent for one item.
@@ -840,15 +931,16 @@ mod tests {
 	use librespot_core::date::Date;
 	use librespot_protocol::metadata::audio_file::Format;
 	use librespot_protocol::metadata::{
-		Album as AlbumMessage, AudioFile as AudioFileMessage, Episode as EpisodeMessage,
+		Album as AlbumMessage, AlbumGroup as AlbumGroupMessage, Artist as ArtistMessage,
+		AudioFile as AudioFileMessage, Episode as EpisodeMessage,
 		Restriction as RestrictionMessage, Track as TrackMessage,
 	};
 	use protobuf::{CodedOutputStream, Message};
 
 	use super::{
-		AlbumDetailsCache, CachedSource, ExtensionValues, LibrespotMetadata, MAX_CONTEXT_PAGES,
-		MetadataSource, Page, SkipReason, TrackCache, Viewer, context_tracks, extension_values,
-		listening_order, resolve, retry_rate_limited,
+		AlbumDetailsCache, ArtistTracks, CachedSource, ExtensionValues, LibrespotMetadata,
+		MAX_CONTEXT_PAGES, MetadataSource, Page, SkipReason, TrackCache, Viewer, context_tracks,
+		extension_values, listening_order, releases, resolve, retry_rate_limited,
 	};
 	use crate::link::{ItemId, Link, LinkKind};
 	use crate::metadata::{AlbumDetails, EXPLICIT_FILTERED, TrackInfo};
@@ -934,6 +1026,7 @@ mod tests {
 		artists: HashMap<SpotifyId, (String, Vec<SpotifyId>)>,
 		liked: Vec<SpotifyUri>,
 		searches: HashMap<String, Vec<SpotifyUri>>,
+		discographies: HashMap<SpotifyId, (String, Vec<SpotifyId>)>,
 		track_calls: AtomicUsize,
 		/// The size of each batch asked for, in the order asked.
 		batches: Mutex<Vec<usize>>,
@@ -1008,6 +1101,107 @@ mod tests {
 			tokio::task::yield_now().await;
 			Ok(self.searches.get(words).cloned().unwrap_or_default())
 		}
+
+		async fn discography(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
+			tokio::task::yield_now().await;
+			Ok(self.discographies.get(&id).expect("unknown discography").clone())
+		}
+	}
+
+	/// Track `byte`, recorded as `isrc`.
+	fn recording(byte: u8, isrc: Option<&str>) -> (Result<TrackInfo, &'static str>, Duration) {
+		let mut info = info(byte);
+		info.isrc = isrc.map(str::to_owned);
+		(Ok(info), Duration::ZERO)
+	}
+
+	/// Keith & Kristyn Getty's releases: an album with tracks 1 and 2, a single with track 3 (the
+	/// album's track 1 again), and a compilation with tracks 4 (no ISRC) and 5 (track 2 again).
+	fn getty_discography() -> FakeSource {
+		let mut source = FakeSource::default();
+		source.tracks.insert(id(1), recording(1, Some("USY5K0600040")));
+		source.tracks.insert(id(2), recording(2, Some("USY5K0600060")));
+		source.tracks.insert(id(3), recording(3, Some("USY5K0600040")));
+		source.tracks.insert(id(4), recording(4, None));
+		source.tracks.insert(id(5), recording(5, Some("USY5K0600060")));
+		source.albums.insert(id(100), Ok(("In Christ Alone".to_owned(), vec![id(1), id(2)])));
+		source.albums.insert(id(101), Ok(("In Christ Alone (Single)".to_owned(), vec![id(3)])));
+		source.albums.insert(id(102), Ok(("Hymns of Hope".to_owned(), vec![id(4), id(5)])));
+		source
+			.discographies
+			.insert(id(150), ("Keith & Kristyn Getty".to_owned(), vec![id(100), id(101), id(102)]));
+		source.artists.insert(id(150), ("Keith & Kristyn Getty".to_owned(), vec![id(2)]));
+		source
+	}
+
+	fn artist_link() -> Link {
+		Link::Id { kind: LinkKind::Artist, id: id(150) }
+	}
+
+	#[tokio::test]
+	async fn discography_adds_each_release_in_order_and_each_recording_once() {
+		let source = getty_discography();
+		let resolved = resolve(&source, &artist_link(), ArtistTracks::Discography).await.unwrap();
+		assert_eq!(resolved.name.as_deref(), Some("Keith & Kristyn Getty"));
+		assert_eq!(titles(&resolved.tracks), ["Track 1", "Track 2", "Track 4"]);
+		assert_eq!(resolved.duplicates, 2);
+		assert!(resolved.skipped.is_empty());
+	}
+
+	#[tokio::test]
+	async fn popular_tracks_when_chosen_for_artist_links() {
+		let source = getty_discography();
+		let resolved = resolve(&source, &artist_link(), ArtistTracks::Popular).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Track 2"]);
+		assert_eq!(resolved.duplicates, 0);
+	}
+
+	#[tokio::test]
+	async fn an_album_copy_that_cant_play_leaves_the_single_copy() {
+		let mut source = getty_discography();
+		let mut blocked = info(1);
+		blocked.isrc = Some("USY5K0600040".to_owned());
+		blocked.unavailable = Some("not available in your country (NL)".to_owned());
+		source.tracks.insert(id(1), (Ok(blocked), Duration::ZERO));
+		let resolved = resolve(&source, &artist_link(), ArtistTracks::Discography).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Track 2", "Track 3", "Track 4"]);
+		assert_eq!(resolved.skipped.len(), 1);
+		assert_eq!(resolved.duplicates, 1);
+	}
+
+	#[tokio::test]
+	async fn a_release_that_fails_is_skipped_with_its_reason() {
+		let mut source = getty_discography();
+		source.albums.insert(id(101), Err("Spotify sent no metadata for this album"));
+		let resolved = resolve(&source, &artist_link(), ArtistTracks::Discography).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Track 1", "Track 2", "Track 4"]);
+		assert_eq!(resolved.skipped.len(), 1);
+		assert_eq!(resolved.skipped[0].uri, SpotifyUri::Album { id: id(101) }.to_uri());
+	}
+
+	fn group(bytes: &[u8]) -> AlbumGroupMessage {
+		let mut group = AlbumGroupMessage::new();
+		group.album = bytes
+			.iter()
+			.map(|&byte| {
+				let mut album = AlbumMessage::new();
+				album.set_gid(vec![byte; 16]);
+				album
+			})
+			.collect();
+		group
+	}
+
+	#[test]
+	fn releases_come_albums_first_then_singles_then_compilations_without_appearances() {
+		let mut message = ArtistMessage::new();
+		message.set_gid(vec![150; 16]);
+		message.album_group = vec![group(&[100]), group(&[103, 104])];
+		message.single_group = vec![group(&[101])];
+		message.compilation_group = vec![group(&[102])];
+		message.appears_on_group = vec![group(&[105])];
+		let artist = librespot_metadata::Artist::try_from(&message).unwrap();
+		assert_eq!(releases(&artist), [id(100), id(103), id(101), id(102)]);
 	}
 
 	#[tokio::test]
@@ -1018,7 +1212,7 @@ mod tests {
 			vec![SpotifyUri::Track { id: id(1) }, SpotifyUri::Track { id: id(2) }],
 		);
 		let link = Link::Search("in christ alone".to_owned());
-		let resolved = resolve(&source, &link).await.unwrap();
+		let resolved = resolve(&source, &link, ArtistTracks::Popular).await.unwrap();
 		assert_eq!(resolved.name.as_deref(), Some("in christ alone"));
 		assert_eq!(titles(&resolved.tracks), ["Track 1", "Track 2"]);
 	}
@@ -1039,7 +1233,7 @@ mod tests {
 			SpotifyUri::from_uri("spotify:local:Keith+Getty::In+Christ+Alone:279").unwrap(),
 			track_uri(1),
 		];
-		let resolved = resolve(&source, &Link::LikedSongs).await.unwrap();
+		let resolved = resolve(&source, &Link::LikedSongs, ArtistTracks::Popular).await.unwrap();
 		assert_eq!(resolved.name.as_deref(), Some("Liked Songs"));
 		assert_eq!(titles(&resolved.tracks), ["Track 2", "Track 1"]);
 		assert_eq!(resolved.skipped.len(), 1);
@@ -1107,7 +1301,7 @@ mod tests {
 		let mut source = FakeSource::with_tracks(&[1, 2, 3]);
 		source.artists.insert(id(150), ("Keith & Kristyn Getty".to_owned(), vec![id(3), id(1)]));
 		let link = Link::Id { kind: LinkKind::Artist, id: id(150) };
-		let resolved = resolve(&source, &link).await.unwrap();
+		let resolved = resolve(&source, &link, ArtistTracks::Popular).await.unwrap();
 		assert_eq!(resolved.name.as_deref(), Some("Keith & Kristyn Getty"));
 		assert_eq!(titles(&resolved.tracks), ["Track 3", "Track 1"]);
 	}
@@ -1116,7 +1310,9 @@ mod tests {
 	async fn track_link_resolves_to_one_track() {
 		let source = FakeSource::with_tracks(&[1]);
 		let resolved =
-			resolve(&source, &Link::Id { kind: LinkKind::Track, id: id(1) }).await.unwrap();
+			resolve(&source, &Link::Id { kind: LinkKind::Track, id: id(1) }, ArtistTracks::Popular)
+				.await
+				.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
 		assert_eq!(resolved.name, None);
 		assert!(resolved.skipped.is_empty());
@@ -1126,8 +1322,13 @@ mod tests {
 	async fn episode_link_resolves_to_one_episode() {
 		let mut source = FakeSource::default();
 		source.episodes.insert(id(50), episode(50));
-		let resolved =
-			resolve(&source, &Link::Id { kind: LinkKind::Episode, id: id(50) }).await.unwrap();
+		let resolved = resolve(
+			&source,
+			&Link::Id { kind: LinkKind::Episode, id: id(50) },
+			ArtistTracks::Popular,
+		)
+		.await
+		.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Episode 50"]);
 		assert_eq!(resolved.tracks[0].id, ItemId::Episode(id(50)));
 	}
@@ -1139,8 +1340,13 @@ mod tests {
 			source.episodes.insert(id(byte), episode(byte));
 		}
 		source.shows.insert(id(250), ("The Show".to_owned(), vec![id(52), id(50), id(51)]));
-		let resolved =
-			resolve(&source, &Link::Id { kind: LinkKind::Show, id: id(250) }).await.unwrap();
+		let resolved = resolve(
+			&source,
+			&Link::Id { kind: LinkKind::Show, id: id(250) },
+			ArtistTracks::Popular,
+		)
+		.await
+		.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Episode 52", "Episode 50", "Episode 51"]);
 		assert_eq!(resolved.name.as_deref(), Some("The Show"));
 	}
@@ -1152,8 +1358,13 @@ mod tests {
 			source.episodes.insert(id(byte), episode(byte));
 		}
 		source.shows.insert(id(255), ("The Show".to_owned(), (1..=250u8).map(id).collect()));
-		let resolved =
-			resolve(&source, &Link::Id { kind: LinkKind::Show, id: id(255) }).await.unwrap();
+		let resolved = resolve(
+			&source,
+			&Link::Id { kind: LinkKind::Show, id: id(255) },
+			ArtistTracks::Popular,
+		)
+		.await
+		.unwrap();
 		assert_eq!(resolved.tracks.len(), 250);
 		assert_eq!(resolved.tracks[0].title, "Episode 1");
 		assert_eq!(resolved.tracks[249].title, "Episode 250");
@@ -1191,8 +1402,13 @@ mod tests {
 		source.episodes.insert(id(50), hosted_elsewhere);
 		source.episodes.insert(id(51), silent);
 		source.shows.insert(id(250), ("The Show".to_owned(), vec![id(50), id(51)]));
-		let resolved =
-			resolve(&source, &Link::Id { kind: LinkKind::Show, id: id(250) }).await.unwrap();
+		let resolved = resolve(
+			&source,
+			&Link::Id { kind: LinkKind::Show, id: id(250) },
+			ArtistTracks::Popular,
+		)
+		.await
+		.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Episode 50"]);
 		assert_eq!(resolved.skipped.len(), 1);
 		assert_eq!(resolved.skipped[0].uri, SpotifyUri::Episode { id: id(51) }.to_uri());
@@ -1202,7 +1418,9 @@ mod tests {
 	async fn track_link_failure_is_an_error() {
 		let mut source = FakeSource::default();
 		source.tracks.insert(id(1), (Err("gone"), Duration::ZERO));
-		let result = resolve(&source, &Link::Id { kind: LinkKind::Track, id: id(1) }).await;
+		let result =
+			resolve(&source, &Link::Id { kind: LinkKind::Track, id: id(1) }, ArtistTracks::Popular)
+				.await;
 		assert!(matches!(&result, Err(CoreError::Unavailable(message)) if message == "gone"));
 	}
 
@@ -1214,8 +1432,13 @@ mod tests {
 			source.tracks.insert(id(byte), (Ok(info(byte)), delay));
 		}
 		source.albums.insert(id(100), Ok(("The Album".to_owned(), (1..=5).map(id).collect())));
-		let resolved =
-			resolve(&source, &Link::Id { kind: LinkKind::Album, id: id(100) }).await.unwrap();
+		let resolved = resolve(
+			&source,
+			&Link::Id { kind: LinkKind::Album, id: id(100) },
+			ArtistTracks::Popular,
+		)
+		.await
+		.unwrap();
 		assert_eq!(
 			titles(&resolved.tracks),
 			["Track 1", "Track 2", "Track 3", "Track 4", "Track 5"]
@@ -1241,8 +1464,13 @@ mod tests {
 				],
 			),
 		);
-		let resolved =
-			resolve(&source, &Link::Id { kind: LinkKind::Playlist, id: id(200) }).await.unwrap();
+		let resolved = resolve(
+			&source,
+			&Link::Id { kind: LinkKind::Playlist, id: id(200) },
+			ArtistTracks::Popular,
+		)
+		.await
+		.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Track 1", "Episode 50", "Track 2"]);
 		assert_eq!(resolved.name.as_deref(), Some("Mix"));
 		let skipped: Vec<_> =
@@ -1261,8 +1489,13 @@ mod tests {
 				vec![SpotifyUri::Track { id: id(2) }, SpotifyUri::Track { id: id(1) }],
 			),
 		);
-		let resolved =
-			resolve(&source, &Link::Id { kind: LinkKind::Playlist, id: id(200) }).await.unwrap();
+		let resolved = resolve(
+			&source,
+			&Link::Id { kind: LinkKind::Playlist, id: id(200) },
+			ArtistTracks::Popular,
+		)
+		.await
+		.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
 		assert_eq!(resolved.skipped.len(), 1);
 		assert_eq!(resolved.skipped[0].uri, SpotifyUri::Track { id: id(2) }.to_uri());
@@ -1278,8 +1511,13 @@ mod tests {
 		silent.has_audio = false;
 		source.tracks.insert(id(2), (Ok(silent), Duration::ZERO));
 		source.albums.insert(id(100), Ok(("The Album".to_owned(), vec![id(1), id(2)])));
-		let resolved =
-			resolve(&source, &Link::Id { kind: LinkKind::Album, id: id(100) }).await.unwrap();
+		let resolved = resolve(
+			&source,
+			&Link::Id { kind: LinkKind::Album, id: id(100) },
+			ArtistTracks::Popular,
+		)
+		.await
+		.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
 		assert!(matches!(resolved.skipped[0].reason, SkipReason::Unavailable(_)));
 	}
@@ -1291,8 +1529,13 @@ mod tests {
 		locked.unavailable = Some("not available in your country".to_owned());
 		source.tracks.insert(id(2), (Ok(locked), Duration::ZERO));
 		source.albums.insert(id(100), Ok(("The Album".to_owned(), vec![id(2), id(1)])));
-		let resolved =
-			resolve(&source, &Link::Id { kind: LinkKind::Album, id: id(100) }).await.unwrap();
+		let resolved = resolve(
+			&source,
+			&Link::Id { kind: LinkKind::Album, id: id(100) },
+			ArtistTracks::Popular,
+		)
+		.await
+		.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
 		assert_eq!(
 			resolved.skipped[0].reason,
@@ -1309,8 +1552,8 @@ mod tests {
 		inner.albums.insert(id(100), Ok(("The Album".to_owned(), vec![id(1), id(2)])));
 		let source = CachedSource::new(inner, TrackCache::default());
 		let link = Link::Id { kind: LinkKind::Album, id: id(100) };
-		resolve(&source, &link).await.unwrap();
-		resolve(&source, &link).await.unwrap();
+		resolve(&source, &link, ArtistTracks::Popular).await.unwrap();
+		resolve(&source, &link, ArtistTracks::Popular).await.unwrap();
 		// Track 1 once; track 2 each time, since its release or the country may change.
 		assert_eq!(source.inner().track_calls.load(Ordering::SeqCst), 3);
 	}
@@ -1620,7 +1863,12 @@ mod tests {
 		source.tracks.insert(id(1), (Err("first"), Duration::from_millis(30)));
 		source.tracks.insert(id(2), (Err("second"), Duration::ZERO));
 		source.albums.insert(id(100), Ok(("The Album".to_owned(), vec![id(1), id(2)])));
-		let result = resolve(&source, &Link::Id { kind: LinkKind::Album, id: id(100) }).await;
+		let result = resolve(
+			&source,
+			&Link::Id { kind: LinkKind::Album, id: id(100) },
+			ArtistTracks::Popular,
+		)
+		.await;
 		assert!(matches!(&result, Err(CoreError::Unavailable(message)) if message == "first"));
 	}
 
@@ -1628,7 +1876,12 @@ mod tests {
 	async fn album_fetch_failure_is_an_error() {
 		let mut source = FakeSource::default();
 		source.albums.insert(id(100), Err("no such album"));
-		let result = resolve(&source, &Link::Id { kind: LinkKind::Album, id: id(100) }).await;
+		let result = resolve(
+			&source,
+			&Link::Id { kind: LinkKind::Album, id: id(100) },
+			ArtistTracks::Popular,
+		)
+		.await;
 		assert!(
 			matches!(&result, Err(CoreError::Unavailable(message)) if message == "no such album")
 		);
@@ -1641,8 +1894,8 @@ mod tests {
 		let cache = TrackCache::default();
 		let source = CachedSource::new(inner, cache.clone());
 		let link = Link::Id { kind: LinkKind::Album, id: id(100) };
-		resolve(&source, &link).await.unwrap();
-		let again = resolve(&source, &link).await.unwrap();
+		resolve(&source, &link, ArtistTracks::Popular).await.unwrap();
+		let again = resolve(&source, &link, ArtistTracks::Popular).await.unwrap();
 		assert_eq!(again.tracks.len(), 3);
 		assert_eq!(source.inner().track_calls.load(Ordering::SeqCst), 3);
 		assert_eq!(

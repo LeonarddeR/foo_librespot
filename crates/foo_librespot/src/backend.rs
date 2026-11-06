@@ -10,7 +10,7 @@ use foo_librespot_core::audio::track::SpotifyTrack;
 use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
-use foo_librespot_core::resolve::Resolved;
+use foo_librespot_core::resolve::{ArtistTracks, Resolved};
 use foo_librespot_core::{Core, CoreError, LoginHandle};
 
 use crate::lifecycle::Lifecycle;
@@ -24,7 +24,12 @@ pub type OnDone = Box<dyn FnOnce(Result<String, CoreError>) + Send>;
 /// Everything the services need from Spotify. Every call blocks and returns
 /// [`CoreError::Aborted`] soon after `is_aborting` turns true.
 pub trait Backend: Send + Sync {
-	fn resolve(&self, link: &Link, is_aborting: &dyn Fn() -> bool) -> Result<Resolved, CoreError>;
+	fn resolve(
+		&self,
+		link: &Link,
+		artist_tracks: ArtistTracks,
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<Resolved, CoreError>;
 	fn track_info(
 		&self,
 		id: ItemId,
@@ -113,8 +118,13 @@ pub fn shutdown() {
 struct CoreBackend;
 
 impl Backend for CoreBackend {
-	fn resolve(&self, link: &Link, is_aborting: &dyn Fn() -> bool) -> Result<Resolved, CoreError> {
-		core()?.resolve(link, is_aborting)
+	fn resolve(
+		&self,
+		link: &Link,
+		artist_tracks: ArtistTracks,
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<Resolved, CoreError> {
+		core()?.resolve(link, artist_tracks, is_aborting)
 	}
 
 	fn track_info(

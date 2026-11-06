@@ -33,9 +33,10 @@ The cheapest wins come first.
   - Spotify's web link for Liked Songs is `https://open.spotify.com/collection/tracks`, and its apps use `spotify:collection:tracks`. foo_librespot's link parser didn't know either.
   - These links, and the older `spotify:user:<user>:collection`, now add the logged-in account's Liked Songs, from librespot's `SpClient::get_context`, following every further page (`context_tracks` in `crates/foo_librespot_core/src/resolve.rs`).
   - An artist's liked songs (`spotify:user:<user>:collection:artist:<id>`) and other collections, such as podcasts, are still unsupported.
-- [ ] An artist's whole discography
-  - An artist link adds the artist's popular tracks. librespot's `SpClient::get_context` for an artist gives the popular tracks and then pages of the artist's albums.
-  - The decision: a setting on the Spotify preferences page chooses between the popular tracks and the whole discography. The discography is the artist's albums, singles, EPs and compilations, not the albums the artist only appears on. A song on both an album and a single is added once, by its ISRC, the code that identifies a recording. There is no warning before a large discography.
+- [x] An artist's whole discography
+  - An artist link added only the artist's popular tracks.
+  - It now adds the whole discography, unless "Artist links add the whole discography" is unchecked on the Spotify preferences page: the artist's albums, then singles and EPs, then compilations, newest first in each group, not the albums the artist only appears on (`releases` and `resolve` in `crates/foo_librespot_core/src/resolve.rs`).
+  - A recording on both an album and a single is added once, by its ISRC: the first playable copy is kept, so a copy blocked in the account's country doesn't keep out one that plays. The console says how many were left out. There is no warning before a large discography.
 - [x] Search Spotify
   - librespot's `SpClient::get_context` answers searches (`spotify:search:<words>`) with one page of 20 tracks. On 2026-11-06 the first 13 to 15 matched the words and the rest drifted; for "in christ alone" the Getty original came first.
   - Spotify's search link, `https://open.spotify.com/search/<words>`, and `spotify:search:<words>` now add those 20 tracks, named after the words. A search window would need menus.
