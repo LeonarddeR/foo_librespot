@@ -20,6 +20,8 @@ pub mod style {
 	pub const DS_CENTER: u32 = win::DS_CENTER.cast_unsigned();
 	pub const BS_PUSHBUTTON: u32 = win::BS_PUSHBUTTON.cast_unsigned();
 	pub const BS_GROUPBOX: u32 = win::BS_GROUPBOX.cast_unsigned();
+	/// A checkbox that checks and unchecks itself when clicked.
+	pub const BS_AUTOCHECKBOX: u32 = win::BS_AUTOCHECKBOX.cast_unsigned();
 	/// Makes a button tell its dialog when it gains and loses focus.
 	pub const BS_NOTIFY: u32 = win::BS_NOTIFY.cast_unsigned();
 	pub const ES_MULTILINE: u32 = win::ES_MULTILINE.cast_unsigned();
@@ -53,6 +55,7 @@ mod tests {
 		assert_eq!(style::WS_TABSTOP, 0x0001_0000);
 		assert_eq!(style::WS_POPUP, 0x8000_0000);
 		assert_eq!(style::BS_GROUPBOX, 7);
+		assert_eq!(style::BS_AUTOCHECKBOX, 3);
 		assert_eq!(style::ES_READONLY, 0x0800);
 		assert_eq!(style::ES_AUTOHSCROLL, 0x0080);
 		assert_eq!(style::CBS_DROPDOWNLIST, 3);

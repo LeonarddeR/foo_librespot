@@ -10,12 +10,12 @@ use windows_core::PCWSTR;
 
 use super::template::DialogTemplate;
 use crate::bindings::Windows::Win32::{
-	CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CreateDialogIndirectParamW, DWLP_MSGRESULT,
-	DestroyWindow, EnableWindow, GWL_STYLE, GetDlgCtrlID, GetDlgItem, GetFocus, GetNextDlgTabItem,
-	GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HWND, IsWindow, IsWindowEnabled,
-	LPARAM, PostMessageW, SW_HIDE, SW_SHOW, SW_SHOWNA, SendMessageW, SetForegroundWindow,
-	SetWindowLongPtrW, SetWindowTextW, ShowWindow, WM_APP, WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY,
-	WM_NEXTDLGCTL, WPARAM, WS_VISIBLE,
+	BM_GETCHECK, BM_SETCHECK, BST_CHECKED, BST_UNCHECKED, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL,
+	CreateDialogIndirectParamW, DWLP_MSGRESULT, DestroyWindow, EnableWindow, GWL_STYLE,
+	GetDlgCtrlID, GetDlgItem, GetFocus, GetNextDlgTabItem, GetWindowLongPtrW, GetWindowTextLengthW,
+	GetWindowTextW, HWND, IsWindow, IsWindowEnabled, LPARAM, PostMessageW, SW_HIDE, SW_SHOW,
+	SW_SHOWNA, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
+	WM_APP, WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY, WM_NEXTDLGCTL, WPARAM, WS_VISIBLE,
 };
 use crate::console;
 use crate::cxx::ExceptionKind;
@@ -136,6 +136,17 @@ impl Dialog {
 		let selected =
 			unsafe { SendMessageW(self.control(id), CB_GETCURSEL as u32, WPARAM(0), LPARAM(0)) };
 		usize::try_from(selected.0).ok()
+	}
+
+	pub fn is_checked(&self, id: u16) -> bool {
+		let state =
+			unsafe { SendMessageW(self.control(id), BM_GETCHECK as u32, WPARAM(0), LPARAM(0)) };
+		state.0 == BST_CHECKED as isize
+	}
+
+	pub fn set_checked(&self, id: u16, checked: bool) {
+		let state = if checked { BST_CHECKED as usize } else { BST_UNCHECKED as usize };
+		unsafe { SendMessageW(self.control(id), BM_SETCHECK as u32, WPARAM(state), LPARAM(0)) };
 	}
 
 	/// The ids of the controls Tab visits, starting at the first tab stop. Disabled controls
@@ -387,9 +398,9 @@ pub(crate) mod tests {
 
 	use super::{Dialog, DialogHandler, create_child_dialog, create_modeless_dialog, destroy};
 	use crate::bindings::Windows::Win32::{
-		BN_CLICKED, CBS_DROPDOWNLIST, DS_CONTROL, DS_MODALFRAME, ES_MULTILINE, ES_READONLY,
-		GetWindowTextW, HWND, LPARAM, SendMessageW, WM_CLOSE, WM_COMMAND, WPARAM, WS_CAPTION,
-		WS_CHILD, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
+		BN_CLICKED, BS_AUTOCHECKBOX, CBS_DROPDOWNLIST, DS_CONTROL, DS_MODALFRAME, ES_MULTILINE,
+		ES_READONLY, GetWindowTextW, HWND, LPARAM, SendMessageW, WM_CLOSE, WM_COMMAND, WPARAM,
+		WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
 	};
 	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
 	use crate::testing::wants_all_keys;
@@ -584,6 +595,27 @@ pub(crate) mod tests {
 		}
 		dialog.combo_select(107, 2);
 		assert_eq!(dialog.combo_selection(107), Some(2));
+		destroy(dialog);
+	}
+
+	#[test]
+	fn checkboxes_can_be_checked_and_unchecked() {
+		let template = DialogTemplate {
+			items: vec![item(
+				108,
+				ControlClass::Button,
+				"Artist links add the &whole discography",
+				WS_TABSTOP | BS_AUTOCHECKBOX,
+			)],
+			..child_template()
+		};
+		let dialog =
+			create_child_dialog(hidden_parent(), &template, Box::new(Recorder::default())).unwrap();
+		assert!(!dialog.is_checked(108));
+		dialog.set_checked(108, true);
+		assert!(dialog.is_checked(108));
+		dialog.set_checked(108, false);
+		assert!(!dialog.is_checked(108));
 		destroy(dialog);
 	}
 

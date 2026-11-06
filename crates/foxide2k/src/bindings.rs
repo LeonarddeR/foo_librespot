@@ -570,8 +570,13 @@ pub mod Windows {
 		}
 		pub type AnnoScope = i32;
 		pub const Assertive: LiveSetting = 2;
+		pub const BM_GETCHECK: i32 = 240;
+		pub const BM_SETCHECK: i32 = 241;
 		pub const BN_CLICKED: i32 = 0;
 		pub const BN_SETFOCUS: i32 = 6;
+		pub const BST_CHECKED: i32 = 1;
+		pub const BST_UNCHECKED: i32 = 0;
+		pub const BS_AUTOCHECKBOX: i32 = 3;
 		pub const BS_GROUPBOX: i32 = 7;
 		pub const BS_NOTIFY: i32 = 16384;
 		pub const BS_PUSHBUTTON: i32 = 0;
