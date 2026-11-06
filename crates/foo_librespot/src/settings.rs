@@ -60,6 +60,18 @@ pub fn set_artist_tracks(choice: ArtistTracks) -> foxide2k::error::Result<()> {
 	config_store::set_int(ARTIST_TRACKS_KEY, stored(choice))
 }
 
+/// Whether the console gets debug messages: 1 for on, 0 for off.
+pub const DETAILED_LOGGING_KEY: &str = "foo_librespot.detailed_logging";
+
+/// Whether the console gets debug messages. Anything but 1 in the store means off.
+pub fn detailed_logging() -> bool {
+	config_store::get_int(DETAILED_LOGGING_KEY, 0) == 1
+}
+
+pub fn set_detailed_logging(on: bool) -> foxide2k::error::Result<()> {
+	config_store::set_int(DETAILED_LOGGING_KEY, i64::from(on))
+}
+
 #[cfg(test)]
 mod tests {
 	use foo_librespot_core::audio::format::Bitrate;
@@ -68,8 +80,8 @@ mod tests {
 	use foo_librespot_core::resolve::ArtistTracks;
 
 	use super::{
-		ARTIST_TRACKS_KEY, BITRATE_KEY, artist_tracks, bitrate, bitrate_at, bitrate_index,
-		set_artist_tracks, set_bitrate,
+		ARTIST_TRACKS_KEY, BITRATE_KEY, DETAILED_LOGGING_KEY, artist_tracks, bitrate, bitrate_at,
+		bitrate_index, detailed_logging, set_artist_tracks, set_bitrate, set_detailed_logging,
 	};
 
 	#[test]
@@ -132,6 +144,33 @@ mod tests {
 		for stored in [-1, 2, 9999] {
 			foxide2k::config_store::set_int(ARTIST_TRACKS_KEY, stored).unwrap();
 			assert_eq!(artist_tracks(), ArtistTracks::Discography, "{stored}");
+		}
+	}
+
+	#[test]
+	fn detailed_logging_is_off_by_default() {
+		FakeApi::new().install();
+		assert!(!detailed_logging());
+	}
+
+	#[test]
+	fn the_detailed_logging_switch_round_trips() {
+		let api = FakeApi::new();
+		api.install();
+		set_detailed_logging(true).unwrap();
+		assert_eq!(api.config_int(DETAILED_LOGGING_KEY), Some(1));
+		assert!(detailed_logging());
+		set_detailed_logging(false).unwrap();
+		assert_eq!(api.config_int(DETAILED_LOGGING_KEY), Some(0));
+		assert!(!detailed_logging());
+	}
+
+	#[test]
+	fn unknown_stored_values_leave_detailed_logging_off() {
+		FakeApi::new().install();
+		for stored in [2, -1, 9999] {
+			foxide2k::config_store::set_int(DETAILED_LOGGING_KEY, stored).unwrap();
+			assert!(!detailed_logging(), "{stored}");
 		}
 	}
 }

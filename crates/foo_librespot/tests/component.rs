@@ -46,6 +46,7 @@ fn on_init_prints_loaded_line() {
 
 #[test]
 fn component_registers_all_services() {
+	use foxide2k::abi::advconfig::ENTRY_IID as ADVCONFIG_ENTRY;
 	use foxide2k::abi::album_art::EXTRACTOR_IID as ALBUM_ART;
 	use foxide2k::abi::filesystem::IID as FILESYSTEM;
 	use foxide2k::abi::input::INPUT_ENTRY;
@@ -65,7 +66,29 @@ fn component_registers_all_services() {
 	] {
 		assert_eq!(factories.iter().filter(|guid| **guid == iid).count(), 1, "{name}");
 	}
-	assert_eq!(factories.len(), 7);
+	assert_eq!(
+		factories.iter().filter(|guid| **guid == ADVCONFIG_ENTRY).count(),
+		2,
+		"advconfig_entry"
+	);
+	assert_eq!(factories.len(), 9);
+}
+
+#[test]
+fn advanced_preferences_hold_the_logging_checkbox() {
+	use foxide2k::abi::advconfig::{BRANCH_IID, ENTRY_IID, GUID_BRANCH_TOOLS};
+	use foxide2k::testing::AdvconfigHandle;
+
+	let (_, component) = common::load();
+	let entries: Vec<AdvconfigHandle> =
+		component.create_all(&ENTRY_IID).into_iter().map(AdvconfigHandle::new).collect();
+	assert_eq!(entries.len(), 2);
+	let branch = entries.iter().find(|entry| entry.answers(&BRANCH_IID)).expect("no branch");
+	let checkbox = entries.iter().find(|entry| !entry.answers(&BRANCH_IID)).expect("no checkbox");
+	assert_eq!(branch.name(), "Spotify");
+	assert_eq!(branch.parent(), GUID_BRANCH_TOOLS);
+	assert_eq!(checkbox.name(), "Log details to the console, for bug reports");
+	assert_eq!(checkbox.parent(), branch.guid());
 }
 
 #[test]

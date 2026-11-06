@@ -2,6 +2,7 @@
 //! podcasts through librespot.
 
 mod account;
+mod advanced;
 mod art;
 mod backend;
 mod errors;
@@ -19,6 +20,7 @@ mod settings;
 mod testing;
 mod worker;
 
+use foxide2k::advconfig::{advconfig_branch_factory, advconfig_checkbox_factory};
 use foxide2k::album_art::album_art_factory;
 use foxide2k::component::Factory;
 use foxide2k::filesystem_service::filesystem_factory;
@@ -61,5 +63,7 @@ foxide2k::component! {
 		playlist_loader_factory::<links::SpotifyLoader>(),
 		album_art_factory::<art::SpotifyArt>(),
 		preferences_page_factory::<prefs::SpotifyPage>(),
+		advconfig_branch_factory::<advanced::SpotifyBranch>(),
+		advconfig_checkbox_factory::<advanced::DetailedLogging>(),
 	],
 }

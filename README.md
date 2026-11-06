@@ -56,6 +56,7 @@ Such an episode is added as the podcast's own audio link, which foobar2000 plays
 - **"Not logged in to Spotify."** Log in from File > Preferences > Tools > Spotify.
 - **The Converter or the ReplayGain scanner says "Access denied" for Spotify tracks.** foo_librespot only lets foobar2000's player decode Spotify audio, as foo_spotify did, so it is never saved to a file. ReplayGain comes from Spotify itself, so Spotify tracks need no scanning.
 - **An album or playlist adds fewer tracks than it has.** Local files and tracks Spotify doesn't offer in your country are skipped. A popup lists them after the import, and the console has the full list.
+- **Reporting a problem.** Check "Log details to the console, for bug reports" under File > Preferences > Advanced > Tools > Spotify, make the problem happen again, and copy the console (View > Console) into your report. The details show your Spotify username and country, but never your login. Uncheck it afterwards; the console stays quieter without it.
 
 ## Please note
 

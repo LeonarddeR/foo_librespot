@@ -43,11 +43,11 @@ The cheapest wins come first.
 
 ### Detailed logging
 
-- [ ] A switch for detailed logging
+- [x] A switch for detailed logging
   - foo_spotify had Advanced settings to log its Spotify requests, the responses and debug messages.
-  - foo_librespot always logs its own messages from info level and librespot's from warning level (`crates/foo_librespot/src/logging.rs`). A user can't collect a detailed log for a bug report.
-  - The decision: a checkbox in Advanced preferences, under Tools > Spotify, off by default. It keeps the `log` crate. librespot logs through `log` too, so one switch raises the detail for both.
-  - Detailed logging must still never show credentials: librespot logs access tokens at trace level.
+  - foo_librespot always logged its own messages from info level and librespot's from warning level, so a user couldn't collect a detailed log for a bug report.
+  - A checkbox under Advanced > Tools > Spotify, off by default, now shows both from debug level (`crates/foo_librespot/src/logging.rs`, `crates/foo_librespot/src/advanced.rs`). It keeps the `log` crate.
+  - Trace never shows, because librespot logs access tokens there. librespot's dumps of raw server messages are held back, and every URL in the console loses its query string and password, so Spotify's signed download links never show whole.
 
 ### Checks by hand
 
