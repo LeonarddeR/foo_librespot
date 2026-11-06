@@ -7,7 +7,10 @@ use std::time::Duration;
 use crate::CoreError;
 use crate::art::{CoverCache, fetch_cover};
 use crate::audio::format::Bitrate;
-use crate::audio::track::{SpotifyTrack, fetch_track};
+use crate::audio::keys::AudioKeys;
+use crate::audio::track::{
+	FetchedTrack, KeyOrigin, SpotifyTrack, fetch_track, wrong_remembered_key,
+};
 use crate::link::{ItemId, Link};
 use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
 use crate::metadata::{TrackInfo, largest_cover};
@@ -28,10 +31,12 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 /// `is_aborting` turns true. Never call it from async code.
 pub struct Core {
 	runtime: CoreRuntime,
+	profile: Arc<Profile>,
 	sessions: Arc<SessionManager<LibrespotConnector>>,
 	cache: TrackCache,
 	albums: AlbumDetailsCache,
 	covers: CoverCache,
+	keys: AudioKeys,
 }
 
 impl Core {
@@ -39,13 +44,21 @@ impl Core {
 	pub fn new(profile_dir: impl Into<PathBuf>) -> Result<Self, CoreError> {
 		let profile = Arc::new(Profile::new(profile_dir));
 		let device_id = profile.device_id()?;
-		let sessions = SessionManager::new(LibrespotConnector::new(device_id), profile);
+		let keys = profile.load_audio_keys().unwrap_or_else(|error| {
+			// They are only a shortcut: every key can be asked for again.
+			log::warn!("{error}; Spotify will be asked for every key again");
+			AudioKeys::default()
+		});
+		let sessions =
+			SessionManager::new(LibrespotConnector::new(device_id), Arc::clone(&profile));
 		Ok(Self {
 			runtime: CoreRuntime::new()?,
+			profile,
 			sessions: Arc::new(sessions),
 			cache: TrackCache::default(),
 			albums: AlbumDetailsCache::default(),
 			covers: CoverCache::default(),
+			keys,
 		})
 	}
 
@@ -94,8 +107,12 @@ impl Core {
 		LoginHandle { task, gate }
 	}
 
+	/// Forgets the login and the remembered audio keys, which show what was played.
 	pub fn logout(&self) -> Result<(), CoreError> {
-		self.sessions.logout()
+		self.sessions.logout()?;
+		self.keys.clear();
+		self.profile.save_audio_keys(&self.keys)?;
+		Ok(())
 	}
 
 	pub fn resolve(
@@ -139,22 +156,56 @@ impl Core {
 	}
 
 	/// Opens a track or episode for decoding. The download starts in the background; reading
-	/// blocks the caller until the data it needs has arrived.
+	/// blocks the caller until the data it needs has arrived. A track played before uses its
+	/// remembered key instead of asking Spotify.
 	pub fn open_track(
 		&self,
 		id: ItemId,
 		bitrate: Bitrate,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<SpotifyTrack, CoreError> {
+		let fetched = self.fetch_track(id, bitrate, is_aborting)?;
+		let (file_id, key_origin) = (fetched.file_id(), fetched.key_origin());
+		// The first reads block until data arrives; do them where Stop can still interrupt.
+		match self.runtime.block_on_blocking(move || fetched.open(), is_aborting)? {
+			Err(error) if wrong_remembered_key(key_origin, &error) => {
+				log::warn!("the remembered key didn't decrypt the track ({error}); asking Spotify");
+				self.keys.forget(&file_id);
+				let fetched = self.fetch_track(id, bitrate, is_aborting)?;
+				self.runtime.block_on_blocking(move || fetched.open(), is_aborting)?
+			}
+			opened => opened,
+		}
+	}
+
+	fn fetch_track(
+		&self,
+		id: ItemId,
+		bitrate: Bitrate,
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<FetchedTrack, CoreError> {
 		let fetched = self.runtime.block_on(
 			async {
 				let session = self.sessions.session().await?;
-				fetch_track(&session, id, bitrate).await
+				fetch_track(&session, id, bitrate, &self.keys).await
 			},
 			is_aborting,
 		)??;
-		// The first reads block until data arrives; do them where Stop can still interrupt.
-		self.runtime.block_on_blocking(move || fetched.open(), is_aborting)?
+		if fetched.key_origin() == KeyOrigin::Requested {
+			self.save_keys_in_background();
+		}
+		Ok(fetched)
+	}
+
+	/// Saves the remembered keys on the runtime's blocking pool, so playback doesn't wait for the
+	/// disk.
+	fn save_keys_in_background(&self) {
+		let (profile, keys) = (Arc::clone(&self.profile), self.keys.clone());
+		self.runtime.handle().spawn_blocking(move || {
+			if let Err(error) = profile.save_audio_keys(&keys) {
+				log::warn!("couldn't save the remembered audio keys: {error}");
+			}
+		});
 	}
 
 	/// The largest album cover of a track, or cover of an episode, as JPEG bytes; `None` when it
@@ -243,12 +294,15 @@ impl LoginGate {
 
 #[cfg(test)]
 mod tests {
+	use librespot_core::audio_key::AudioKey;
+
 	use super::{Core, LoginGate, LoginHandle};
-	use crate::CoreError;
-	use crate::SpotifyId;
+	use crate::audio::keys::AudioKeys;
 	use crate::audio::track::SpotifyTrack;
 	use crate::link::{Link, LinkKind};
+	use crate::profile::Profile;
 	use crate::resolve::ArtistTracks;
+	use crate::{CoreError, FileId, SpotifyId};
 
 	#[test]
 	fn a_cancel_before_the_login_is_stored_wins() {
@@ -280,6 +334,25 @@ mod tests {
 		assert!(profile.join("device_id").is_file());
 		assert!(!core.is_logged_in());
 		core.shutdown();
+	}
+
+	#[test]
+	fn logout_forgets_the_remembered_keys() {
+		let dir = tempfile::tempdir().unwrap();
+		let keys = AudioKeys::default();
+		keys.insert(FileId::from_raw(&[1; 20]), AudioKey([2; 16]));
+		Profile::new(dir.path()).save_audio_keys(&keys).unwrap();
+		let core = Core::new(dir.path()).unwrap();
+		core.logout().unwrap();
+		assert!(!dir.path().join("audio_keys.bin").exists());
+		core.shutdown();
+	}
+
+	#[test]
+	fn a_garbled_key_file_doesnt_stop_the_core() {
+		let dir = tempfile::tempdir().unwrap();
+		std::fs::write(dir.path().join("audio_keys.bin"), b"garbage").unwrap();
+		Core::new(dir.path()).unwrap().shutdown();
 	}
 
 	#[test]

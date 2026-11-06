@@ -12,11 +12,12 @@ use librespot_metadata::track::Tracks;
 use super::decoder::PcmDecoder;
 use super::format::{Bitrate, bytes_per_second, header_offset, mime_type, pick_file};
 use super::header::{NormalisationData, Subfile};
+use super::keys::AudioKeys;
 use crate::link::ItemId;
 use crate::metadata::EXPLICIT_FILTERED;
 use crate::replaygain::ReplayGain;
 use crate::resolve::retry_rate_limited;
-use crate::{CoreError, SpotifyUri};
+use crate::{CoreError, FileId, SpotifyUri};
 
 /// Whether a track can be played as it is, only through one of its alternatives, or not at all.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,14 +49,18 @@ pub struct FetchedTrack {
 	file: AudioDecrypt<AudioFile>,
 	format: AudioFileFormat,
 	controller: StreamLoaderController,
+	file_id: FileId,
+	key_origin: KeyOrigin,
 }
 
-/// Finds the file to play for `item` and starts downloading it. This only awaits; the blocking
-/// reads happen in [`FetchedTrack::open`], which must not run on a tokio worker.
+/// Finds the file to play for `item` and starts downloading it. The key is taken from `keys` when
+/// it is there; otherwise Spotify is asked for it and it is added to `keys`. This only awaits; the
+/// blocking reads happen in [`FetchedTrack::open`], which must not run on a tokio worker.
 pub async fn fetch_track(
 	session: &Session,
 	item: ItemId,
 	bitrate: Bitrate,
+	keys: &AudioKeys,
 ) -> Result<FetchedTrack, CoreError> {
 	let id = item.id();
 	// Waits out librespot's rate limit, as imports do: right after a big import, pressing Play
@@ -79,16 +84,30 @@ pub async fn fetch_track(
 	let file =
 		retry_rate_limited(|| AudioFile::open(session, file_id, bytes_per_second(format))).await?;
 	let controller = file.get_stream_loader_controller()?;
+	if let Some(key) = keys.get(&file_id) {
+		log::debug!("using the remembered key for {}", id.to_base62());
+		let file = AudioDecrypt::new(Some(key), file);
+		return Ok(FetchedTrack {
+			file,
+			format,
+			controller,
+			file_id,
+			key_origin: KeyOrigin::Remembered,
+		});
+	}
 	// The key is always asked for with the original track id, even for an alternative.
-	let key = match session.audio_key().request(id, file_id).await {
-		Ok(key) => Some(key),
+	let (key, key_origin) = match session.audio_key().request(id, file_id).await {
+		Ok(key) => {
+			keys.insert(file_id, key);
+			(Some(key), KeyOrigin::Requested)
+		}
 		Err(error) => match on_key_failure(format, error.kind) {
 			KeyFailure::PlayUnencrypted => {
 				log::warn!(
 					"no audio key for {}, trying without decryption: {error}",
 					id.to_base62()
 				);
-				None
+				(None, KeyOrigin::Missing)
 			}
 			KeyFailure::Fail { reset_session } => {
 				controller.close();
@@ -100,7 +119,25 @@ pub async fn fetch_track(
 			}
 		},
 	};
-	Ok(FetchedTrack { file: AudioDecrypt::new(key, file), format, controller })
+	Ok(FetchedTrack { file: AudioDecrypt::new(key, file), format, controller, file_id, key_origin })
+}
+
+/// Where the key that decrypts a fetched track came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyOrigin {
+	/// Remembered from an earlier play; Spotify wasn't asked.
+	Remembered,
+	/// Asked for from Spotify just now.
+	Requested,
+	/// There is no key; the file is played as it is.
+	Missing,
+}
+
+/// Whether opening a track failed because its remembered key is wrong. A wrong key turns the
+/// audio into noise, so the decoder can't read the file's start; a failed download is an I/O
+/// error and says nothing about the key.
+pub fn wrong_remembered_key(origin: KeyOrigin, error: &CoreError) -> bool {
+	origin == KeyOrigin::Remembered && matches!(error, CoreError::Decode(_))
 }
 
 /// What to do when Spotify doesn't hand over a file's audio key.
@@ -160,9 +197,18 @@ fn audio_item_error(error: librespot_core::Error) -> CoreError {
 }
 
 impl FetchedTrack {
+	/// The audio file being downloaded.
+	pub fn file_id(&self) -> FileId {
+		self.file_id
+	}
+
+	pub fn key_origin(&self) -> KeyOrigin {
+		self.key_origin
+	}
+
 	/// Reads Spotify's header and opens the decoder. Blocks until the first data arrives.
 	pub fn open(self) -> Result<SpotifyTrack, CoreError> {
-		let Self { mut file, format, controller } = self;
+		let Self { mut file, format, controller, .. } = self;
 		let normalisation = if AudioFiles::is_ogg_vorbis(format) {
 			match NormalisationData::parse(&mut file) {
 				Ok(data) => Some(data),
@@ -238,7 +284,8 @@ mod tests {
 	use librespot_core::error::ErrorKind;
 
 	use super::{
-		KeyFailure, Playability, audio_item_error, key_error, on_key_failure, playability,
+		KeyFailure, KeyOrigin, Playability, audio_item_error, key_error, on_key_failure,
+		playability, wrong_remembered_key,
 	};
 	use crate::metadata::EXPLICIT_FILTERED;
 	use crate::{CoreError, FileId, SpotifyId, SpotifyUri};
@@ -343,5 +390,26 @@ mod tests {
 	fn other_key_errors_stay_spotify_errors() {
 		let error = key_error(AudioKeyError::Timeout.into());
 		assert!(matches!(&error, CoreError::Spotify(_)), "{error:?}");
+	}
+
+	fn undecodable() -> CoreError {
+		CoreError::Decode("no suitable format reader found".to_owned())
+	}
+
+	#[test]
+	fn a_remembered_key_that_leaves_the_audio_undecodable_is_wrong() {
+		assert!(wrong_remembered_key(KeyOrigin::Remembered, &undecodable()));
+	}
+
+	#[test]
+	fn a_key_spotify_just_sent_is_never_blamed() {
+		assert!(!wrong_remembered_key(KeyOrigin::Requested, &undecodable()));
+		assert!(!wrong_remembered_key(KeyOrigin::Missing, &undecodable()));
+	}
+
+	#[test]
+	fn a_failed_download_is_not_the_remembered_keys_fault() {
+		let error = CoreError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut));
+		assert!(!wrong_remembered_key(KeyOrigin::Remembered, &error));
 	}
 }

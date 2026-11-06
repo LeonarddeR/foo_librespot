@@ -40,6 +40,7 @@ Do not re-litigate these without new evidence.
 - The component is written entirely in Rust, including the assembly-level C++ exception catcher. A C fallback needs the maintainer's approval.
 - Spotify tracks are stored as `sptf://spotify:track:<id>`, the form foo_spotify used, so old playlists keep working. Episodes Spotify hosts are stored as `sptf://spotify:episode:<id>`.
 - foo_librespot decodes Spotify audio only for playback (`input_flag_playback`), as foo_spotify did, and refuses everything else with "Access denied": the Converter, the ReplayGain scanner and similar tools. Decrypted audio never reaches a file. Refusing by default is the maintainer's decision; there is no switch to allow conversion, because foobar2000 can't tell a scanner from a converter, so any switch would turn the component into a ripper.
+- A track's audio key is remembered on disk after its first play, encrypted with DPAPI, so replays don't ask Spotify's rate-limited key service (the maintainer's decision). Audio is never cached on disk: stored audio together with stored keys would be an offline copy.
 - An episode Spotify doesn't host is added as the podcast's own audio link (`Episode::external_url`), which foobar2000 plays itself (the maintainer's decision).
 - Login uses librespot's OAuth device flow with librespot's built-in client ID. No Spotify Web API.
 - The browser never opens by itself (the maintainer's decision). Only the "Open browser" button opens Spotify's login page; a link that needs a login opens the login window, not the browser.

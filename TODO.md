@@ -49,6 +49,14 @@ The cheapest wins come first.
   - A checkbox under Advanced > Tools > Spotify, off by default, now shows both from debug level (`crates/foo_librespot/src/logging.rs`, `crates/foo_librespot/src/advanced.rs`). It keeps the `log` crate.
   - Trace never shows, because librespot logs access tokens there. librespot's dumps of raw server messages are held back, and every URL in the console loses its query string and password, so Spotify's signed download links never show whole.
 
+### Caching
+
+- [x] Remember each track's audio key
+  - foo_spotify kept played audio in libspotify's disk cache, up to 2048 MB or 10% of the free disk space, so a replayed track started from disk. It also kept the Web API's track and artist info and their images on disk.
+  - foo_librespot asked Spotify for a track's key on every play. When many keys are asked for in a short time, Spotify refuses them with code 2 for up to a minute ([librespot issue #1649](https://github.com/librespot-org/librespot/issues/1649)), and our librespot asks again for up to about 58 seconds, so a track took long to start.
+  - The key that decrypts each audio file is now remembered after its first play, up to 100,000 keys, the least recently played dropped first (`AudioKeys` in `crates/foo_librespot_core/src/audio/keys.rs`). They are kept in `audio_keys.bin` in the profile folder, encrypted with DPAPI, and logging out deletes them. A remembered key that doesn't decrypt its file is forgotten and asked for again.
+  - Only keys are kept, not audio. A disk cache of encrypted audio would still need a key on every play, and audio and keys together would be an offline copy.
+
 ### Checks by hand
 
 Nobody has checked these yet. Any new work they show waits for a later round.
@@ -108,7 +116,7 @@ Listing foo_librespot on foobar2000.org waits for a 1.0 and broader testing.
 
 The maintainer ruled these out in November 2026.
 
-- Keeping played audio in a cache on disk, as foo_spotify did, so a replayed track starts from disk.
+- Keeping played audio in a cache on disk, as foo_spotify did, so a replayed track starts from disk. Only the audio keys are kept (see "Remember each track's audio key").
 - Keeping covers on disk, as foo_spotify did, so they show offline.
 - A README line telling former foo_spotify users to turn on foobar2000's ReplayGain, now that Spotify's own volume normalisation is gone.
 - Lyrics from Spotify in a `LYRICS` field (`SpClient::get_lyrics`).
