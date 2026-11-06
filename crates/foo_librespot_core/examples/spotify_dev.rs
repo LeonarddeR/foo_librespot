@@ -2,12 +2,14 @@
 //!
 //! ```text
 //! cargo run -p foo_librespot_core --example spotify_dev -- login
-//! cargo run -p foo_librespot_core --example spotify_dev -- resolve <link>
+//! cargo run -p foo_librespot_core --example spotify_dev -- resolve <link> [--popular]
 //! cargo run -p foo_librespot_core --example spotify_dev -- decode <track link> <seconds> [--seek <seconds>]
 //! cargo run -p foo_librespot_core --example spotify_dev -- logout
 //! ```
 //!
 //! The login is kept in `.spotify-dev` in the current folder, or in `--profile <folder>`.
+//! An artist link resolves to the artist's whole discography, as in foobar2000, or to their
+//! popular tracks with `--popular`.
 //! Set `SPOTIFY_DEV_LOG` to `debug` or `trace` for more librespot output.
 
 use std::path::PathBuf;
@@ -20,7 +22,7 @@ use foo_librespot_core::link::parse_link;
 use foo_librespot_core::resolve::ArtistTracks;
 use foo_librespot_core::{Core, CoreError};
 
-const USAGE: &str = "usage: spotify_dev [--profile <folder>] login | logout | resolve <link> | decode <track link> <seconds> [--seek <seconds>]";
+const USAGE: &str = "usage: spotify_dev [--profile <folder>] login | logout | resolve <link> [--popular] | decode <track link> <seconds> [--seek <seconds>]";
 
 fn main() -> ExitCode {
 	init_logger();
@@ -28,6 +30,11 @@ fn main() -> ExitCode {
 	let profile = take_option(&mut args, "--profile")
 		.map_or_else(|| PathBuf::from(".spotify-dev"), PathBuf::from);
 	let seek = take_option(&mut args, "--seek");
+	let artist_tracks = if take_flag(&mut args, "--popular") {
+		ArtistTracks::Popular
+	} else {
+		ArtistTracks::Discography
+	};
 	let core = match Core::new(&profile) {
 		Ok(core) => core,
 		Err(error) => {
@@ -39,7 +46,7 @@ fn main() -> ExitCode {
 	let result = match args.as_slice() {
 		["login"] => login(&core),
 		["logout"] => core.logout().map(|()| println!("Logged out.")),
-		["resolve", link] => resolve(&core, link),
+		["resolve", link] => resolve(&core, link, artist_tracks),
 		["decode", link, seconds] => decode(&core, link, seconds, seek.as_deref()),
 		_ => {
 			eprintln!("{USAGE}");
@@ -73,9 +80,9 @@ fn login(core: &Core) -> Result<(), CoreError> {
 	Ok(())
 }
 
-fn resolve(core: &Core, link: &str) -> Result<(), CoreError> {
+fn resolve(core: &Core, link: &str, artist_tracks: ArtistTracks) -> Result<(), CoreError> {
 	let link = parse_link(link)?;
-	let resolved = core.resolve(&link, ArtistTracks::Popular, &|| false)?;
+	let resolved = core.resolve(&link, artist_tracks, &|| false)?;
 	if let Some(name) = &resolved.name {
 		println!("{name}");
 	}
@@ -107,7 +114,12 @@ fn resolve(core: &Core, link: &str) -> Result<(), CoreError> {
 	for skipped in &resolved.skipped {
 		println!("skipped {}: {}", skipped.uri, skipped.reason);
 	}
-	println!("{} tracks, {} skipped", resolved.tracks.len(), resolved.skipped.len());
+	println!(
+		"{} tracks, {} skipped, {} left out as already added from another release",
+		resolved.tracks.len(),
+		resolved.skipped.len(),
+		resolved.duplicates
+	);
 	Ok(())
 }
 
@@ -207,6 +219,14 @@ fn clock(second: u64) -> String {
 )]
 fn frames(seconds: f64) -> u64 {
 	(seconds.max(0.0) * f64::from(SAMPLE_RATE)).round() as u64
+}
+
+fn take_flag(args: &mut Vec<String>, name: &str) -> bool {
+	let Some(index) = args.iter().position(|arg| arg == name) else {
+		return false;
+	};
+	args.remove(index);
+	true
 }
 
 fn take_option(args: &mut Vec<String>, name: &str) -> Option<String> {

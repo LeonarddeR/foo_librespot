@@ -1,5 +1,4 @@
-//! Turning a track, album, playlist, episode or show link into the tracks and episodes to add
-//! to a foobar2000 playlist.
+//! Turning a Spotify link into the tracks and episodes to add to a foobar2000 playlist.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -73,7 +72,8 @@ pub struct Skipped {
 /// The tracks a link stands for, in order.
 #[derive(Clone, Debug)]
 pub struct Resolved {
-	/// The album, playlist or show name; `None` for a track or episode link.
+	/// The album, playlist, show or artist name, "Liked Songs", or the search words; `None` for a
+	/// track or episode link.
 	pub name: Option<String>,
 	pub tracks: Vec<Arc<TrackInfo>>,
 	pub skipped: Vec<Skipped>,
@@ -92,7 +92,7 @@ pub enum ArtistTracks {
 	Discography,
 }
 
-/// Where track, episode, album, playlist and show metadata comes from.
+/// Where the metadata of tracks and episodes, and of everything that lists them, comes from.
 pub trait MetadataSource: Send + Sync {
 	/// The info of each of `items`, in the same order, each with its own result.
 	fn items(

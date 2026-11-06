@@ -81,6 +81,7 @@ cargo run -p foo_librespot_core --example spotify_dev -- decode https://open.spo
 ```
 
 `login` prints a page and a code; open the page, confirm, and the login is stored encrypted for your Windows account.
+`resolve` gives an artist link's whole discography, as foobar2000 does by default; add `--popular` for the artist's popular tracks.
 `decode` writes nothing to disk, because decrypted Spotify audio never reaches a file. It prints a fingerprint and the peak of each second it decodes, so a seek is sample-exact when the second command's lines match the first command's lines from 1:00.
 Set `SPOTIFY_DEV_LOG=debug` to see what librespot does.
 The phase 2 checklist is in [docs/checklists/phase-2-core.md](docs/checklists/phase-2-core.md).

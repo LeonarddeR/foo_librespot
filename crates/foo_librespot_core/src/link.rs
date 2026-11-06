@@ -18,7 +18,7 @@ pub enum LinkKind {
 	Episode,
 	/// A podcast, with all its episodes.
 	Show,
-	/// An artist, with their popular tracks.
+	/// An artist, with their popular tracks or their whole discography.
 	Artist,
 }
 
@@ -518,6 +518,9 @@ mod tests {
 			parse_link("sptf://spotify:search:Bach%20Kantaten%20Suzuki"),
 			search("Bach Kantaten Suzuki")
 		);
+		assert_eq!(parse_link("https://open.spotify.com/search/H%C3%A4ndel"), search("Händel"));
+		assert_eq!(parse_link("https://open.spotify.com/search/Händel"), search("Händel"));
+		assert_eq!(parse_link("spotify:search:Dvo%C5%99%C3%A1k+Rusalka"), search("Dvořák Rusalka"));
 	}
 
 	#[test]
