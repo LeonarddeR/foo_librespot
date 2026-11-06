@@ -36,7 +36,12 @@ pub fn host_error(error: CoreError) -> Error {
 		| CoreError::Profile(_)
 		| CoreError::Login(_) => ExceptionKind::Io,
 	};
-	Error::new(kind, format!("Spotify: {error}"))
+	let message = error.to_string();
+	if message.starts_with("Spotify") {
+		Error::new(kind, message)
+	} else {
+		Error::new(kind, format!("Spotify: {message}"))
+	}
 }
 
 /// What to do when `foo_youtube` is loaded: its host filter takes every web link by default,
@@ -115,6 +120,13 @@ mod tests {
 		let error =
 			host_error(CoreError::Unavailable("not available in your country (NL)".to_owned()));
 		assert_eq!(error.message, "Spotify: not available in your country (NL)");
+	}
+
+	#[test]
+	fn a_message_that_starts_with_spotify_says_it_once() {
+		let error =
+			host_error(CoreError::Unavailable("Spotify has no audio for this track".to_owned()));
+		assert_eq!(error.message, "Spotify has no audio for this track");
 	}
 
 	#[test]
