@@ -76,6 +76,10 @@ Nobody has checked these yet. Any new work they show waits for a later round.
 - [ ] Menu commands in foxide2k
   - Several ideas below need a command in a menu: the right-click menu on playlist entries, or foobar2000's main menu. Some also need to create or change foobar2000 playlists.
   - foxide2k has no bindings for menus or for foobar2000's playlist manager yet. This comes first for the items marked "needs menus".
+- [ ] Bring foxide2k further in line with the foobar2000 SDK
+  - foxide2k covers only the parts of the SDK that foo_librespot and foo_oxitone use: services and the component entry point, inputs and decoders, filesystems, playlist loaders, album art, preferences pages, the console, the settings store, popups and the main thread, plus Win32 dialogs. Each new feature starts by adding the SDK interfaces it needs, as menus, Advanced preferences and checkboxes on a dialog do this round.
+  - Covering more of the SDK the same way, each file transcribed with the SDK notice and tested through its vtables, would make later features cheaper: menus and the playlist manager, Advanced preferences, UI elements, metadb and the play callbacks.
+  - Check the transcribed files against the newest SDK (version 2026-10-01 on 2026-11-06) for interfaces that changed or were added since.
 - [ ] Radio from a track (needs menus)
   - librespot's `SpClient::get_radio_for_track` gives a Spotify playlist of tracks like a given one, as Spotify's "Go to song radio" does.
   - A right-click command on a Spotify track could add that radio.
