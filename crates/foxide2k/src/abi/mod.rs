@@ -2,6 +2,7 @@
 //! carries the SDK copyright notice; see `sdk-license.txt`.
 
 pub mod abort_callback;
+pub mod advconfig;
 pub mod album_art;
 pub mod audio_chunk;
 pub mod component;

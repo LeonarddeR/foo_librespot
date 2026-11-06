@@ -40,11 +40,13 @@ pub struct FakeApi {
 	state: Arc<services::FakeState>,
 }
 
+mod advconfig;
 mod live_info;
 mod preferences;
 mod services;
 mod windows;
 
+pub use advconfig::AdvconfigHandle;
 pub use live_info::FakeLiveInfoList;
 pub use preferences::{FakePageCallback, PageInstanceHandle, PreferencesHandle};
 pub use windows::{hidden_window, pump_messages, send_close, send_command, wants_all_keys};

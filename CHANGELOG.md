@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- For developers: foxide2k can add branches and checkboxes to Advanced preferences (`foxide2k::advconfig`).
+
 ## [0.2.1] - 2026-11-06
 
 ### Added
