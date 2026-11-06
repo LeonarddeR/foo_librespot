@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-06
+
 ### Added
 
 - An artist link adds the artist's whole discography: their albums, singles, EPs and compilations, each recording once. When Spotify has a release in more than one edition, such as explicit and clean, the first edition that plays in full is added, so an account that filters explicit content gets the clean one. Uncheck "Artist links add the whole discography" under File > Preferences > Tools > Spotify to add their popular tracks in your country instead, as the artist's Spotify page lists them.
