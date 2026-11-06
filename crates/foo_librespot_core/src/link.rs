@@ -20,34 +20,46 @@ pub enum LinkKind {
 	Artist,
 }
 
-/// A parsed Spotify track, album, playlist, episode, show or artist link.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Link {
-	pub kind: LinkKind,
-	pub id: SpotifyId,
+/// How foo_librespot stores a Liked Songs link: the URI Spotify's apps use for Liked Songs.
+pub const LIKED_SONGS_URI: &str = "spotify:collection:tracks";
+
+/// A parsed Spotify link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Link {
+	/// A track, album, playlist, episode, show or artist, named by its Spotify ID.
+	Id { kind: LinkKind, id: SpotifyId },
+	/// The logged-in account's Liked Songs.
+	LikedSongs,
 }
 
 impl Link {
-	/// The link as librespot names it.
-	pub const fn uri(&self) -> SpotifyUri {
-		let id = self.id;
-		match self.kind {
-			LinkKind::Track => SpotifyUri::Track { id },
-			LinkKind::Album => SpotifyUri::Album { id },
-			LinkKind::Playlist => SpotifyUri::Playlist { user: None, id },
-			LinkKind::Episode => SpotifyUri::Episode { id },
-			LinkKind::Show => SpotifyUri::Show { id },
-			LinkKind::Artist => SpotifyUri::Artist { id },
+	/// The link as a `spotify:` URI, the form foo_librespot stores it in.
+	pub fn uri(&self) -> String {
+		match self {
+			Self::Id { kind, id } => id_uri(*kind, *id).to_uri(),
+			Self::LikedSongs => LIKED_SONGS_URI.to_owned(),
 		}
 	}
 
 	/// The one item a track or episode link names; `None` for links to several.
 	pub const fn item(&self) -> Option<ItemId> {
-		match self.kind {
-			LinkKind::Track => Some(ItemId::Track(self.id)),
-			LinkKind::Episode => Some(ItemId::Episode(self.id)),
-			LinkKind::Album | LinkKind::Playlist | LinkKind::Show | LinkKind::Artist => None,
+		match self {
+			Self::Id { kind: LinkKind::Track, id } => Some(ItemId::Track(*id)),
+			Self::Id { kind: LinkKind::Episode, id } => Some(ItemId::Episode(*id)),
+			Self::Id { .. } | Self::LikedSongs => None,
 		}
+	}
+}
+
+/// A link by ID as librespot names it.
+const fn id_uri(kind: LinkKind, id: SpotifyId) -> SpotifyUri {
+	match kind {
+		LinkKind::Track => SpotifyUri::Track { id },
+		LinkKind::Album => SpotifyUri::Album { id },
+		LinkKind::Playlist => SpotifyUri::Playlist { user: None, id },
+		LinkKind::Episode => SpotifyUri::Episode { id },
+		LinkKind::Show => SpotifyUri::Show { id },
+		LinkKind::Artist => SpotifyUri::Artist { id },
 	}
 }
 
@@ -80,7 +92,7 @@ pub enum LinkError {
 	#[error("this is not a Spotify link")]
 	NotSpotify,
 	#[error(
-		"Spotify {kind} links can't be played; use a track, album, playlist, episode, show or artist link"
+		"Spotify {kind} links can't be played; use a track, album, playlist, episode, show, artist or Liked Songs link"
 	)]
 	Unsupported { kind: String },
 	#[error("this Spotify link has an invalid id")]
@@ -114,20 +126,30 @@ pub fn parse_item(text: &str) -> Option<ItemId> {
 fn parse_uri(uri: &str) -> Result<Link, LinkError> {
 	// librespot only accepts the lowercase scheme.
 	let rest = strip_prefix_ignore_case(uri, "spotify:").ok_or(LinkError::NotSpotify)?;
-	// A profile, spotify:user:<name>. Old playlist URIs go on after the name.
 	let mut parts = rest.split(':');
-	if parts.next().is_some_and(|kind| kind.eq_ignore_ascii_case("user")) && parts.nth(1).is_none()
-	{
-		return Err(LinkError::Unsupported { kind: "user".to_owned() });
+	let first = parts.next().unwrap_or_default();
+	if first.eq_ignore_ascii_case("collection") {
+		return liked_songs(parts.next(), parts.next());
+	}
+	if first.eq_ignore_ascii_case("user") {
+		// A profile is spotify:user:<name>. Old playlist URIs go on after the name, and
+		// spotify:user:<name>:collection is that account's Liked Songs.
+		match parts.nth(1) {
+			None => return Err(LinkError::Unsupported { kind: "user".to_owned() }),
+			Some(kind) if kind.eq_ignore_ascii_case("collection") => {
+				return liked_songs(Some("tracks"), parts.next());
+			}
+			Some(_) => {}
+		}
 	}
 	let uri = SpotifyUri::from_uri(&format!("spotify:{rest}")).map_err(|_| LinkError::InvalidId)?;
 	match uri {
-		SpotifyUri::Track { id } => Ok(Link { kind: LinkKind::Track, id }),
-		SpotifyUri::Album { id } => Ok(Link { kind: LinkKind::Album, id }),
-		SpotifyUri::Playlist { id, .. } => Ok(Link { kind: LinkKind::Playlist, id }),
-		SpotifyUri::Episode { id } => Ok(Link { kind: LinkKind::Episode, id }),
-		SpotifyUri::Show { id } => Ok(Link { kind: LinkKind::Show, id }),
-		SpotifyUri::Artist { id } => Ok(Link { kind: LinkKind::Artist, id }),
+		SpotifyUri::Track { id } => Ok(Link::Id { kind: LinkKind::Track, id }),
+		SpotifyUri::Album { id } => Ok(Link::Id { kind: LinkKind::Album, id }),
+		SpotifyUri::Playlist { id, .. } => Ok(Link::Id { kind: LinkKind::Playlist, id }),
+		SpotifyUri::Episode { id } => Ok(Link::Id { kind: LinkKind::Episode, id }),
+		SpotifyUri::Show { id } => Ok(Link::Id { kind: LinkKind::Show, id }),
+		SpotifyUri::Artist { id } => Ok(Link::Id { kind: LinkKind::Artist, id }),
 		SpotifyUri::Local { .. } => Err(LinkError::Unsupported { kind: "local".to_owned() }),
 		other @ SpotifyUri::Unknown { .. } => {
 			Err(LinkError::Unsupported { kind: other.item_type().to_owned() })
@@ -159,6 +181,9 @@ fn parse_url(url: &str) -> Result<Link, LinkError> {
 		}
 	}
 	let kind = parts.next().ok_or(LinkError::NotSpotify)?.to_ascii_lowercase();
+	if kind == "collection" {
+		return liked_songs(parts.next(), parts.next());
+	}
 	let kind = match kind.as_str() {
 		"track" => LinkKind::Track,
 		"album" => LinkKind::Album,
@@ -170,7 +195,17 @@ fn parse_url(url: &str) -> Result<Link, LinkError> {
 	};
 	let id = parts.next().ok_or(LinkError::InvalidId)?;
 	let id = SpotifyId::from_base62(id).map_err(|_| LinkError::InvalidId)?;
-	Ok(Link { kind, id })
+	Ok(Link::Id { kind, id })
+}
+
+/// Liked Songs for a collection link whose part after `collection` is `what` and whose part after
+/// that is `rest`; other collections, such as podcasts, are unsupported.
+fn liked_songs(what: Option<&str>, rest: Option<&str>) -> Result<Link, LinkError> {
+	if what.is_some_and(|what| what.eq_ignore_ascii_case("tracks")) && rest.is_none() {
+		Ok(Link::LikedSongs)
+	} else {
+		Err(LinkError::Unsupported { kind: "collection".to_owned() })
+	}
 }
 
 fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
@@ -194,7 +229,7 @@ mod tests {
 	}
 
 	fn link(kind: LinkKind, base62: &str) -> Link {
-		Link { kind, id: id(base62) }
+		Link::Id { kind, id: id(base62) }
 	}
 
 	#[test]
@@ -290,9 +325,12 @@ mod tests {
 	#[test]
 	fn parses_artist_links_in_every_spelling() {
 		let artist = link(LinkKind::Artist, TRACK);
-		assert_eq!(parse_link(&format!("https://open.spotify.com/artist/{TRACK}")), Ok(artist));
-		assert_eq!(parse_link(&format!("spotify:artist:{TRACK}")), Ok(artist));
-		assert_eq!(parse_link(&format!("sptf://spotify:artist:{TRACK}")), Ok(artist));
+		assert_eq!(
+			parse_link(&format!("https://open.spotify.com/artist/{TRACK}")),
+			Ok(artist.clone())
+		);
+		assert_eq!(parse_link(&format!("spotify:artist:{TRACK}")), Ok(artist.clone()));
+		assert_eq!(parse_link(&format!("sptf://spotify:artist:{TRACK}")), Ok(artist.clone()));
 		// An artist names no single item to play.
 		assert_eq!(artist.item(), None);
 	}
@@ -351,14 +389,11 @@ mod tests {
 	#[test]
 	fn every_link_has_its_spotify_uri() {
 		assert_eq!(
-			link(LinkKind::Playlist, PLAYLIST).uri().to_uri(),
+			link(LinkKind::Playlist, PLAYLIST).uri(),
 			format!("spotify:playlist:{PLAYLIST}")
 		);
-		assert_eq!(link(LinkKind::Show, SHOW).uri().to_uri(), format!("spotify:show:{SHOW}"));
-		assert_eq!(
-			link(LinkKind::Episode, EPISODE).uri().to_uri(),
-			format!("spotify:episode:{EPISODE}")
-		);
+		assert_eq!(link(LinkKind::Show, SHOW).uri(), format!("spotify:show:{SHOW}"));
+		assert_eq!(link(LinkKind::Episode, EPISODE).uri(), format!("spotify:episode:{EPISODE}"));
 	}
 
 	#[test]
@@ -367,5 +402,37 @@ mod tests {
 		assert_eq!(link(LinkKind::Episode, EPISODE).item(), Some(ItemId::Episode(id(EPISODE))));
 		assert_eq!(link(LinkKind::Show, SHOW).item(), None);
 		assert_eq!(link(LinkKind::Album, ALBUM).item(), None);
+	}
+
+	const USER: &str = "21e2w4ryeu3jowufvdh5ctyii";
+
+	#[test]
+	fn parses_liked_songs_links() {
+		for text in [
+			"https://open.spotify.com/collection/tracks".to_owned(),
+			"spotify:collection:tracks".to_owned(),
+			"sptf://spotify:collection:tracks".to_owned(),
+			format!("spotify:user:{USER}:collection"),
+		] {
+			assert_eq!(parse_link(&text), Ok(Link::LikedSongs), "{text}");
+		}
+	}
+
+	#[test]
+	fn other_collections_are_unsupported() {
+		let unsupported = Err(LinkError::Unsupported { kind: "collection".to_owned() });
+		assert_eq!(parse_link("https://open.spotify.com/collection/podcasts"), unsupported);
+		assert_eq!(parse_link("spotify:collection:your-episodes"), unsupported);
+		assert_eq!(
+			parse_link(&format!("spotify:user:{USER}:collection:artist:0I4Bk2s2BUJyykCwtxx8Xx")),
+			unsupported
+		);
+	}
+
+	#[test]
+	fn liked_songs_are_stored_as_the_collection_uri() {
+		assert_eq!(Link::LikedSongs.uri(), "spotify:collection:tracks");
+		assert_eq!(parse_link(&Link::LikedSongs.uri()), Ok(Link::LikedSongs));
+		assert_eq!(Link::LikedSongs.item(), None);
 	}
 }

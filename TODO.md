@@ -29,9 +29,10 @@ The cheapest wins come first.
 
 ### New links
 
-- [ ] Add your Liked Songs
-  - librespot's `SpClient::get_context` lists the Liked Songs of the logged-in user (`spotify:user:<user>:collection`), and the liked songs by one artist (`spotify:user:<user>:collection:artist:<id>`).
-  - Spotify's web link for Liked Songs is `https://open.spotify.com/collection/tracks`. foo_librespot's link parser doesn't know it. Accepting that link would need no menus.
+- [x] Add your Liked Songs
+  - Spotify's web link for Liked Songs is `https://open.spotify.com/collection/tracks`, and its apps use `spotify:collection:tracks`. foo_librespot's link parser didn't know either.
+  - These links, and the older `spotify:user:<user>:collection`, now add the logged-in account's Liked Songs, from librespot's `SpClient::get_context`, following every further page (`context_tracks` in `crates/foo_librespot_core/src/resolve.rs`).
+  - An artist's liked songs (`spotify:user:<user>:collection:artist:<id>`) and other collections, such as podcasts, are still unsupported.
 - [ ] An artist's whole discography
   - An artist link adds the artist's popular tracks. librespot's `SpClient::get_context` for an artist gives the popular tracks and then pages of the artist's albums.
   - The decision: a setting on the Spotify preferences page chooses between the popular tracks and the whole discography. The discography is the artist's albums, singles, EPs and compilations, not the albums the artist only appears on. A song on both an album and a single is added once, by its ISRC, the code that identifies a recording. There is no warning before a large discography.

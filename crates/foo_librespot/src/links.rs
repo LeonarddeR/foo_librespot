@@ -37,7 +37,7 @@ fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
 
 /// The one path foobar2000 stores for `link`.
 fn canonical(link: &Link) -> String {
-	format!("{PATH_SCHEME}{}", link.uri().to_uri())
+	format!("{PATH_SCHEME}{}", link.uri())
 }
 
 /// `path` without our `sptf://` scheme: the link as the user pasted it.
@@ -279,6 +279,10 @@ mod tests {
 		assert_eq!(
 			filesystem.canonical_path("spotify:show:5CfCWKI5pZ28U0uOzXkDHe").as_deref(),
 			Some("sptf://spotify:show:5CfCWKI5pZ28U0uOzXkDHe")
+		);
+		assert_eq!(
+			filesystem.canonical_path("https://open.spotify.com/collection/tracks").as_deref(),
+			Some("sptf://spotify:collection:tracks")
 		);
 		assert_eq!(filesystem.canonical_path("file://C:\\a.mp3"), None);
 		assert_eq!(

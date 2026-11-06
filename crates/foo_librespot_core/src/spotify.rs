@@ -263,7 +263,7 @@ mod tests {
 	}
 
 	fn album() -> Link {
-		Link {
+		Link::Id {
 			kind: LinkKind::Album,
 			id: SpotifyId::from_base62("4LH4d3cOWNNsVw41Gqt2kv").unwrap(),
 		}

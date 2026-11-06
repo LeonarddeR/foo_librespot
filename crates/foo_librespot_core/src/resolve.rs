@@ -1,7 +1,7 @@
 //! Turning a track, album, playlist, episode or show link into the tracks and episodes to add
 //! to a foobar2000 playlist.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -13,6 +13,7 @@ use librespot_core::date::Date;
 use librespot_core::error::ErrorKind;
 use librespot_metadata::show::ShowConsumptionOrder;
 use librespot_metadata::{Album, Artist, Episode, Metadata, Playlist, Show, Track};
+use librespot_protocol::context_page::ContextPage;
 use librespot_protocol::extended_metadata::{
 	BatchedEntityRequest, BatchedExtensionResponse, EntityRequest, ExtensionQuery,
 };
@@ -110,6 +111,9 @@ pub trait MetadataSource: Send + Sync {
 		&self,
 		id: SpotifyId,
 	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send;
+
+	/// The track and episode URIs of the logged-in account's Liked Songs, in Spotify's order.
+	fn liked_songs(&self) -> impl Future<Output = Result<Vec<SpotifyUri>, CoreError>> + Send;
 }
 
 /// The info of one item.
@@ -139,25 +143,29 @@ fn playable(info: &TrackInfo) -> bool {
 /// when nothing at all could be resolved is the first error returned instead, so a network
 /// failure never looks like an empty album.
 pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resolved, CoreError> {
-	let (name, entries) = match link.kind {
-		LinkKind::Track | LinkKind::Episode => {
+	let (name, entries) = match link {
+		Link::Id { kind: LinkKind::Track | LinkKind::Episode, .. } => {
 			(None, link.item().map(Entry::Item).into_iter().collect::<Vec<_>>())
 		}
-		LinkKind::Album => {
-			let (name, ids) = source.album(link.id).await?;
+		Link::Id { kind: LinkKind::Album, id } => {
+			let (name, ids) = source.album(*id).await?;
 			(Some(name), ids.into_iter().map(|id| Entry::Item(ItemId::Track(id))).collect())
 		}
-		LinkKind::Playlist => {
-			let (name, uris) = source.playlist(link.id).await?;
+		Link::Id { kind: LinkKind::Playlist, id } => {
+			let (name, uris) = source.playlist(*id).await?;
 			(Some(name), uris.iter().map(playlist_entry).collect())
 		}
-		LinkKind::Show => {
-			let (name, ids) = source.show(link.id).await?;
+		Link::Id { kind: LinkKind::Show, id } => {
+			let (name, ids) = source.show(*id).await?;
 			(Some(name), ids.into_iter().map(|id| Entry::Item(ItemId::Episode(id))).collect())
 		}
-		LinkKind::Artist => {
-			let (name, ids) = source.artist(link.id).await?;
+		Link::Id { kind: LinkKind::Artist, id } => {
+			let (name, ids) = source.artist(*id).await?;
 			(Some(name), ids.into_iter().map(|id| Entry::Item(ItemId::Track(id))).collect())
+		}
+		Link::LikedSongs => {
+			let uris = source.liked_songs().await?;
+			(Some("Liked Songs".to_owned()), uris.iter().map(playlist_entry).collect())
 		}
 	};
 
@@ -233,6 +241,103 @@ pub fn listening_order(
 		newest_first.reverse();
 	}
 	newest_first
+}
+
+/// How many further pages of one context foo_librespot fetches at most.
+const MAX_CONTEXT_PAGES: usize = 1000;
+
+/// One page of a Spotify context: its tracks, or where to fetch them, and where the next page is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Page {
+	tracks: Vec<String>,
+	/// Set on a page whose tracks still have to be fetched.
+	tracks_url: Option<String>,
+	next_url: Option<String>,
+}
+
+impl Page {
+	fn of(page: &ContextPage) -> Self {
+		Self {
+			tracks: page
+				.tracks
+				.iter()
+				.map(|track| track.uri().to_owned())
+				.filter(|uri| !uri.is_empty())
+				.collect(),
+			tracks_url: Some(page.page_url().to_owned()).filter(|url| !url.is_empty()),
+			next_url: Some(page.next_page_url().to_owned()).filter(|url| !url.is_empty()),
+		}
+	}
+
+	/// A page as `get_next_page` sends it: a `ContextPage` in JSON, with its field names in
+	/// either spelling.
+	fn from_json(bytes: &[u8]) -> Result<Self, CoreError> {
+		let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| {
+			CoreError::Unavailable(format!("Spotify sent a page foo_librespot can't read: {error}"))
+		})?;
+		let text = |camel: &str, snake: &str| {
+			value
+				.get(camel)
+				.or_else(|| value.get(snake))
+				.and_then(serde_json::Value::as_str)
+				.filter(|text| !text.is_empty())
+				.map(str::to_owned)
+		};
+		Ok(Self {
+			tracks: value["tracks"]
+				.as_array()
+				.into_iter()
+				.flatten()
+				.filter_map(|track| track["uri"].as_str())
+				.filter(|uri| !uri.is_empty())
+				.map(str::to_owned)
+				.collect(),
+			tracks_url: text("pageUrl", "page_url"),
+			next_url: text("nextPageUrl", "next_page_url"),
+		})
+	}
+
+	/// The page's tracks as librespot names them; ones it can't read are left out.
+	fn uris(&self) -> Vec<SpotifyUri> {
+		self.tracks.iter().filter_map(|uri| SpotifyUri::from_uri(uri).ok()).collect()
+	}
+}
+
+/// The tracks of `pages` in order. A page without tracks but with a `page_url` is fetched in its
+/// place, and a page's `next_page_url` is fetched right after it, through `fetch`, for at most
+/// [`MAX_CONTEXT_PAGES`] fetches.
+async fn context_tracks<F, Fut>(pages: Vec<Page>, fetch: F) -> Result<Vec<SpotifyUri>, CoreError>
+where
+	F: Fn(String) -> Fut,
+	Fut: Future<Output = Result<Page, CoreError>>,
+{
+	let mut queue = VecDeque::from(pages);
+	let mut uris = Vec::new();
+	let mut fetches = 0;
+	while let Some(mut page) = queue.pop_front() {
+		if page.tracks.is_empty()
+			&& let Some(url) = page.tracks_url.take()
+		{
+			if fetches == MAX_CONTEXT_PAGES {
+				break;
+			}
+			fetches += 1;
+			let mut loaded = fetch(url).await?;
+			loaded.tracks_url = None;
+			loaded.next_url = loaded.next_url.or(page.next_url);
+			queue.push_front(loaded);
+			continue;
+		}
+		uris.extend(page.uris());
+		if let Some(url) = page.next_url {
+			if fetches == MAX_CONTEXT_PAGES {
+				break;
+			}
+			fetches += 1;
+			queue.push_front(fetch(url).await?);
+		}
+	}
+	Ok(uris)
 }
 
 /// Runs `request` again while librespot refuses it for its own rate limit, waiting longer each
@@ -396,6 +501,10 @@ impl<S: MetadataSource> MetadataSource for CachedSource<S> {
 	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send {
 		self.inner.artist(id)
 	}
+
+	fn liked_songs(&self) -> impl Future<Output = Result<Vec<SpotifyUri>, CoreError>> + Send {
+		self.inner.liked_songs()
+	}
 }
 
 /// Metadata straight from Spotify, through librespot.
@@ -416,6 +525,12 @@ struct Viewer {
 impl LibrespotMetadata {
 	pub fn new(session: Session, albums: AlbumDetailsCache) -> Self {
 		Self { session, albums }
+	}
+
+	/// A further page of a context, through its `hm://` URL.
+	async fn context_page(&self, url: String) -> Result<Page, CoreError> {
+		let bytes = retry_rate_limited(|| self.session.spclient().get_next_page(&url)).await?;
+		Page::from_json(&bytes)
 	}
 
 	/// The extensions to ask for an item: a track's metadata comes with its loudness and its
@@ -630,6 +745,13 @@ impl MetadataSource for LibrespotMetadata {
 			.collect::<Result<Vec<_>, _>>()?;
 		Ok((artist.name, ids))
 	}
+
+	async fn liked_songs(&self) -> Result<Vec<SpotifyUri>, CoreError> {
+		let uri = format!("spotify:user:{}:collection", self.session.username());
+		let context = retry_rate_limited(|| self.session.spclient().get_context(&uri)).await?;
+		let pages = context.pages.iter().map(Page::of).collect();
+		context_tracks(pages, |url| self.context_page(url)).await
+	}
 }
 
 /// The raw values of the extensions Spotify sent for one item.
@@ -701,9 +823,9 @@ mod tests {
 	use protobuf::{CodedOutputStream, Message};
 
 	use super::{
-		AlbumDetailsCache, CachedSource, ExtensionValues, LibrespotMetadata, MetadataSource,
-		SkipReason, TrackCache, Viewer, extension_values, listening_order, resolve,
-		retry_rate_limited,
+		AlbumDetailsCache, CachedSource, ExtensionValues, LibrespotMetadata, MAX_CONTEXT_PAGES,
+		MetadataSource, Page, SkipReason, TrackCache, Viewer, context_tracks, extension_values,
+		listening_order, resolve, retry_rate_limited,
 	};
 	use crate::link::{ItemId, Link, LinkKind};
 	use crate::metadata::{AlbumDetails, EXPLICIT_FILTERED, TrackInfo};
@@ -787,6 +909,7 @@ mod tests {
 		playlists: HashMap<SpotifyId, (String, Vec<SpotifyUri>)>,
 		shows: HashMap<SpotifyId, (String, Vec<SpotifyId>)>,
 		artists: HashMap<SpotifyId, (String, Vec<SpotifyId>)>,
+		liked: Vec<SpotifyUri>,
 		track_calls: AtomicUsize,
 		/// The size of each batch asked for, in the order asked.
 		batches: Mutex<Vec<usize>>,
@@ -851,17 +974,97 @@ mod tests {
 			tokio::task::yield_now().await;
 			Ok(self.artists.get(&id).expect("unknown artist").clone())
 		}
+
+		async fn liked_songs(&self) -> Result<Vec<SpotifyUri>, CoreError> {
+			tokio::task::yield_now().await;
+			Ok(self.liked.clone())
+		}
 	}
 
 	fn titles(tracks: &[Arc<TrackInfo>]) -> Vec<&str> {
 		tracks.iter().map(|track| track.title.as_str()).collect()
 	}
 
+	fn track_uri(byte: u8) -> SpotifyUri {
+		SpotifyUri::Track { id: id(byte) }
+	}
+
+	#[tokio::test]
+	async fn liked_songs_link_adds_the_saved_tracks_in_order() {
+		let mut source = FakeSource::with_tracks(&[1, 2]);
+		source.liked = vec![
+			track_uri(2),
+			SpotifyUri::from_uri("spotify:local:Keith+Getty::In+Christ+Alone:279").unwrap(),
+			track_uri(1),
+		];
+		let resolved = resolve(&source, &Link::LikedSongs).await.unwrap();
+		assert_eq!(resolved.name.as_deref(), Some("Liked Songs"));
+		assert_eq!(titles(&resolved.tracks), ["Track 2", "Track 1"]);
+		assert_eq!(resolved.skipped.len(), 1);
+	}
+
+	fn page(tracks: &[u8], page_url: Option<&str>, next_page_url: Option<&str>) -> Page {
+		Page {
+			tracks: tracks.iter().map(|&byte| track_uri(byte).to_uri()).collect(),
+			tracks_url: page_url.map(str::to_owned),
+			next_url: next_page_url.map(str::to_owned),
+		}
+	}
+
+	#[tokio::test]
+	async fn context_pages_are_followed_in_order() {
+		let asked = Mutex::new(Vec::new());
+		let fetch = |url: String| {
+			asked.lock().unwrap().push(url.clone());
+			async move {
+				Ok::<_, CoreError>(match url.as_str() {
+					"hm://page/2" => page(&[2], None, Some("hm://page/3")),
+					"hm://page/3" => page(&[3], None, None),
+					_ => panic!("unexpected {url}"),
+				})
+			}
+		};
+		let pages = vec![
+			page(&[1], None, None),
+			page(&[], Some("hm://page/2"), None),
+			page(&[4], None, None),
+		];
+		let uris = context_tracks(pages, fetch).await.unwrap();
+		assert_eq!(uris, [track_uri(1), track_uri(2), track_uri(3), track_uri(4)]);
+		assert_eq!(*asked.lock().unwrap(), ["hm://page/2", "hm://page/3"]);
+	}
+
+	#[tokio::test]
+	async fn context_paging_stops_after_its_limit() {
+		let calls = AtomicUsize::new(0);
+		let endless = |_: String| {
+			calls.fetch_add(1, Ordering::SeqCst);
+			async { Ok::<_, CoreError>(page(&[1], None, Some("hm://again"))) }
+		};
+		let uris =
+			context_tracks(vec![page(&[1], None, Some("hm://again"))], endless).await.unwrap();
+		assert_eq!(calls.load(Ordering::SeqCst), MAX_CONTEXT_PAGES);
+		assert_eq!(uris.len(), MAX_CONTEXT_PAGES + 1);
+	}
+
+	#[test]
+	fn a_page_reads_from_json_in_either_spelling() {
+		let uri = track_uri(1).to_uri();
+		let camel = format!(r#"{{"tracks":[{{"uri":"{uri}"}}],"nextPageUrl":"hm://next"}}"#);
+		assert_eq!(Page::from_json(camel.as_bytes()).unwrap(), page(&[1], None, Some("hm://next")));
+		let snake = r#"{"tracks":[],"page_url":"hm://tracks","next_page_url":""}"#;
+		assert_eq!(
+			Page::from_json(snake.as_bytes()).unwrap(),
+			page(&[], Some("hm://tracks"), None)
+		);
+		assert!(Page::from_json(b"not json").is_err());
+	}
+
 	#[tokio::test]
 	async fn artist_link_adds_the_popular_tracks_in_order() {
 		let mut source = FakeSource::with_tracks(&[1, 2, 3]);
 		source.artists.insert(id(150), ("Keith & Kristyn Getty".to_owned(), vec![id(3), id(1)]));
-		let link = Link { kind: LinkKind::Artist, id: id(150) };
+		let link = Link::Id { kind: LinkKind::Artist, id: id(150) };
 		let resolved = resolve(&source, &link).await.unwrap();
 		assert_eq!(resolved.name.as_deref(), Some("Keith & Kristyn Getty"));
 		assert_eq!(titles(&resolved.tracks), ["Track 3", "Track 1"]);
@@ -870,7 +1073,8 @@ mod tests {
 	#[tokio::test]
 	async fn track_link_resolves_to_one_track() {
 		let source = FakeSource::with_tracks(&[1]);
-		let resolved = resolve(&source, &Link { kind: LinkKind::Track, id: id(1) }).await.unwrap();
+		let resolved =
+			resolve(&source, &Link::Id { kind: LinkKind::Track, id: id(1) }).await.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
 		assert_eq!(resolved.name, None);
 		assert!(resolved.skipped.is_empty());
@@ -881,7 +1085,7 @@ mod tests {
 		let mut source = FakeSource::default();
 		source.episodes.insert(id(50), episode(50));
 		let resolved =
-			resolve(&source, &Link { kind: LinkKind::Episode, id: id(50) }).await.unwrap();
+			resolve(&source, &Link::Id { kind: LinkKind::Episode, id: id(50) }).await.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Episode 50"]);
 		assert_eq!(resolved.tracks[0].id, ItemId::Episode(id(50)));
 	}
@@ -893,7 +1097,8 @@ mod tests {
 			source.episodes.insert(id(byte), episode(byte));
 		}
 		source.shows.insert(id(250), ("The Show".to_owned(), vec![id(52), id(50), id(51)]));
-		let resolved = resolve(&source, &Link { kind: LinkKind::Show, id: id(250) }).await.unwrap();
+		let resolved =
+			resolve(&source, &Link::Id { kind: LinkKind::Show, id: id(250) }).await.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Episode 52", "Episode 50", "Episode 51"]);
 		assert_eq!(resolved.name.as_deref(), Some("The Show"));
 	}
@@ -905,7 +1110,8 @@ mod tests {
 			source.episodes.insert(id(byte), episode(byte));
 		}
 		source.shows.insert(id(255), ("The Show".to_owned(), (1..=250u8).map(id).collect()));
-		let resolved = resolve(&source, &Link { kind: LinkKind::Show, id: id(255) }).await.unwrap();
+		let resolved =
+			resolve(&source, &Link::Id { kind: LinkKind::Show, id: id(255) }).await.unwrap();
 		assert_eq!(resolved.tracks.len(), 250);
 		assert_eq!(resolved.tracks[0].title, "Episode 1");
 		assert_eq!(resolved.tracks[249].title, "Episode 250");
@@ -943,7 +1149,8 @@ mod tests {
 		source.episodes.insert(id(50), hosted_elsewhere);
 		source.episodes.insert(id(51), silent);
 		source.shows.insert(id(250), ("The Show".to_owned(), vec![id(50), id(51)]));
-		let resolved = resolve(&source, &Link { kind: LinkKind::Show, id: id(250) }).await.unwrap();
+		let resolved =
+			resolve(&source, &Link::Id { kind: LinkKind::Show, id: id(250) }).await.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Episode 50"]);
 		assert_eq!(resolved.skipped.len(), 1);
 		assert_eq!(resolved.skipped[0].uri, SpotifyUri::Episode { id: id(51) }.to_uri());
@@ -953,7 +1160,7 @@ mod tests {
 	async fn track_link_failure_is_an_error() {
 		let mut source = FakeSource::default();
 		source.tracks.insert(id(1), (Err("gone"), Duration::ZERO));
-		let result = resolve(&source, &Link { kind: LinkKind::Track, id: id(1) }).await;
+		let result = resolve(&source, &Link::Id { kind: LinkKind::Track, id: id(1) }).await;
 		assert!(matches!(&result, Err(CoreError::Unavailable(message)) if message == "gone"));
 	}
 
@@ -966,7 +1173,7 @@ mod tests {
 		}
 		source.albums.insert(id(100), Ok(("The Album".to_owned(), (1..=5).map(id).collect())));
 		let resolved =
-			resolve(&source, &Link { kind: LinkKind::Album, id: id(100) }).await.unwrap();
+			resolve(&source, &Link::Id { kind: LinkKind::Album, id: id(100) }).await.unwrap();
 		assert_eq!(
 			titles(&resolved.tracks),
 			["Track 1", "Track 2", "Track 3", "Track 4", "Track 5"]
@@ -993,7 +1200,7 @@ mod tests {
 			),
 		);
 		let resolved =
-			resolve(&source, &Link { kind: LinkKind::Playlist, id: id(200) }).await.unwrap();
+			resolve(&source, &Link::Id { kind: LinkKind::Playlist, id: id(200) }).await.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Track 1", "Episode 50", "Track 2"]);
 		assert_eq!(resolved.name.as_deref(), Some("Mix"));
 		let skipped: Vec<_> =
@@ -1013,7 +1220,7 @@ mod tests {
 			),
 		);
 		let resolved =
-			resolve(&source, &Link { kind: LinkKind::Playlist, id: id(200) }).await.unwrap();
+			resolve(&source, &Link::Id { kind: LinkKind::Playlist, id: id(200) }).await.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
 		assert_eq!(resolved.skipped.len(), 1);
 		assert_eq!(resolved.skipped[0].uri, SpotifyUri::Track { id: id(2) }.to_uri());
@@ -1030,7 +1237,7 @@ mod tests {
 		source.tracks.insert(id(2), (Ok(silent), Duration::ZERO));
 		source.albums.insert(id(100), Ok(("The Album".to_owned(), vec![id(1), id(2)])));
 		let resolved =
-			resolve(&source, &Link { kind: LinkKind::Album, id: id(100) }).await.unwrap();
+			resolve(&source, &Link::Id { kind: LinkKind::Album, id: id(100) }).await.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
 		assert!(matches!(resolved.skipped[0].reason, SkipReason::Unavailable(_)));
 	}
@@ -1043,7 +1250,7 @@ mod tests {
 		source.tracks.insert(id(2), (Ok(locked), Duration::ZERO));
 		source.albums.insert(id(100), Ok(("The Album".to_owned(), vec![id(2), id(1)])));
 		let resolved =
-			resolve(&source, &Link { kind: LinkKind::Album, id: id(100) }).await.unwrap();
+			resolve(&source, &Link::Id { kind: LinkKind::Album, id: id(100) }).await.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
 		assert_eq!(
 			resolved.skipped[0].reason,
@@ -1059,7 +1266,7 @@ mod tests {
 		inner.tracks.insert(id(2), (Ok(unreleased), Duration::ZERO));
 		inner.albums.insert(id(100), Ok(("The Album".to_owned(), vec![id(1), id(2)])));
 		let source = CachedSource::new(inner, TrackCache::default());
-		let link = Link { kind: LinkKind::Album, id: id(100) };
+		let link = Link::Id { kind: LinkKind::Album, id: id(100) };
 		resolve(&source, &link).await.unwrap();
 		resolve(&source, &link).await.unwrap();
 		// Track 1 once; track 2 each time, since its release or the country may change.
@@ -1371,7 +1578,7 @@ mod tests {
 		source.tracks.insert(id(1), (Err("first"), Duration::from_millis(30)));
 		source.tracks.insert(id(2), (Err("second"), Duration::ZERO));
 		source.albums.insert(id(100), Ok(("The Album".to_owned(), vec![id(1), id(2)])));
-		let result = resolve(&source, &Link { kind: LinkKind::Album, id: id(100) }).await;
+		let result = resolve(&source, &Link::Id { kind: LinkKind::Album, id: id(100) }).await;
 		assert!(matches!(&result, Err(CoreError::Unavailable(message)) if message == "first"));
 	}
 
@@ -1379,7 +1586,7 @@ mod tests {
 	async fn album_fetch_failure_is_an_error() {
 		let mut source = FakeSource::default();
 		source.albums.insert(id(100), Err("no such album"));
-		let result = resolve(&source, &Link { kind: LinkKind::Album, id: id(100) }).await;
+		let result = resolve(&source, &Link::Id { kind: LinkKind::Album, id: id(100) }).await;
 		assert!(
 			matches!(&result, Err(CoreError::Unavailable(message)) if message == "no such album")
 		);
@@ -1391,7 +1598,7 @@ mod tests {
 		inner.albums.insert(id(100), Ok(("The Album".to_owned(), vec![id(1), id(2), id(3)])));
 		let cache = TrackCache::default();
 		let source = CachedSource::new(inner, cache.clone());
-		let link = Link { kind: LinkKind::Album, id: id(100) };
+		let link = Link::Id { kind: LinkKind::Album, id: id(100) };
 		resolve(&source, &link).await.unwrap();
 		let again = resolve(&source, &link).await.unwrap();
 		assert_eq!(again.tracks.len(), 3);
