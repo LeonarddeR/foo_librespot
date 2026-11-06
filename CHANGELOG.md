@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reading many tracks while offline no longer waits 30 seconds for each of them.
 - An album added before its release date is checked again when you add it later.
 - Loading old foo_spotify playlists makes half as many Spotify requests.
+- When Spotify doesn't send an album's details, its tracks get them the next time they're read, instead of going without their totals, label and copyright until foobar2000 restarts.
 
 ## [0.1.0] - 2026-11-04
 

@@ -701,9 +701,11 @@ impl<S: MetadataSource> MetadataSource for CachedSource<S> {
 				}
 				let result = fetched.next().unwrap_or_else(|| Err(missing(*item)));
 				// Whether an item plays changes with the clock and the account's country, so an
-				// unavailable one is asked for again next time.
+				// unavailable one is asked for again next time, as is one without its album's
+				// details.
 				if let Ok(info) = &result
 					&& info.unavailable.is_none()
+					&& !info.missing_album_details
 				{
 					self.cache.insert(Arc::clone(info));
 				}
@@ -963,8 +965,11 @@ impl MetadataSource for LibrespotMetadata {
 			.into_iter()
 			.map(|info| {
 				let (mut info, album) = info?;
-				if let Some(found) = album.and_then(|album| details.get(&album)) {
-					found.apply(&mut info);
+				if let Some(album) = album {
+					match details.get(&album) {
+						Some(found) => found.apply(&mut info),
+						None => info.missing_album_details = true,
+					}
 				}
 				Ok(Arc::new(info))
 			})
@@ -1154,6 +1159,7 @@ mod tests {
 			copyrights: Vec::new(),
 			barcode: None,
 			release_type: None,
+			missing_album_details: false,
 		}
 	}
 
@@ -1187,6 +1193,7 @@ mod tests {
 			copyrights: Vec::new(),
 			barcode: None,
 			release_type: None,
+			missing_album_details: false,
 		}
 	}
 
@@ -2238,6 +2245,21 @@ mod tests {
 			resolved.skipped[0].reason,
 			SkipReason::Unavailable(EXPLICIT_FILTERED.to_owned())
 		);
+	}
+
+	#[tokio::test]
+	async fn a_track_missing_its_album_details_is_asked_for_again_later() {
+		let mut inner = FakeSource::default();
+		let mut partial = info(1);
+		partial.missing_album_details = true;
+		inner.tracks.insert(id(1), (Ok(partial), Duration::ZERO));
+		inner.albums.insert(id(100), Ok(("The Album".to_owned(), vec![id(1)])));
+		let source = CachedSource::new(inner, TrackCache::default());
+		let link = Link::Id { kind: LinkKind::Album, id: id(100) };
+		let resolved = resolve(&source, &link, ArtistTracks::Popular).await.unwrap();
+		resolve(&source, &link, ArtistTracks::Popular).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Track 1"]);
+		assert_eq!(source.inner().track_calls.load(Ordering::SeqCst), 2);
 	}
 
 	#[tokio::test]

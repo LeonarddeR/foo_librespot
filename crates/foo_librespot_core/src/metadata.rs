@@ -74,6 +74,8 @@ pub struct TrackInfo {
 	pub barcode: Option<String>,
 	/// `album`, `single`, `compilation` or `ep`; `None` until its album is read.
 	pub release_type: Option<&'static str>,
+	/// Its album was read, but Spotify sent none of the album's details.
+	pub missing_album_details: bool,
 }
 
 pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
@@ -108,6 +110,7 @@ pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
 		copyrights: Vec::new(),
 		barcode: None,
 		release_type: None,
+		missing_album_details: false,
 	})
 }
 
@@ -148,6 +151,7 @@ pub fn episode_info(episode: &Episode) -> Result<TrackInfo, CoreError> {
 		copyrights: Vec::new(),
 		barcode: None,
 		release_type: None,
+		missing_album_details: false,
 	})
 }
 

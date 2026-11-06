@@ -70,6 +70,7 @@ pub fn track_info(id: SpotifyId, title: &str) -> TrackInfo {
 		],
 		barcode: Some("804879057321".to_owned()),
 		release_type: Some("album"),
+		missing_album_details: false,
 	}
 }
 
@@ -104,6 +105,7 @@ pub fn episode_info(id: SpotifyId, title: &str) -> TrackInfo {
 		copyrights: Vec::new(),
 		barcode: None,
 		release_type: None,
+		missing_album_details: false,
 	}
 }
 
