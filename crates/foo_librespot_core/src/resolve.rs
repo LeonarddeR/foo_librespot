@@ -77,7 +77,7 @@ pub struct Resolved {
 	pub name: Option<String>,
 	pub tracks: Vec<Arc<TrackInfo>>,
 	pub skipped: Vec<Skipped>,
-	/// Playable tracks left out because an earlier track had the same ISRC; only a discography
+	/// Tracks left out because another track with the same ISRC was added; only a discography
 	/// leaves any out.
 	pub duplicates: usize,
 }
@@ -227,6 +227,8 @@ pub async fn resolve<S: MetadataSource>(
 	let discography = artist_tracks == ArtistTracks::Discography
 		&& matches!(link, Link::Id { kind: LinkKind::Artist, .. });
 	let mut recordings = HashSet::new();
+	// Where each skipped track with an ISRC is in `resolved.skipped`.
+	let mut skipped_recordings = Vec::new();
 	for entry in entries {
 		let (item, result) = match entry {
 			Entry::Skip(skipped) => {
@@ -247,12 +249,17 @@ pub async fn resolve<S: MetadataSource>(
 					resolved.tracks.push(info);
 				}
 			}
-			Ok(info) => resolved.skipped.push(Skipped {
-				uri: item.uri().to_uri(),
-				reason: SkipReason::Unavailable(info.unavailable.clone().unwrap_or_else(|| {
-					format!("Spotify has no audio for this {}", item.uri().item_type())
-				})),
-			}),
+			Ok(info) => {
+				if discography && let Some(isrc) = &info.isrc {
+					skipped_recordings.push((resolved.skipped.len(), isrc.clone()));
+				}
+				resolved.skipped.push(Skipped {
+					uri: item.uri().to_uri(),
+					reason: SkipReason::Unavailable(info.unavailable.clone().unwrap_or_else(
+						|| format!("Spotify has no audio for this {}", item.uri().item_type()),
+					)),
+				});
+			}
 			Err(error) => {
 				resolved.skipped.push(Skipped {
 					uri: item.uri().to_uri(),
@@ -262,6 +269,17 @@ pub async fn resolve<S: MetadataSource>(
 			}
 		}
 	}
+	let added_elsewhere: HashSet<usize> = skipped_recordings
+		.into_iter()
+		.filter(|(_, isrc)| recordings.contains(isrc))
+		.map(|(index, _)| index)
+		.collect();
+	resolved.duplicates += added_elsewhere.len();
+	let mut index = 0;
+	resolved.skipped.retain(|_| {
+		index += 1;
+		!added_elsewhere.contains(&(index - 1))
+	});
 	if resolved.tracks.is_empty()
 		&& let Some(error) = first_error
 	{
@@ -1284,16 +1302,39 @@ mod tests {
 		assert_eq!(resolved.duplicates, 0);
 	}
 
+	/// Track `byte`, recorded as `isrc` and blocked in the account's country.
+	fn blocked(byte: u8, isrc: &str) -> (Result<TrackInfo, &'static str>, Duration) {
+		let mut info = info(byte);
+		info.isrc = Some(isrc.to_owned());
+		info.unavailable = Some("not available in your country (NL)".to_owned());
+		(Ok(info), Duration::ZERO)
+	}
+
 	#[tokio::test]
 	async fn an_album_copy_that_cant_play_leaves_the_single_copy() {
 		let mut source = getty_discography();
-		let mut blocked = info(1);
-		blocked.isrc = Some("USY5K0600040".to_owned());
-		blocked.unavailable = Some("not available in your country (NL)".to_owned());
-		source.tracks.insert(id(1), (Ok(blocked), Duration::ZERO));
+		source.tracks.insert(id(1), blocked(1, "USY5K0600040"));
 		let resolved = resolve(&source, &artist_link(), ArtistTracks::Discography).await.unwrap();
 		assert_eq!(titles(&resolved.tracks), ["Track 2", "Track 3", "Track 4"]);
-		assert_eq!(resolved.skipped.len(), 1);
+	}
+
+	#[tokio::test]
+	async fn a_blocked_copy_of_an_added_recording_counts_as_a_duplicate() {
+		let mut source = getty_discography();
+		source.tracks.insert(id(1), blocked(1, "USY5K0600040"));
+		let resolved = resolve(&source, &artist_link(), ArtistTracks::Discography).await.unwrap();
+		assert!(resolved.skipped.is_empty(), "{:?}", resolved.skipped);
+		assert_eq!(resolved.duplicates, 2);
+	}
+
+	#[tokio::test]
+	async fn a_recording_with_no_copy_that_plays_stays_skipped() {
+		let mut source = getty_discography();
+		source.tracks.insert(id(1), blocked(1, "USY5K0600040"));
+		source.tracks.insert(id(3), blocked(3, "USY5K0600040"));
+		let resolved = resolve(&source, &artist_link(), ArtistTracks::Discography).await.unwrap();
+		let skipped: Vec<_> = resolved.skipped.iter().map(|skipped| skipped.uri.clone()).collect();
+		assert_eq!(skipped, [track_uri(1).to_uri(), track_uri(3).to_uri()]);
 		assert_eq!(resolved.duplicates, 1);
 	}
 
