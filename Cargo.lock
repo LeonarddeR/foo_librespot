@@ -415,7 +415,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "foo_librespot"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "foo_librespot_core",
  "foxide2k",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "foo_librespot_core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "futures-util",
  "librespot-audio",
@@ -444,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "foo_oxitone"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "foxide2k",
 ]
@@ -475,7 +475,7 @@ dependencies = [
 
 [[package]]
 name = "foxide2k"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libloading",
  "windows-core 0.100.0",
@@ -3092,7 +3092,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde_json",
  "tempfile",
