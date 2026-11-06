@@ -1,5 +1,7 @@
 //! Spotify links as users paste them, and the playlist paths foobar2000 stores.
 
+use std::fmt::Write as _;
+
 use crate::{SpotifyId, SpotifyUri};
 
 /// The scheme of the paths foo_librespot stores in playlists, the same one foo_spotify used,
@@ -30,6 +32,8 @@ pub enum Link {
 	Id { kind: LinkKind, id: SpotifyId },
 	/// The logged-in account's Liked Songs.
 	LikedSongs,
+	/// A search for these words, decoded and with single spaces.
+	Search(String),
 }
 
 impl Link {
@@ -38,6 +42,7 @@ impl Link {
 		match self {
 			Self::Id { kind, id } => id_uri(*kind, *id).to_uri(),
 			Self::LikedSongs => LIKED_SONGS_URI.to_owned(),
+			Self::Search(words) => format!("spotify:search:{}", encode_search(words)),
 		}
 	}
 
@@ -46,7 +51,7 @@ impl Link {
 		match self {
 			Self::Id { kind: LinkKind::Track, id } => Some(ItemId::Track(*id)),
 			Self::Id { kind: LinkKind::Episode, id } => Some(ItemId::Episode(*id)),
-			Self::Id { .. } | Self::LikedSongs => None,
+			Self::Id { .. } | Self::LikedSongs | Self::Search(_) => None,
 		}
 	}
 }
@@ -92,9 +97,11 @@ pub enum LinkError {
 	#[error("this is not a Spotify link")]
 	NotSpotify,
 	#[error(
-		"Spotify {kind} links can't be played; use a track, album, playlist, episode, show, artist or Liked Songs link"
+		"Spotify {kind} links can't be played; use a track, album, playlist, episode, show, artist, Liked Songs or search link"
 	)]
 	Unsupported { kind: String },
+	#[error("this Spotify search link has no words")]
+	NoSearchWords,
 	#[error("this Spotify link has an invalid id")]
 	InvalidId,
 }
@@ -130,6 +137,9 @@ fn parse_uri(uri: &str) -> Result<Link, LinkError> {
 	let first = parts.next().unwrap_or_default();
 	if first.eq_ignore_ascii_case("collection") {
 		return liked_songs(parts.next(), parts.next());
+	}
+	if first.eq_ignore_ascii_case("search") {
+		return search(&decode_search(rest.split_once(':').map_or("", |(_, words)| words), true));
 	}
 	if first.eq_ignore_ascii_case("user") {
 		// A profile is spotify:user:<name>. Old playlist URIs go on after the name, and
@@ -184,6 +194,9 @@ fn parse_url(url: &str) -> Result<Link, LinkError> {
 	if kind == "collection" {
 		return liked_songs(parts.next(), parts.next());
 	}
+	if kind == "search" {
+		return search(&decode_search(parts.next().unwrap_or_default(), false));
+	}
 	let kind = match kind.as_str() {
 		"track" => LinkKind::Track,
 		"album" => LinkKind::Album,
@@ -206,6 +219,56 @@ fn liked_songs(what: Option<&str>, rest: Option<&str>) -> Result<Link, LinkError
 	} else {
 		Err(LinkError::Unsupported { kind: "collection".to_owned() })
 	}
+}
+
+fn search(words: &str) -> Result<Link, LinkError> {
+	if words.is_empty() {
+		Err(LinkError::NoSearchWords)
+	} else {
+		Ok(Link::Search(words.to_owned()))
+	}
+}
+
+/// Search words as a link carries them: `%XX` decoded, and `+` too when `plus_is_space`, then
+/// trimmed to single spaces.
+fn decode_search(text: &str, plus_is_space: bool) -> String {
+	let bytes = text.as_bytes();
+	let mut decoded = Vec::with_capacity(bytes.len());
+	let mut index = 0;
+	while index < bytes.len() {
+		let byte = bytes[index];
+		if byte == b'+' && plus_is_space {
+			decoded.push(b' ');
+		} else if byte == b'%'
+			&& let Some(value) =
+				text.get(index + 1..index + 3).and_then(|hex| u8::from_str_radix(hex, 16).ok())
+		{
+			decoded.push(value);
+			index += 2;
+		} else {
+			decoded.push(byte);
+		}
+		index += 1;
+	}
+	String::from_utf8_lossy(&decoded).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Search words as a `spotify:` URI carries them: `+` for a space, `%XX` for anything but
+/// letters, digits and `-_.~`.
+fn encode_search(words: &str) -> String {
+	let mut encoded = String::with_capacity(words.len());
+	for byte in words.bytes() {
+		match byte {
+			b' ' => encoded.push('+'),
+			b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+				encoded.push(char::from(byte));
+			}
+			_ => {
+				let _ = write!(encoded, "%{byte:02X}");
+			}
+		}
+	}
+	encoded
 }
 
 fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
@@ -434,5 +497,47 @@ mod tests {
 		assert_eq!(Link::LikedSongs.uri(), "spotify:collection:tracks");
 		assert_eq!(parse_link(&Link::LikedSongs.uri()), Ok(Link::LikedSongs));
 		assert_eq!(Link::LikedSongs.item(), None);
+	}
+
+	#[test]
+	fn parses_search_links() {
+		let search = |words: &str| Ok(Link::Search(words.to_owned()));
+		assert_eq!(
+			parse_link("https://open.spotify.com/search/in%20christ%20alone"),
+			search("in christ alone")
+		);
+		assert_eq!(
+			parse_link("https://open.spotify.com/search/in%20christ%20alone/tracks"),
+			search("in christ alone")
+		);
+		assert_eq!(
+			parse_link("spotify:search:bach+cantatas+suzuki"),
+			search("bach cantatas suzuki")
+		);
+		assert_eq!(
+			parse_link("sptf://spotify:search:Bach%20Kantaten%20Suzuki"),
+			search("Bach Kantaten Suzuki")
+		);
+	}
+
+	#[test]
+	fn a_search_without_words_is_refused() {
+		assert_eq!(
+			parse_link("https://open.spotify.com/search/%20"),
+			Err(LinkError::NoSearchWords)
+		);
+		assert_eq!(parse_link("spotify:search:"), Err(LinkError::NoSearchWords));
+	}
+
+	#[test]
+	fn search_words_round_trip_through_their_uri() {
+		for words in ["in christ alone", "Jesu, meine Freude", "c++ & ümlaut", "100% Getty"] {
+			let link = Link::Search(words.to_owned());
+			assert_eq!(parse_link(&link.uri()), Ok(link.clone()), "{words}");
+		}
+		assert_eq!(
+			Link::Search("in christ alone".to_owned()).uri(),
+			"spotify:search:in+christ+alone"
+		);
 	}
 }

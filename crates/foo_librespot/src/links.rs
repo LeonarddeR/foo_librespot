@@ -284,6 +284,12 @@ mod tests {
 			filesystem.canonical_path("https://open.spotify.com/collection/tracks").as_deref(),
 			Some("sptf://spotify:collection:tracks")
 		);
+		assert_eq!(
+			filesystem
+				.canonical_path("https://open.spotify.com/search/in%20christ%20alone")
+				.as_deref(),
+			Some("sptf://spotify:search:in+christ+alone")
+		);
 		assert_eq!(filesystem.canonical_path("file://C:\\a.mp3"), None);
 		assert_eq!(
 			filesystem.display_path(&canonical).as_deref(),

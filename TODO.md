@@ -36,9 +36,9 @@ The cheapest wins come first.
 - [ ] An artist's whole discography
   - An artist link adds the artist's popular tracks. librespot's `SpClient::get_context` for an artist gives the popular tracks and then pages of the artist's albums.
   - The decision: a setting on the Spotify preferences page chooses between the popular tracks and the whole discography. The discography is the artist's albums, singles, EPs and compilations, not the albums the artist only appears on. A song on both an album and a single is added once, by its ISRC, the code that identifies a recording. There is no warning before a large discography.
-- [ ] Search Spotify
-  - librespot's `SpClient::get_context` also answers searches (`spotify:search:<words>`). librespot's notes say the results depend heavily on the query, so check how useful they are before building on them.
-  - A first step needs no menus: accept Spotify's search link, `https://open.spotify.com/search/<words>`, and add what it finds. A search window would need menus.
+- [x] Search Spotify
+  - librespot's `SpClient::get_context` answers searches (`spotify:search:<words>`) with one page of 20 tracks. On 2026-11-06 the first 13 to 15 matched the words and the rest drifted; for "in christ alone" the Getty original came first.
+  - Spotify's search link, `https://open.spotify.com/search/<words>`, and `spotify:search:<words>` now add those 20 tracks, named after the words. A search window would need menus.
 
 ### Detailed logging
 

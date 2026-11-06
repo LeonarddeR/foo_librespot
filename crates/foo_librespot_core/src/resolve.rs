@@ -114,6 +114,12 @@ pub trait MetadataSource: Send + Sync {
 
 	/// The track and episode URIs of the logged-in account's Liked Songs, in Spotify's order.
 	fn liked_songs(&self) -> impl Future<Output = Result<Vec<SpotifyUri>, CoreError>> + Send;
+
+	/// The track and episode URIs Spotify finds first for `words`: the first page of its search.
+	fn search(
+		&self,
+		words: &str,
+	) -> impl Future<Output = Result<Vec<SpotifyUri>, CoreError>> + Send;
 }
 
 /// The info of one item.
@@ -166,6 +172,10 @@ pub async fn resolve<S: MetadataSource>(source: &S, link: &Link) -> Result<Resol
 		Link::LikedSongs => {
 			let uris = source.liked_songs().await?;
 			(Some("Liked Songs".to_owned()), uris.iter().map(playlist_entry).collect())
+		}
+		Link::Search(words) => {
+			let uris = source.search(words).await?;
+			(Some(words.clone()), uris.iter().map(playlist_entry).collect())
 		}
 	};
 
@@ -505,6 +515,13 @@ impl<S: MetadataSource> MetadataSource for CachedSource<S> {
 	fn liked_songs(&self) -> impl Future<Output = Result<Vec<SpotifyUri>, CoreError>> + Send {
 		self.inner.liked_songs()
 	}
+
+	fn search(
+		&self,
+		words: &str,
+	) -> impl Future<Output = Result<Vec<SpotifyUri>, CoreError>> + Send {
+		self.inner.search(words)
+	}
 }
 
 /// Metadata straight from Spotify, through librespot.
@@ -752,6 +769,12 @@ impl MetadataSource for LibrespotMetadata {
 		let pages = context.pages.iter().map(Page::of).collect();
 		context_tracks(pages, |url| self.context_page(url)).await
 	}
+
+	async fn search(&self, words: &str) -> Result<Vec<SpotifyUri>, CoreError> {
+		let uri = Link::Search(words.to_owned()).uri();
+		let context = retry_rate_limited(|| self.session.spclient().get_context(&uri)).await?;
+		Ok(context.pages.first().map(|page| Page::of(page).uris()).unwrap_or_default())
+	}
 }
 
 /// The raw values of the extensions Spotify sent for one item.
@@ -910,6 +933,7 @@ mod tests {
 		shows: HashMap<SpotifyId, (String, Vec<SpotifyId>)>,
 		artists: HashMap<SpotifyId, (String, Vec<SpotifyId>)>,
 		liked: Vec<SpotifyUri>,
+		searches: HashMap<String, Vec<SpotifyUri>>,
 		track_calls: AtomicUsize,
 		/// The size of each batch asked for, in the order asked.
 		batches: Mutex<Vec<usize>>,
@@ -979,6 +1003,24 @@ mod tests {
 			tokio::task::yield_now().await;
 			Ok(self.liked.clone())
 		}
+
+		async fn search(&self, words: &str) -> Result<Vec<SpotifyUri>, CoreError> {
+			tokio::task::yield_now().await;
+			Ok(self.searches.get(words).cloned().unwrap_or_default())
+		}
+	}
+
+	#[tokio::test]
+	async fn search_link_adds_what_spotify_finds_named_after_the_words() {
+		let mut source = FakeSource::with_tracks(&[1, 2]);
+		source.searches.insert(
+			"in christ alone".to_owned(),
+			vec![SpotifyUri::Track { id: id(1) }, SpotifyUri::Track { id: id(2) }],
+		);
+		let link = Link::Search("in christ alone".to_owned());
+		let resolved = resolve(&source, &link).await.unwrap();
+		assert_eq!(resolved.name.as_deref(), Some("in christ alone"));
+		assert_eq!(titles(&resolved.tracks), ["Track 1", "Track 2"]);
 	}
 
 	fn titles(tracks: &[Arc<TrackInfo>]) -> Vec<&str> {
