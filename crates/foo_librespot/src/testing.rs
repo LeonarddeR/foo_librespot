@@ -510,3 +510,11 @@ pub fn stop_after(
 		unsafe { &*target.0 }.set_aborting(true);
 	})
 }
+
+/// Holds off the other tests that change what the whole test process shares: the log level, the
+/// detailed-logging switch and the installed fake foobar2000. `cargo test` runs tests side by
+/// side on threads; nextest runs each in its own process, where this costs nothing.
+pub fn lock_shared_state() -> std::sync::MutexGuard<'static, ()> {
+	static SHARED: Mutex<()> = Mutex::new(());
+	SHARED.lock().unwrap_or_else(PoisonError::into_inner)
+}

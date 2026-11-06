@@ -148,6 +148,7 @@ unsafe extern "C-unwind" fn preferences_flags(_this: *mut ServiceBase) -> u32 {
 #[cfg(test)]
 mod tests {
 	use std::sync::atomic::{AtomicBool, Ordering};
+	use std::sync::{Mutex, MutexGuard, PoisonError};
 
 	use super::{
 		AdvconfigBranch, AdvconfigCheckbox, AdvconfigEntry, advconfig_branch_service,
@@ -162,6 +163,12 @@ mod tests {
 	use crate::testing::AdvconfigHandle;
 
 	static STATE: AtomicBool = AtomicBool::new(false);
+
+	/// Holds off the other tests that use `STATE`, which `cargo test` runs side by side on threads.
+	fn lock_state() -> MutexGuard<'static, ()> {
+		static USERS: Mutex<()> = Mutex::new(());
+		USERS.lock().unwrap_or_else(PoisonError::into_inner)
+	}
 
 	struct TestBranch;
 
@@ -264,6 +271,7 @@ mod tests {
 
 	#[test]
 	fn a_checkbox_reads_and_writes_its_state_through_the_trait() {
+		let _state = lock_state();
 		let checkbox = checkbox();
 		assert!(checkbox.set_state(true).is_ok());
 		assert!(checkbox.state());
@@ -272,6 +280,7 @@ mod tests {
 
 	#[test]
 	fn resetting_a_checkbox_restores_its_default() {
+		let _state = lock_state();
 		let checkbox = checkbox();
 		checkbox.set_state(true).unwrap();
 		checkbox.reset();

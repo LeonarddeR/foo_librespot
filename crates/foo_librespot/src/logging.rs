@@ -149,6 +149,7 @@ mod tests {
 
 	use super::{LOGGER, held_back, init, redact_urls, set_detailed, wanted};
 	use crate::settings;
+	use crate::testing::lock_shared_state;
 
 	#[test]
 	fn logging_shows_our_info_and_only_warnings_from_others_by_default() {
@@ -253,6 +254,7 @@ mod tests {
 
 	#[test]
 	fn the_console_gets_no_dumps_and_no_signed_urls() {
+		let _shared = lock_shared_state();
 		let api = FakeApi::new();
 		api.install();
 		set_detailed(true);
@@ -280,6 +282,7 @@ mod tests {
 
 	#[test]
 	fn the_switch_sets_the_log_level_at_once() {
+		let _shared = lock_shared_state();
 		set_detailed(true);
 		assert_eq!(log::max_level(), LevelFilter::Debug);
 		set_detailed(false);
@@ -288,6 +291,7 @@ mod tests {
 
 	#[test]
 	fn init_applies_the_stored_switch() {
+		let _shared = lock_shared_state();
 		FakeApi::new().install();
 		settings::set_detailed_logging(true).unwrap();
 		init();

@@ -50,6 +50,7 @@ mod tests {
 
 	use super::{DetailedLogging, SpotifyBranch};
 	use crate::settings::DETAILED_LOGGING_KEY;
+	use crate::testing::lock_shared_state;
 
 	fn branch() -> AdvconfigHandle {
 		AdvconfigHandle::new(advconfig_branch_service::<SpotifyBranch>())
@@ -71,6 +72,7 @@ mod tests {
 
 	#[test]
 	fn the_logging_checkbox_is_off_by_default() {
+		let _shared = lock_shared_state();
 		FakeApi::new().install();
 		let checkbox = checkbox();
 		assert!(!checkbox.state());
@@ -79,6 +81,7 @@ mod tests {
 
 	#[test]
 	fn checking_the_box_stores_it_and_logs_details_at_once() {
+		let _shared = lock_shared_state();
 		let api = FakeApi::new();
 		api.install();
 		assert!(checkbox().set_state(true).is_ok());
@@ -88,6 +91,7 @@ mod tests {
 
 	#[test]
 	fn resetting_the_box_turns_detailed_logging_off() {
+		let _shared = lock_shared_state();
 		FakeApi::new().install();
 		let checkbox = checkbox();
 		checkbox.set_state(true).unwrap();
