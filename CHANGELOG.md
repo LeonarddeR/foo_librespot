@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Error messages say "Spotify:" once, instead of starting with "Spotify: not available on Spotify:" or "Spotify: Spotify:".
 - A temporary error on Spotify's side no longer deletes your login.
 - Logging out sticks, also when a track was starting at that moment.
 - Cancelling the login at the very moment you confirm it no longer leaves you logged in.

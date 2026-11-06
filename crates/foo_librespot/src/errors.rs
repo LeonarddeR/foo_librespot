@@ -111,6 +111,13 @@ mod tests {
 	}
 
 	#[test]
+	fn an_unavailable_reason_says_spotify_once() {
+		let error =
+			host_error(CoreError::Unavailable("not available in your country (NL)".to_owned()));
+		assert_eq!(error.message, "Spotify: not available in your country (NL)");
+	}
+
+	#[test]
 	fn link_errors_become_unsupported_format() {
 		assert_eq!(
 			host_error(CoreError::Link(LinkError::NotSpotify)).kind,

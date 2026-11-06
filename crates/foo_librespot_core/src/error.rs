@@ -15,9 +15,9 @@ pub enum CoreError {
 	Aborted,
 	#[error(transparent)]
 	Link(#[from] LinkError),
-	#[error("not available on Spotify: {0}")]
+	#[error("{0}")]
 	Unavailable(String),
-	#[error("Spotify: {0}")]
+	#[error("{0}")]
 	Spotify(#[from] librespot_core::Error),
 	#[error("can't decode the audio: {0}")]
 	Decode(String),
@@ -30,3 +30,20 @@ pub enum CoreError {
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;
+
+#[cfg(test)]
+mod tests {
+	use super::CoreError;
+
+	#[test]
+	fn an_unavailable_item_shows_only_its_reason() {
+		let error = CoreError::Unavailable("not available in your country (NL)".to_owned());
+		assert_eq!(error.to_string(), "not available in your country (NL)");
+	}
+
+	#[test]
+	fn a_librespot_error_shows_only_its_own_message() {
+		let error = CoreError::from(librespot_core::Error::unavailable("gone"));
+		assert_eq!(error.to_string(), librespot_core::Error::unavailable("gone").to_string());
+	}
+}
