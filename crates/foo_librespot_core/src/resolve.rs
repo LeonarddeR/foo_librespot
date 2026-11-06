@@ -134,11 +134,11 @@ pub trait MetadataSource: Send + Sync {
 		words: &str,
 	) -> impl Future<Output = Result<Vec<SpotifyUri>, CoreError>> + Send;
 
-	/// The artist name and their releases: [`releases`] of their metadata.
+	/// The artist name and their releases, each with its editions: [`releases`] of their metadata.
 	fn discography(
 		&self,
 		id: SpotifyId,
-	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send;
+	) -> impl Future<Output = Result<(String, Vec<Vec<SpotifyId>>), CoreError>> + Send;
 }
 
 /// The info of one item.
@@ -153,8 +153,13 @@ fn missing(item: ItemId) -> CoreError {
 	CoreError::Unavailable(format!("Spotify sent no metadata for this {}", item.uri().item_type()))
 }
 
+/// An item's info, or why it couldn't be fetched.
+type ItemInfo = Result<Arc<TrackInfo>, CoreError>;
+
 enum Entry {
 	Item(ItemId),
+	/// An item whose info was already fetched.
+	Fetched(ItemId, ItemInfo),
 	Skip(Skipped),
 }
 
@@ -213,31 +218,25 @@ pub async fn resolve<S: MetadataSource>(
 		.iter()
 		.filter_map(|entry| match entry {
 			Entry::Item(item) => Some(*item),
-			Entry::Skip(_) => None,
+			Entry::Fetched(..) | Entry::Skip(_) => None,
 		})
 		.collect();
-	// `buffered` runs several batches at once but yields them in order.
-	let mut fetched = stream::iter(items.chunks(BATCH_SIZE))
-		.map(|batch| source.items(batch))
-		.buffered(BATCH_CONCURRENCY)
-		.flat_map(stream::iter)
-		.collect::<Vec<_>>()
-		.await
-		.into_iter();
+	let mut fetched = fetch_items(source, &items).await.into_iter();
 
 	let mut resolved = Resolved { name, tracks: Vec::new(), skipped: Vec::new(), duplicates: 0 };
 	let discography = artist_tracks == ArtistTracks::Discography
 		&& matches!(link, Link::Id { kind: LinkKind::Artist, .. });
 	let mut recordings = HashSet::new();
 	for entry in entries {
-		let item = match entry {
+		let (item, result) = match entry {
 			Entry::Skip(skipped) => {
 				resolved.skipped.push(skipped);
 				continue;
 			}
-			Entry::Item(item) => item,
+			Entry::Item(item) => (item, fetched.next().unwrap_or_else(|| Err(missing(item)))),
+			Entry::Fetched(item, result) => (item, result),
 		};
-		match fetched.next().unwrap_or_else(|| Err(missing(item))) {
+		match result {
 			Ok(info) if playable(&info) => {
 				if discography
 					&& let Some(isrc) = &info.isrc
@@ -281,27 +280,120 @@ fn playlist_entry(uri: &SpotifyUri) -> Entry {
 	Entry::Skip(Skipped { uri: uri.to_uri(), reason })
 }
 
-/// The tracks of `releases` in order, each release's in album order, and the first error; a
-/// release that fails to load is skipped with its reason.
-async fn discography_entries<S: MetadataSource>(
-	source: &S,
-	releases: Vec<SpotifyId>,
-) -> (Vec<Entry>, Option<CoreError>) {
-	let albums: Vec<_> = stream::iter(releases)
-		.map(|release| async move { (release, source.album(release).await) })
+/// The info of each of `items`, in the same order, asked for in batches of [`BATCH_SIZE`].
+async fn fetch_items<S: MetadataSource>(source: &S, items: &[ItemId]) -> Vec<ItemInfo> {
+	// `buffered` runs several batches at once but yields them in order.
+	stream::iter(items.chunks(BATCH_SIZE))
+		.map(|batch| source.items(batch))
+		.buffered(BATCH_CONCURRENCY)
+		.flat_map(stream::iter)
+		.collect()
+		.await
+}
+
+/// One edition of a release, with the info of each of its tracks, or why it didn't load.
+struct Edition {
+	album: SpotifyId,
+	tracks: Result<Vec<(ItemId, ItemInfo)>, CoreError>,
+}
+
+impl Edition {
+	/// How many of its tracks can play, then whether it loaded: a higher rank is a better
+	/// edition to add.
+	fn rank(&self) -> (usize, bool) {
+		match &self.tracks {
+			Ok(tracks) => (
+				tracks
+					.iter()
+					.filter(|(_, info)| info.as_ref().is_ok_and(|info| playable(info)))
+					.count(),
+				true,
+			),
+			Err(_) => (0, false),
+		}
+	}
+
+	fn plays_whole(&self) -> bool {
+		self.tracks.as_ref().is_ok_and(|tracks| {
+			tracks.iter().all(|(_, info)| info.as_ref().is_ok_and(|info| playable(info)))
+		})
+	}
+}
+
+/// Each of `albums`, with the info of its tracks.
+async fn load_editions<S: MetadataSource>(source: &S, albums: &[SpotifyId]) -> Vec<Edition> {
+	let loaded: Vec<_> = stream::iter(albums)
+		.map(|&album| source.album(album))
 		.buffered(BATCH_CONCURRENCY)
 		.collect()
 		.await;
+	let items: Vec<ItemId> = loaded
+		.iter()
+		.filter_map(|album| album.as_ref().ok())
+		.flat_map(|(_, ids)| ids.iter().map(|&id| ItemId::Track(id)))
+		.collect();
+	let mut infos = fetch_items(source, &items).await.into_iter();
+	albums
+		.iter()
+		.zip(loaded)
+		.map(|(&album, loaded)| Edition {
+			album,
+			tracks: loaded.map(|(_, ids)| {
+				ids.into_iter()
+					.map(|id| {
+						let item = ItemId::Track(id);
+						(item, infos.next().unwrap_or_else(|| Err(missing(item))))
+					})
+					.collect()
+			}),
+		})
+		.collect()
+}
+
+/// The tracks of `releases` in order, each release's in album order, and the first error. Each
+/// release is added in the first of its editions whose tracks all play; when none does, in the
+/// one where most play, the earlier one on a tie. A further edition is only asked for while the
+/// best one so far has a track that can't play. A release none of whose editions loads is
+/// skipped with its reason.
+async fn discography_entries<S: MetadataSource>(
+	source: &S,
+	releases: Vec<Vec<SpotifyId>>,
+) -> (Vec<Entry>, Option<CoreError>) {
+	let mut chosen: Vec<Option<Edition>> = releases.iter().map(|_| None).collect();
+	let mut pending: Vec<(usize, usize)> = releases
+		.iter()
+		.enumerate()
+		.filter(|(_, editions)| !editions.is_empty())
+		.map(|(release, _)| (release, 0))
+		.collect();
+	while !pending.is_empty() {
+		let albums: Vec<SpotifyId> =
+			pending.iter().map(|&(release, edition)| releases[release][edition]).collect();
+		let loaded = load_editions(source, &albums).await;
+		let mut next = Vec::new();
+		for ((release, edition), loaded) in pending.into_iter().zip(loaded) {
+			let best = &mut chosen[release];
+			if best.as_ref().is_none_or(|best| loaded.rank() > best.rank()) {
+				*best = Some(loaded);
+			}
+			if best.as_ref().is_some_and(|best| !best.plays_whole())
+				&& edition + 1 < releases[release].len()
+			{
+				next.push((release, edition + 1));
+			}
+		}
+		pending = next;
+	}
 	let mut entries = Vec::new();
 	let mut first_error = None;
-	for (release, album) in albums {
-		match album {
-			Ok((_, ids)) => {
-				entries.extend(ids.into_iter().map(|id| Entry::Item(ItemId::Track(id))));
+	for edition in chosen.into_iter().flatten() {
+		match edition.tracks {
+			Ok(tracks) => {
+				entries.extend(tracks.into_iter().map(|(item, info)| Entry::Fetched(item, info)));
 			}
 			Err(error) => {
 				entries.push(Entry::Skip(Skipped {
-					uri: SpotifyUri::Album { id: release }.to_uri(),
+					uri: SpotifyUri::Album { id: edition.album }.to_uri(),
 					reason: SkipReason::Unavailable(error.to_string()),
 				}));
 				first_error.get_or_insert(error);
@@ -325,14 +417,15 @@ pub fn listening_order(
 }
 
 /// The releases a discography adds: each album, then each single and EP, then each compilation,
-/// in Spotify's order within each group (newest first), taking each release's first edition.
-/// Albums the artist only appears on are left out.
-pub fn releases(artist: &Artist) -> Vec<SpotifyId> {
+/// in Spotify's order within each group (newest first), each with its editions in Spotify's
+/// order, such as an explicit edition and then its clean one. Albums the artist only appears on
+/// are left out.
+pub fn releases(artist: &Artist) -> Vec<Vec<SpotifyId>> {
 	[&artist.albums, &artist.singles, &artist.compilations]
 		.into_iter()
 		.flat_map(|groups| groups.iter())
-		.filter_map(|group| group.first())
-		.filter_map(|uri| SpotifyId::try_from(uri).ok())
+		.map(|group| group.iter().filter_map(|uri| SpotifyId::try_from(uri).ok()).collect())
+		.filter(|editions: &Vec<SpotifyId>| !editions.is_empty())
 		.collect()
 }
 
@@ -617,7 +710,7 @@ impl<S: MetadataSource> MetadataSource for CachedSource<S> {
 	fn discography(
 		&self,
 		id: SpotifyId,
-	) -> impl Future<Output = Result<(String, Vec<SpotifyId>), CoreError>> + Send {
+	) -> impl Future<Output = Result<(String, Vec<Vec<SpotifyId>>), CoreError>> + Send {
 		self.inner.discography(id)
 	}
 }
@@ -880,7 +973,7 @@ impl MetadataSource for LibrespotMetadata {
 		Ok(context.pages.first().map(|page| Page::of(page).uris()).unwrap_or_default())
 	}
 
-	async fn discography(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
+	async fn discography(&self, id: SpotifyId) -> Result<(String, Vec<Vec<SpotifyId>>), CoreError> {
 		let uri = SpotifyUri::Artist { id };
 		let artist = retry_rate_limited(|| Artist::get(&self.session, &uri)).await?;
 		let releases = releases(&artist);
@@ -1046,8 +1139,10 @@ mod tests {
 		artists: HashMap<SpotifyId, (String, Vec<SpotifyId>)>,
 		liked: Vec<SpotifyUri>,
 		searches: HashMap<String, Vec<SpotifyUri>>,
-		discographies: HashMap<SpotifyId, (String, Vec<SpotifyId>)>,
+		discographies: HashMap<SpotifyId, (String, Vec<Vec<SpotifyId>>)>,
 		track_calls: AtomicUsize,
+		/// Each album asked for, in the order asked.
+		albums_asked: Mutex<Vec<SpotifyId>>,
 		/// The size of each batch asked for, in the order asked.
 		batches: Mutex<Vec<usize>>,
 	}
@@ -1089,6 +1184,7 @@ mod tests {
 		}
 
 		async fn album(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
+			self.albums_asked.lock().unwrap().push(id);
 			tokio::task::yield_now().await;
 			self.albums
 				.get(&id)
@@ -1122,7 +1218,10 @@ mod tests {
 			Ok(self.searches.get(words).cloned().unwrap_or_default())
 		}
 
-		async fn discography(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
+		async fn discography(
+			&self,
+			id: SpotifyId,
+		) -> Result<(String, Vec<Vec<SpotifyId>>), CoreError> {
 			tokio::task::yield_now().await;
 			Ok(self.discographies.get(&id).expect("unknown discography").clone())
 		}
@@ -1132,6 +1231,14 @@ mod tests {
 	fn recording(byte: u8, isrc: Option<&str>) -> (Result<TrackInfo, &'static str>, Duration) {
 		let mut info = info(byte);
 		info.isrc = isrc.map(str::to_owned);
+		(Ok(info), Duration::ZERO)
+	}
+
+	/// Track `byte`, explicit while the account filters explicit content.
+	fn filtered(byte: u8) -> (Result<TrackInfo, &'static str>, Duration) {
+		let mut info = info(byte);
+		info.explicit = true;
+		info.unavailable = Some(EXPLICIT_FILTERED.to_owned());
 		(Ok(info), Duration::ZERO)
 	}
 
@@ -1147,9 +1254,10 @@ mod tests {
 		source.albums.insert(id(100), Ok(("In Christ Alone".to_owned(), vec![id(1), id(2)])));
 		source.albums.insert(id(101), Ok(("In Christ Alone (Single)".to_owned(), vec![id(3)])));
 		source.albums.insert(id(102), Ok(("Hymns of Hope".to_owned(), vec![id(4), id(5)])));
-		source
-			.discographies
-			.insert(id(150), ("Keith & Kristyn Getty".to_owned(), vec![id(100), id(101), id(102)]));
+		source.discographies.insert(
+			id(150),
+			("Keith & Kristyn Getty".to_owned(), vec![vec![id(100)], vec![id(101)], vec![id(102)]]),
+		);
 		source.artists.insert(id(150), ("Keith & Kristyn Getty".to_owned(), vec![id(2)]));
 		source
 	}
@@ -1209,6 +1317,68 @@ mod tests {
 		assert!(matches!(&result, Err(CoreError::Unavailable(message)) if message == "first"));
 	}
 
+	/// An artist with one album in two editions, grouped as Spotify groups them: explicit first
+	/// (album 110: track 11 explicit, track 12 not), then clean (album 111: tracks 13 and 14).
+	fn explicit_and_clean() -> FakeSource {
+		let mut source = FakeSource::default();
+		source.tracks.insert(id(11), filtered(11));
+		source.tracks.insert(id(12), recording(12, None));
+		source.tracks.insert(id(13), recording(13, None));
+		source.tracks.insert(id(14), recording(14, None));
+		source.albums.insert(id(110), Ok(("The Album".to_owned(), vec![id(11), id(12)])));
+		source.albums.insert(id(111), Ok(("The Album".to_owned(), vec![id(13), id(14)])));
+		source
+			.discographies
+			.insert(id(150), ("The Artist".to_owned(), vec![vec![id(110), id(111)]]));
+		source
+	}
+
+	#[tokio::test]
+	async fn an_edition_that_cant_play_whole_gives_way_to_one_that_can() {
+		let source = explicit_and_clean();
+		let resolved = resolve(&source, &artist_link(), ArtistTracks::Discography).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Track 13", "Track 14"]);
+		assert!(resolved.skipped.is_empty());
+	}
+
+	#[tokio::test]
+	async fn an_edition_that_plays_whole_is_the_only_one_asked_for() {
+		let mut source = explicit_and_clean();
+		source.tracks.insert(id(11), recording(11, None));
+		let resolved = resolve(&source, &artist_link(), ArtistTracks::Discography).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Track 11", "Track 12"]);
+		assert_eq!(*source.albums_asked.lock().unwrap(), [id(110)]);
+	}
+
+	#[tokio::test]
+	async fn when_no_edition_plays_whole_the_one_that_plays_most_is_added() {
+		let mut source = explicit_and_clean();
+		source.tracks.insert(id(13), filtered(13));
+		source.tracks.insert(id(14), filtered(14));
+		let resolved = resolve(&source, &artist_link(), ArtistTracks::Discography).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Track 12"]);
+		assert_eq!(resolved.skipped.len(), 1);
+		assert_eq!(resolved.skipped[0].uri, track_uri(11).to_uri());
+	}
+
+	#[tokio::test]
+	async fn an_earlier_edition_wins_a_tie() {
+		let mut source = explicit_and_clean();
+		source.tracks.insert(id(13), filtered(13));
+		let resolved = resolve(&source, &artist_link(), ArtistTracks::Discography).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Track 12"]);
+		assert_eq!(resolved.skipped[0].uri, track_uri(11).to_uri());
+	}
+
+	#[tokio::test]
+	async fn an_edition_that_fails_to_load_gives_way_to_the_next() {
+		let mut source = explicit_and_clean();
+		source.albums.insert(id(110), Err("Spotify sent no metadata for this album"));
+		let resolved = resolve(&source, &artist_link(), ArtistTracks::Discography).await.unwrap();
+		assert_eq!(titles(&resolved.tracks), ["Track 13", "Track 14"]);
+		assert!(resolved.skipped.is_empty());
+	}
+
 	fn group(bytes: &[u8]) -> AlbumGroupMessage {
 		let mut group = AlbumGroupMessage::new();
 		group.album = bytes
@@ -1223,7 +1393,7 @@ mod tests {
 	}
 
 	#[test]
-	fn releases_come_albums_first_then_singles_then_compilations_without_appearances() {
+	fn releases_come_albums_first_then_singles_then_compilations_with_their_editions() {
 		let mut message = ArtistMessage::new();
 		message.set_gid(vec![150; 16]);
 		message.album_group = vec![group(&[100]), group(&[103, 104])];
@@ -1231,7 +1401,10 @@ mod tests {
 		message.compilation_group = vec![group(&[102])];
 		message.appears_on_group = vec![group(&[105])];
 		let artist = librespot_metadata::Artist::try_from(&message).unwrap();
-		assert_eq!(releases(&artist), [id(100), id(103), id(101), id(102)]);
+		assert_eq!(
+			releases(&artist),
+			[vec![id(100)], vec![id(103), id(104)], vec![id(101)], vec![id(102)]]
+		);
 	}
 
 	#[tokio::test]
