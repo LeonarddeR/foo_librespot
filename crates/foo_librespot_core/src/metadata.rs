@@ -1,7 +1,11 @@
 //! Spotify track and episode metadata, reduced to the fields foobar2000 shows.
 
 use librespot_core::date::Date;
+use librespot_metadata::album::AlbumType;
+use librespot_metadata::artist::ArtistRole;
 use librespot_metadata::availability::Availabilities;
+use librespot_metadata::copyright::{Copyright, CopyrightType};
+use librespot_metadata::external_id::ExternalIds;
 use librespot_metadata::image::Images;
 use librespot_metadata::restriction::Restrictions;
 use librespot_metadata::{Album, Episode, Track};
@@ -52,6 +56,24 @@ pub struct TrackInfo {
 	pub description: Option<String>,
 	/// The podcast's own audio link, for an episode Spotify doesn't host.
 	pub external_url: Option<String>,
+	/// The recording's ISRC, which every release of the same recording shares; `None` for
+	/// episodes and when Spotify has none.
+	pub isrc: Option<String>,
+	/// Spotify marks it explicit.
+	pub explicit: bool,
+	/// Whom Spotify credits as composer, conductor, orchestra and remixer; empty for episodes.
+	pub composers: Vec<String>,
+	pub conductors: Vec<String>,
+	pub orchestras: Vec<String>,
+	pub remixers: Vec<String>,
+	/// The album's record label; `None` until its album is read, and for episodes.
+	pub label: Option<String>,
+	/// The album's copyright lines, each starting with © or ℗; empty until its album is read.
+	pub copyrights: Vec<String>,
+	/// The album's barcode (its UPC); `None` until its album is read.
+	pub barcode: Option<String>,
+	/// `album`, `single`, `compilation` or `ep`; `None` until its album is read.
+	pub release_type: Option<&'static str>,
 }
 
 pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
@@ -76,6 +98,16 @@ pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
 		genres: Vec::new(),
 		description: None,
 		external_url: None,
+		isrc: external_id(&track.external_ids, "isrc"),
+		explicit: track.is_explicit,
+		composers: credited(track, ArtistRole::ARTIST_ROLE_COMPOSER),
+		conductors: credited(track, ArtistRole::ARTIST_ROLE_CONDUCTOR),
+		orchestras: credited(track, ArtistRole::ARTIST_ROLE_ORCHESTRA),
+		remixers: credited(track, ArtistRole::ARTIST_ROLE_REMIXER),
+		label: None,
+		copyrights: Vec::new(),
+		barcode: None,
+		release_type: None,
 	})
 }
 
@@ -106,27 +138,64 @@ pub fn episode_info(episode: &Episode) -> Result<TrackInfo, CoreError> {
 		description: Some(episode.description.clone()).filter(|text| !text.is_empty()),
 		external_url: Some(episode.external_url.clone())
 			.filter(|url| !has_audio && !url.is_empty()),
+		isrc: None,
+		explicit: episode.is_explicit,
+		composers: Vec::new(),
+		conductors: Vec::new(),
+		orchestras: Vec::new(),
+		remixers: Vec::new(),
+		label: None,
+		copyrights: Vec::new(),
+		barcode: None,
+		release_type: None,
 	})
 }
 
-/// How an album is split into discs, for the totals of its tracks.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AlbumTotals {
-	/// Each disc's number and how many tracks it has.
-	discs: Vec<(i32, u32)>,
+/// The first non-empty external ID of `kind`, such as `isrc` or `upc`.
+fn external_id(ids: &ExternalIds, kind: &str) -> Option<String> {
+	ids.iter().find(|id| id.external_type == kind && !id.id.is_empty()).map(|id| id.id.clone())
 }
 
-impl AlbumTotals {
+/// Whom `track` credits with `role`, in Spotify's order.
+fn credited(track: &Track, role: ArtistRole) -> Vec<String> {
+	track
+		.artists_with_role
+		.iter()
+		.filter(|artist| artist.role == role)
+		.map(|artist| artist.name.clone())
+		.collect()
+}
+
+/// What a track takes from its album's own metadata: the disc totals, the label, the copyright
+/// lines, the barcode and the release type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AlbumDetails {
+	/// Each disc's number and how many tracks it has.
+	discs: Vec<(i32, u32)>,
+	label: Option<String>,
+	copyrights: Vec<String>,
+	barcode: Option<String>,
+	release_type: Option<&'static str>,
+}
+
+impl AlbumDetails {
 	pub fn of(album: &Album) -> Self {
 		let discs = album
 			.discs
 			.iter()
 			.map(|disc| (disc.number, u32::try_from(disc.tracks.len()).unwrap_or(u32::MAX)))
 			.collect();
-		Self { discs }
+		Self {
+			discs,
+			label: Some(album.label.clone()).filter(|label| !label.is_empty()),
+			copyrights: album.copyrights.iter().filter_map(copyright_line).collect(),
+			barcode: external_id(&album.external_ids, "upc"),
+			release_type: release_type(album.album_type),
+		}
 	}
 
-	/// Sets `info`'s totals: the tracks on its disc and the discs on its album.
+	/// Sets `info`'s totals (the tracks on its disc and the discs on its album) and copies the
+	/// album's label, copyright lines, barcode and release type into it.
 	pub fn apply(&self, info: &mut TrackInfo) {
 		info.total_discs = u32::try_from(self.discs.len()).unwrap_or(u32::MAX);
 		info.total_tracks = self
@@ -134,6 +203,46 @@ impl AlbumTotals {
 			.iter()
 			.find(|(number, _)| i64::from(*number) == i64::from(info.disc_number))
 			.map_or(0, |(_, tracks)| *tracks);
+		info.label.clone_from(&self.label);
+		info.copyrights.clone_from(&self.copyrights);
+		info.barcode.clone_from(&self.barcode);
+		info.release_type = self.release_type;
+	}
+}
+
+/// A copyright line as releases print it: `©` before the release's copyright and `℗` before the
+/// recording's, unless Spotify's text already starts with a sign. `None` for an empty line.
+fn copyright_line(copyright: &Copyright) -> Option<String> {
+	let text = copyright.text.trim();
+	if text.is_empty() {
+		return None;
+	}
+	if has_copyright_sign(text) {
+		return Some(text.to_owned());
+	}
+	let sign = match copyright.copyright_type {
+		CopyrightType::C => '©',
+		CopyrightType::P => '℗',
+	};
+	Some(format!("{sign} {text}"))
+}
+
+/// Whether `text` starts with `©`, `℗`, `(C)` or `(P)`, in either case.
+fn has_copyright_sign(text: &str) -> bool {
+	text.starts_with(['©', '℗'])
+		|| text.get(..3).is_some_and(|start| {
+			start.eq_ignore_ascii_case("(c)") || start.eq_ignore_ascii_case("(p)")
+		})
+}
+
+/// The release type as MusicBrainz names it; audiobooks and podcasts have none.
+const fn release_type(album_type: AlbumType) -> Option<&'static str> {
+	match album_type {
+		AlbumType::ALBUM => Some("album"),
+		AlbumType::SINGLE => Some("single"),
+		AlbumType::COMPILATION => Some("compilation"),
+		AlbumType::EP => Some("ep"),
+		AlbumType::AUDIOBOOK | AlbumType::PODCAST => None,
 	}
 }
 
@@ -233,11 +342,15 @@ fn sorted_covers(images: &Images) -> Vec<Cover> {
 #[cfg(test)]
 mod tests {
 	use librespot_metadata::Episode;
+	use librespot_protocol::metadata::album::Type as AlbumType;
+	use librespot_protocol::metadata::artist_with_role::ArtistRole;
 	use librespot_protocol::metadata::audio_file::Format;
+	use librespot_protocol::metadata::copyright::Type as CopyrightType;
 	use librespot_protocol::metadata::{
-		Album as AlbumMessage, Artist as ArtistMessage, AudioFile as AudioFileMessage,
-		Date as DateMessage, Disc as DiscMessage, Episode as EpisodeMessage, Image as ImageMessage,
-		ImageGroup, Show as ShowMessage, Track as TrackMessage,
+		Album as AlbumMessage, Artist as ArtistMessage, ArtistWithRole as ArtistWithRoleMessage,
+		AudioFile as AudioFileMessage, Copyright as CopyrightMessage, Date as DateMessage,
+		Disc as DiscMessage, Episode as EpisodeMessage, ExternalId as ExternalIdMessage,
+		Image as ImageMessage, ImageGroup, Show as ShowMessage, Track as TrackMessage,
 	};
 	use protobuf::MessageField;
 
@@ -247,7 +360,7 @@ mod tests {
 	};
 
 	use super::{
-		AlbumTotals, Cover, EXPLICIT_FILTERED, availability, episode_availability, episode_info,
+		AlbumDetails, Cover, EXPLICIT_FILTERED, availability, episode_availability, episode_info,
 		explicit_allowed, format_date, largest_cover, track_info,
 	};
 	use crate::link::ItemId;
@@ -341,10 +454,10 @@ mod tests {
 	}
 
 	#[test]
-	fn album_totals_count_the_tracks_on_each_disc() {
+	fn album_details_count_the_tracks_on_each_disc() {
 		let mut message = album();
 		message.disc = vec![disc(1, 3), disc(2, 2)];
-		let totals = AlbumTotals::of(&librespot_metadata::Album::try_from(&message).unwrap());
+		let totals = AlbumDetails::of(&librespot_metadata::Album::try_from(&message).unwrap());
 		let mut info = track_info(&parse(&track())).unwrap();
 		info.disc_number = 2;
 		totals.apply(&mut info);
@@ -355,9 +468,11 @@ mod tests {
 	}
 
 	#[test]
-	fn a_track_knows_no_totals_until_its_album_is_read() {
+	fn a_track_knows_no_album_details_until_its_album_is_read() {
 		let info = track_info(&parse(&track())).unwrap();
 		assert_eq!((info.total_tracks, info.total_discs), (0, 0));
+		assert_eq!((info.label, info.barcode, info.release_type), (None, None, None));
+		assert!(info.copyrights.is_empty());
 	}
 
 	fn album() -> AlbumMessage {
@@ -574,5 +689,134 @@ mod tests {
 	#[test]
 	fn a_clean_item_plays_when_the_filter_is_on() {
 		assert_eq!(explicit_allowed(false, true), Ok(()));
+	}
+
+	fn external_id(kind: &str, id: &str) -> ExternalIdMessage {
+		let mut external = ExternalIdMessage::new();
+		external.set_type(kind.to_owned());
+		external.set_id(id.to_owned());
+		external
+	}
+
+	fn credit(byte: u8, name: &str, role: ArtistRole) -> ArtistWithRoleMessage {
+		let mut credit = ArtistWithRoleMessage::new();
+		credit.set_artist_gid(gid(byte));
+		credit.set_artist_name(name.to_owned());
+		credit.set_role(role);
+		credit
+	}
+
+	#[test]
+	fn a_track_takes_its_isrc_and_explicit_flag() {
+		let plain = track_info(&parse(&track())).unwrap();
+		assert_eq!(plain.isrc, None);
+		assert!(!plain.explicit);
+
+		let mut message = track();
+		message.external_id = vec![external_id("isrc", "USY5K0600040")];
+		message.set_explicit(true);
+		let info = track_info(&parse(&message)).unwrap();
+		assert_eq!(info.isrc.as_deref(), Some("USY5K0600040"));
+		assert!(info.explicit);
+	}
+
+	#[test]
+	fn credited_people_are_sorted_by_role() {
+		let mut message = track();
+		message.artist_with_role = vec![
+			credit(0x60, "Johann Sebastian Bach", ArtistRole::ARTIST_ROLE_COMPOSER),
+			credit(0x61, "Peter Kooij", ArtistRole::ARTIST_ROLE_MAIN_ARTIST),
+			credit(0x62, "Midori Suzuki", ArtistRole::ARTIST_ROLE_FEATURED_ARTIST),
+			credit(0x63, "Masaaki Suzuki", ArtistRole::ARTIST_ROLE_CONDUCTOR),
+			credit(0x64, "Bach Collegium Japan", ArtistRole::ARTIST_ROLE_ORCHESTRA),
+			credit(0x65, "Keith Getty", ArtistRole::ARTIST_ROLE_REMIXER),
+		];
+		let info = track_info(&parse(&message)).unwrap();
+		assert_eq!(info.composers, ["Johann Sebastian Bach"]);
+		assert_eq!(info.conductors, ["Masaaki Suzuki"]);
+		assert_eq!(info.orchestras, ["Bach Collegium Japan"]);
+		assert_eq!(info.remixers, ["Keith Getty"]);
+	}
+
+	#[test]
+	fn an_episode_takes_its_explicit_flag() {
+		let mut message = episode_message();
+		message.set_explicit(true);
+		let info = episode_info(&Episode::try_from(&message).unwrap()).unwrap();
+		assert!(info.explicit);
+		assert_eq!(info.isrc, None);
+	}
+
+	fn copyright(kind: CopyrightType, text: &str) -> CopyrightMessage {
+		let mut copyright = CopyrightMessage::new();
+		copyright.set_type(kind);
+		copyright.set_text(text.to_owned());
+		copyright
+	}
+
+	/// `info` for the test track after its album, `message`, is read.
+	fn with_album(message: &AlbumMessage) -> super::TrackInfo {
+		let mut info = track_info(&parse(&track())).unwrap();
+		AlbumDetails::of(&librespot_metadata::Album::try_from(message).unwrap()).apply(&mut info);
+		info
+	}
+
+	#[test]
+	fn album_details_add_label_copyrights_barcode_and_release_type() {
+		let mut message = album();
+		message.set_label("Martingale Records".to_owned());
+		message.copyright = vec![
+			copyright(CopyrightType::C, "2007 Martingale Records"),
+			copyright(CopyrightType::P, "℗ 2007 Martingale Records"),
+		];
+		message.external_id = vec![external_id("upc", "804879057321")];
+		message.set_type(AlbumType::SINGLE);
+		let info = with_album(&message);
+		assert_eq!(info.label.as_deref(), Some("Martingale Records"));
+		assert_eq!(info.copyrights, ["© 2007 Martingale Records", "℗ 2007 Martingale Records"]);
+		assert_eq!(info.barcode.as_deref(), Some("804879057321"));
+		assert_eq!(info.release_type, Some("single"));
+	}
+
+	#[test]
+	fn an_empty_copyright_line_is_left_out() {
+		let mut message = album();
+		message.copyright = vec![copyright(CopyrightType::C, "  ")];
+		assert!(with_album(&message).copyrights.is_empty());
+	}
+
+	#[test]
+	fn a_copyright_line_spotify_already_signed_gets_no_second_sign() {
+		let mut message = album();
+		message.copyright = vec![
+			copyright(CopyrightType::P, "(P) 2007 Martingale Records"),
+			copyright(CopyrightType::C, "(c) 2007 Martingale Records"),
+			copyright(CopyrightType::C, "℗ 2006 Getty Music Label, LLC"),
+		];
+		assert_eq!(
+			with_album(&message).copyrights,
+			[
+				"(P) 2007 Martingale Records",
+				"(c) 2007 Martingale Records",
+				"℗ 2006 Getty Music Label, LLC"
+			]
+		);
+	}
+
+	#[test]
+	fn release_types_take_musicbrainz_names() {
+		let cases = [
+			(AlbumType::ALBUM, Some("album")),
+			(AlbumType::SINGLE, Some("single")),
+			(AlbumType::COMPILATION, Some("compilation")),
+			(AlbumType::EP, Some("ep")),
+			(AlbumType::AUDIOBOOK, None),
+			(AlbumType::PODCAST, None),
+		];
+		for (kind, expected) in cases {
+			let mut message = album();
+			message.set_type(kind);
+			assert_eq!(with_album(&message).release_type, expected, "{kind:?}");
+		}
 	}
 }

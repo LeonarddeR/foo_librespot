@@ -13,7 +13,7 @@ use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
 use crate::metadata::{TrackInfo, largest_cover};
 use crate::profile::Profile;
 use crate::resolve::{
-	AlbumTotalsCache, CachedSource, LibrespotMetadata, Resolved, TrackCache, item, resolve,
+	AlbumDetailsCache, CachedSource, LibrespotMetadata, Resolved, TrackCache, item, resolve,
 };
 use crate::runtime::CoreRuntime;
 use crate::session::{LibrespotConnector, SessionManager};
@@ -29,7 +29,7 @@ pub struct Core {
 	runtime: CoreRuntime,
 	sessions: Arc<SessionManager<LibrespotConnector>>,
 	cache: TrackCache,
-	totals: AlbumTotalsCache,
+	albums: AlbumDetailsCache,
 	covers: CoverCache,
 }
 
@@ -43,7 +43,7 @@ impl Core {
 			runtime: CoreRuntime::new()?,
 			sessions: Arc::new(sessions),
 			cache: TrackCache::default(),
-			totals: AlbumTotalsCache::default(),
+			albums: AlbumDetailsCache::default(),
 			covers: CoverCache::default(),
 		})
 	}
@@ -106,7 +106,7 @@ impl Core {
 			async {
 				let session = self.sessions.session().await?;
 				let source = CachedSource::new(
-					LibrespotMetadata::new(session, self.totals.clone()),
+					LibrespotMetadata::new(session, self.albums.clone()),
 					self.cache.clone(),
 				);
 				resolve(&source, link).await
@@ -127,7 +127,7 @@ impl Core {
 			async {
 				let session = self.sessions.session().await?;
 				let source = CachedSource::new(
-					LibrespotMetadata::new(session, self.totals.clone()),
+					LibrespotMetadata::new(session, self.albums.clone()),
 					self.cache.clone(),
 				);
 				item(&source, id).await

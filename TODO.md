@@ -20,16 +20,12 @@ The cheapest wins come first.
   - foo_spotify answered foobar2000's request for an artist picture with the Spotify picture of the track's first artist.
   - foo_librespot only has a front cover. `SpotifyArt::query` in `crates/foo_librespot/src/art.rs` returns nothing for any other kind of art.
   - librespot's artist metadata has the pictures, in `Artist::portraits` and `Artist::portrait_group`.
-- [ ] More track info from the metadata we already fetch
-  - foo_librespot already fetches each track's and album's full metadata from Spotify, but writes only the title, artists, album, numbers, date, genre and ReplayGain.
-  - Spotify also gives:
-    - the recording's ISRC (`Track::external_ids`) and the album's barcode (`Album::external_ids`)
-    - the label (`Album::label`) and the copyright lines (`Album::copyrights`)
-    - whether the album is an album, a single or a compilation (`Album::album_type`)
-    - composers, conductors, orchestras, remixers and featured artists (`Track::artists_with_role`)
-    - whether the track is explicit (`Track::is_explicit`), and the language it is sung in (`Track::language_of_performance`)
-    - for episodes, the show's publisher and language (`Show::publisher`, `Show::language`)
-  - These need no extra requests. Field names should follow what other taggers use, such as `ISRC`, `BARCODE`, `LABEL`, `COPYRIGHT`, `RELEASETYPE`, `COMPOSER`, `CONDUCTOR` and `LANGUAGE`.
+- [x] More track info from the metadata we already fetch
+  - foo_librespot fetched each track's and album's full metadata from Spotify, but wrote only the title, artists, album, numbers, date, genre and ReplayGain.
+  - Tracks now also get `ISRC`, `BARCODE`, `LABEL`, `COPYRIGHT`, `RELEASETYPE`, `COMPOSER`, `CONDUCTOR`, `ORCHESTRA`, `REMIXER` and `ITUNESADVISORY` (for explicit tracks), and episodes `ITUNESADVISORY`, with no extra requests (`TrackInfo` and `AlbumDetails` in `crates/foo_librespot_core/src/metadata.rs`, `fill_info` in `crates/foo_librespot/src/fields.rs`).
+  - Featured artists get no field of their own: Spotify already lists them among the track's artists.
+  - `LANGUAGE` is left out. Spotify mixes two-letter language codes (`en`) with three-letter ones (`zxx`, no words), where other taggers use three letters throughout (`eng`), and its data can be wrong: a German recitative in Suzuki's Bach cantatas is marked Latin.
+  - An episode's metadata doesn't carry its show's publisher (checked on 2026-11-06), so there is no `PUBLISHER`; it would take a request for the show.
 
 ### New links
 

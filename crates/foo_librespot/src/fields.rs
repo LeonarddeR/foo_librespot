@@ -34,6 +34,26 @@ pub fn fill_info(info: &mut FileInfo<'_>, track: &TrackInfo) -> Result<()> {
 	if let Some(description) = &track.description {
 		info.meta_set("COMMENT", description)?;
 	}
+	if let Some(isrc) = &track.isrc {
+		info.meta_set("ISRC", isrc)?;
+	}
+	if let Some(barcode) = &track.barcode {
+		info.meta_set("BARCODE", barcode)?;
+	}
+	if let Some(label) = &track.label {
+		info.meta_set("LABEL", label)?;
+	}
+	add_all(info, "COPYRIGHT", &track.copyrights)?;
+	if let Some(release_type) = track.release_type {
+		info.meta_set("RELEASETYPE", release_type)?;
+	}
+	add_all(info, "COMPOSER", &track.composers)?;
+	add_all(info, "CONDUCTOR", &track.conductors)?;
+	add_all(info, "ORCHESTRA", &track.orchestras)?;
+	add_all(info, "REMIXER", &track.remixers)?;
+	if track.explicit {
+		info.meta_set("ITUNESADVISORY", "1")?;
+	}
 	info.set_length(f64::from(track.duration_ms) / 1000.0)?;
 	match track.id {
 		// Spotify's tracks are 44.1 kHz stereo Vorbis; the bitrate shows once a file is chosen.
@@ -95,6 +115,15 @@ mod tests {
 		assert_eq!(info.info("samplerate").as_deref(), Some("44100"));
 		assert_eq!(info.info("channels").as_deref(), Some("2"));
 		assert_eq!(info.meta("GENRE"), ["Worship", "Gospel"]);
+		assert_eq!(info.meta("ISRC"), ["USY5K0600040"]);
+		assert_eq!(info.meta("BARCODE"), ["804879057321"]);
+		assert_eq!(info.meta("LABEL"), ["Martingale Records"]);
+		assert_eq!(
+			info.meta("COPYRIGHT"),
+			["© 2007 Martingale Records", "℗ 2007 Martingale Records"]
+		);
+		assert_eq!(info.meta("RELEASETYPE"), ["album"]);
+		assert!(info.meta("ITUNESADVISORY").is_empty());
 		let gain = info.replaygain();
 		assert!((gain.track_gain - -6.62).abs() < 1e-4, "{gain:?}");
 		assert!((gain.album_gain - -8.51).abs() < 1e-4, "{gain:?}");
@@ -126,6 +155,11 @@ mod tests {
 		track.date = None;
 		track.genres.clear();
 		track.replay_gain = None;
+		track.isrc = None;
+		track.label = None;
+		track.copyrights.clear();
+		track.barcode = None;
+		track.release_type = None;
 		let mut info = FileInfoImpl::new();
 		fill_info(&mut info.file_info(), &track).unwrap();
 		assert!(info.meta("TRACKNUMBER").is_empty());
@@ -135,5 +169,32 @@ mod tests {
 		assert!(info.meta("DATE").is_empty());
 		assert!(info.meta("GENRE").is_empty());
 		assert_eq!(info.replaygain(), foxide2k::file_info_impl::REPLAYGAIN_UNSET);
+		for name in ["ISRC", "LABEL", "COPYRIGHT", "BARCODE", "RELEASETYPE"] {
+			assert!(info.meta(name).is_empty(), "{name}");
+		}
+	}
+
+	#[test]
+	fn credited_people_are_written_by_role() {
+		let mut track = track_info(track_id(), "Sinfonia");
+		track.composers = vec!["Johann Sebastian Bach".to_owned()];
+		track.conductors = vec!["Masaaki Suzuki".to_owned()];
+		track.orchestras = vec!["Bach Collegium Japan".to_owned()];
+		track.remixers = vec!["Keith Getty".to_owned()];
+		let mut info = FileInfoImpl::new();
+		fill_info(&mut info.file_info(), &track).unwrap();
+		assert_eq!(info.meta("COMPOSER"), ["Johann Sebastian Bach"]);
+		assert_eq!(info.meta("CONDUCTOR"), ["Masaaki Suzuki"]);
+		assert_eq!(info.meta("ORCHESTRA"), ["Bach Collegium Japan"]);
+		assert_eq!(info.meta("REMIXER"), ["Keith Getty"]);
+	}
+
+	#[test]
+	fn an_explicit_track_is_marked_with_itunesadvisory() {
+		let mut track = track_info(track_id(), "In Christ Alone");
+		track.explicit = true;
+		let mut info = FileInfoImpl::new();
+		fill_info(&mut info.file_info(), &track).unwrap();
+		assert_eq!(info.meta("ITUNESADVISORY"), ["1"]);
 	}
 }

@@ -25,7 +25,7 @@ use protobuf::{EnumOrUnknown, Message};
 use crate::genre::parse_genres;
 use crate::link::{ItemId, Link, LinkKind};
 use crate::metadata::{
-	AlbumTotals, TrackInfo, availability, episode_availability, episode_info, explicit_allowed,
+	AlbumDetails, TrackInfo, availability, episode_availability, episode_info, explicit_allowed,
 	track_info,
 };
 use crate::replaygain::parse_audio_files;
@@ -276,23 +276,23 @@ impl TrackCache {
 	}
 }
 
-/// How albums are split into discs, fetched this run. That doesn't change, and without this
-/// every track read one at a time, such as from an old foo_spotify playlist, would cost a second
-/// Spotify request.
+/// The album details fetched this run. They don't change, and without this every track read
+/// one at a time, such as from an old foo_spotify playlist, would cost a second Spotify
+/// request.
 #[derive(Clone, Debug, Default)]
-pub struct AlbumTotalsCache(Arc<Mutex<HashMap<String, AlbumTotals>>>);
+pub struct AlbumDetailsCache(Arc<Mutex<HashMap<String, AlbumDetails>>>);
 
-impl AlbumTotalsCache {
-	/// The totals of `albums`, asking `fetch` only for the albums not seen before. Albums `fetch`
-	/// has no totals for are asked for again next time.
+impl AlbumDetailsCache {
+	/// The details of `albums`, asking `fetch` only for the albums not seen before. Albums `fetch`
+	/// has no details for are asked for again next time.
 	pub async fn get_or_fetch<F, Fut>(
 		&self,
 		albums: Vec<String>,
 		fetch: F,
-	) -> HashMap<String, AlbumTotals>
+	) -> HashMap<String, AlbumDetails>
 	where
 		F: FnOnce(Vec<String>) -> Fut,
-		Fut: Future<Output = HashMap<String, AlbumTotals>>,
+		Fut: Future<Output = HashMap<String, AlbumDetails>>,
 	{
 		let (mut found, missing) = {
 			let known = self.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -300,8 +300,8 @@ impl AlbumTotalsCache {
 			let mut missing = Vec::new();
 			for album in albums {
 				match known.get(&album) {
-					Some(totals) => {
-						found.insert(album, totals.clone());
+					Some(details) => {
+						found.insert(album, details.clone());
 					}
 					None => missing.push(album),
 				}
@@ -401,7 +401,7 @@ impl<S: MetadataSource> MetadataSource for CachedSource<S> {
 /// Metadata straight from Spotify, through librespot.
 pub struct LibrespotMetadata {
 	session: Session,
-	totals: AlbumTotalsCache,
+	albums: AlbumDetailsCache,
 }
 
 /// What decides whether this account can play a track: read once per batch, not per track.
@@ -414,8 +414,8 @@ struct Viewer {
 }
 
 impl LibrespotMetadata {
-	pub fn new(session: Session, totals: AlbumTotalsCache) -> Self {
-		Self { session, totals }
+	pub fn new(session: Session, albums: AlbumDetailsCache) -> Self {
+		Self { session, albums }
 	}
 
 	/// The extensions to ask for an item: a track's metadata comes with its loudness and its
@@ -437,7 +437,7 @@ impl LibrespotMetadata {
 		}
 	}
 
-	/// An item's info, with the URI of a track's album, whose totals come in a later request.
+	/// An item's info, with the URI of a track's album, whose details come in a later request.
 	fn info(
 		item: ItemId,
 		values: Option<&ExtensionValues>,
@@ -485,14 +485,14 @@ impl LibrespotMetadata {
 		}
 	}
 
-	/// How each of `albums` is split into discs, fetched once per album.
-	async fn album_totals(&self, albums: Vec<String>) -> HashMap<String, AlbumTotals> {
-		self.totals.get_or_fetch(albums, |missing| self.fetch_album_totals(missing)).await
+	/// The details of each of `albums`, fetched once per album.
+	async fn album_details(&self, albums: Vec<String>) -> HashMap<String, AlbumDetails> {
+		self.albums.get_or_fetch(albums, |missing| self.fetch_album_details(missing)).await
 	}
 
-	/// How each of `albums` is split into discs, in one request. The totals are a nicety: when
-	/// the request fails, tracks are added without them.
-	async fn fetch_album_totals(&self, albums: Vec<String>) -> HashMap<String, AlbumTotals> {
+	/// The details of each of `albums`, in one request. They are a nicety: when the request
+	/// fails, tracks are added without them.
+	async fn fetch_album_details(&self, albums: Vec<String>) -> HashMap<String, AlbumDetails> {
 		if albums.is_empty() {
 			return HashMap::new();
 		}
@@ -516,7 +516,7 @@ impl LibrespotMetadata {
 		let response = match response {
 			Ok(response) => response,
 			Err(error) => {
-				log::debug!("no album totals: {error}");
+				log::debug!("no album details: {error}");
 				return HashMap::new();
 			}
 		};
@@ -524,7 +524,7 @@ impl LibrespotMetadata {
 			.into_iter()
 			.filter_map(|(uri, values)| {
 				let message = AlbumMessage::parse_from_bytes(values.metadata.as_deref()?).ok()?;
-				Some((uri, AlbumTotals::of(&Album::try_from(&message).ok()?)))
+				Some((uri, AlbumDetails::of(&Album::try_from(&message).ok()?)))
 			})
 			.collect()
 	}
@@ -583,13 +583,13 @@ impl MetadataSource for LibrespotMetadata {
 			infos.iter().filter_map(|info| info.as_ref().ok()?.1.clone()).collect();
 		albums.sort_unstable();
 		albums.dedup();
-		let totals = self.album_totals(albums).await;
+		let details = self.album_details(albums).await;
 		infos
 			.into_iter()
 			.map(|info| {
 				let (mut info, album) = info?;
-				if let Some(totals) = album.and_then(|album| totals.get(&album)) {
-					totals.apply(&mut info);
+				if let Some(found) = album.and_then(|album| details.get(&album)) {
+					found.apply(&mut info);
 				}
 				Ok(Arc::new(info))
 			})
@@ -701,12 +701,12 @@ mod tests {
 	use protobuf::{CodedOutputStream, Message};
 
 	use super::{
-		AlbumTotalsCache, CachedSource, ExtensionValues, LibrespotMetadata, MetadataSource,
+		AlbumDetailsCache, CachedSource, ExtensionValues, LibrespotMetadata, MetadataSource,
 		SkipReason, TrackCache, Viewer, extension_values, listening_order, resolve,
 		retry_rate_limited,
 	};
 	use crate::link::{ItemId, Link, LinkKind};
-	use crate::metadata::{AlbumTotals, EXPLICIT_FILTERED, TrackInfo};
+	use crate::metadata::{AlbumDetails, EXPLICIT_FILTERED, TrackInfo};
 	use crate::{CoreError, SpotifyId, SpotifyUri};
 
 	fn id(byte: u8) -> SpotifyId {
@@ -733,6 +733,16 @@ mod tests {
 			genres: Vec::new(),
 			description: None,
 			external_url: None,
+			isrc: None,
+			explicit: false,
+			composers: Vec::new(),
+			conductors: Vec::new(),
+			orchestras: Vec::new(),
+			remixers: Vec::new(),
+			label: None,
+			copyrights: Vec::new(),
+			barcode: None,
+			release_type: None,
 		}
 	}
 
@@ -756,6 +766,16 @@ mod tests {
 			genres: Vec::new(),
 			description: Some("What this episode is about.".to_owned()),
 			external_url: None,
+			isrc: None,
+			explicit: false,
+			composers: Vec::new(),
+			conductors: Vec::new(),
+			orchestras: Vec::new(),
+			remixers: Vec::new(),
+			label: None,
+			copyrights: Vec::new(),
+			barcode: None,
+			release_type: None,
 		}
 	}
 
@@ -1303,19 +1323,19 @@ mod tests {
 		assert!(started.elapsed() >= Duration::from_secs(30), "{:?}", started.elapsed());
 	}
 
-	fn some_totals() -> AlbumTotals {
+	fn some_details() -> AlbumDetails {
 		let mut album = AlbumMessage::new();
 		album.set_gid(vec![0x20; 16]);
-		AlbumTotals::of(&librespot_metadata::Album::try_from(&album).unwrap())
+		AlbumDetails::of(&librespot_metadata::Album::try_from(&album).unwrap())
 	}
 
 	#[tokio::test]
-	async fn album_totals_are_asked_for_once_per_album() {
-		let cache = AlbumTotalsCache::default();
+	async fn album_details_are_asked_for_once_per_album() {
+		let cache = AlbumDetailsCache::default();
 		let asked = Mutex::new(Vec::new());
 		let fetch = |albums: Vec<String>| {
 			asked.lock().unwrap().push(albums.clone());
-			async move { albums.into_iter().map(|album| (album, some_totals())).collect() }
+			async move { albums.into_iter().map(|album| (album, some_details())).collect() }
 		};
 		let first = cache.get_or_fetch(vec!["a".to_owned(), "b".to_owned()], fetch).await;
 		let second = cache.get_or_fetch(vec!["b".to_owned(), "c".to_owned()], fetch).await;
@@ -1325,8 +1345,8 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn album_totals_that_failed_are_asked_for_again() {
-		let cache = AlbumTotalsCache::default();
+	async fn album_details_that_failed_are_asked_for_again() {
+		let cache = AlbumDetailsCache::default();
 		let calls = AtomicUsize::new(0);
 		let failing = |_: Vec<String>| {
 			calls.fetch_add(1, Ordering::SeqCst);

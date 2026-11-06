@@ -57,6 +57,19 @@ pub fn track_info(id: SpotifyId, title: &str) -> TrackInfo {
 		genres: vec!["Worship".to_owned(), "Gospel".to_owned()],
 		description: None,
 		external_url: None,
+		isrc: Some("USY5K0600040".to_owned()),
+		explicit: false,
+		composers: Vec::new(),
+		conductors: Vec::new(),
+		orchestras: Vec::new(),
+		remixers: Vec::new(),
+		label: Some("Martingale Records".to_owned()),
+		copyrights: vec![
+			"© 2007 Martingale Records".to_owned(),
+			"℗ 2007 Martingale Records".to_owned(),
+		],
+		barcode: Some("804879057321".to_owned()),
+		release_type: Some("album"),
 	}
 }
 
@@ -81,6 +94,16 @@ pub fn episode_info(id: SpotifyId, title: &str) -> TrackInfo {
 		genres: Vec::new(),
 		description: Some("How the Psalms shaped the songs of the church.".to_owned()),
 		external_url: None,
+		isrc: None,
+		explicit: false,
+		composers: Vec::new(),
+		conductors: Vec::new(),
+		orchestras: Vec::new(),
+		remixers: Vec::new(),
+		label: None,
+		copyrights: Vec::new(),
+		barcode: None,
+		release_type: None,
 	}
 }
 
