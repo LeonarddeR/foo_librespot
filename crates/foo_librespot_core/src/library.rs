@@ -24,6 +24,9 @@ pub const LIBRARY_REFRESH: Duration = Duration::from_secs(60);
 /// How long a fetch may run before the caller gives up on it.
 pub const LIBRARY_FETCH_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Why a fetch that ran out of time failed.
+pub(crate) const SLOW_REASON: &str = "Spotify took too long to send your playlists";
+
 /// How many playlists are read at once.
 const PLAYLIST_CONCURRENCY: usize = 4;
 
@@ -305,7 +308,7 @@ impl LibraryCache {
 	/// until the new ones arrive; if they can't be read, the old ones stay.
 	pub async fn fetch<S: LibrarySource>(&self, source: &S, now: Instant) {
 		let ticket = self.current_ticket(now);
-		self.fetch_of(ticket, source, now).await;
+		self.fetch_of(ticket, source).await;
 	}
 
 	/// The ticket of the running fetch, or of a new one when none runs.
@@ -323,12 +326,7 @@ impl LibraryCache {
 
 	/// [`fetch`](Self::fetch) for the fetch `ticket` names; it does nothing, and changes nothing,
 	/// once another ticket is current.
-	pub(crate) async fn fetch_of<S: LibrarySource>(
-		&self,
-		ticket: FetchTicket,
-		source: &S,
-		_now: Instant,
-	) {
+	pub(crate) async fn fetch_of<S: LibrarySource>(&self, ticket: FetchTicket, source: &S) {
 		if self.lock().running != Some(ticket.0) {
 			return;
 		}
@@ -397,10 +395,30 @@ impl LibraryCache {
 		run(listeners);
 	}
 
-	/// A fetch that couldn't start, for example because there is no session.
+	/// A fetch that couldn't start, for example because there is no session. It ends the fetch
+	/// that is running; when none runs, it counts as one that started at the call, so the next
+	/// refresh waits [`LIBRARY_REFRESH`].
 	pub fn fail(&self, error: &CoreError) {
 		let ticket = self.current_ticket(Instant::now());
 		self.fetch_failed(ticket, error);
+	}
+
+	/// Runs `read`, the work of the fetch `ticket` names, for at most `limit`. When the time runs
+	/// out, the fetch fails with [`SLOW_REASON`] while `read` is still alive, and `read` is
+	/// dropped afterwards.
+	pub(crate) async fn run_within(
+		&self,
+		ticket: FetchTicket,
+		limit: Duration,
+		read: impl Future<Output = ()> + Send,
+	) {
+		tokio::pin!(read);
+		tokio::select! {
+			() = &mut read => {}
+			() = tokio::time::sleep(limit) => {
+				self.fail_of(ticket, &CoreError::Unavailable(SLOW_REASON.to_owned()));
+			}
+		}
 	}
 
 	/// [`fail`](Self::fail) for the fetch `ticket` names; it does nothing once another ticket is
@@ -580,8 +598,9 @@ mod tests {
 	use tokio::sync::Notify;
 
 	use super::{
-		LIBRARY_REFRESH, LibraryCache, LibraryPlaylist, LibrarySource, LibraryState,
-		PlaylistContents, PlaylistRow, playlist_contents, rootlist_playlists,
+		LIBRARY_FETCH_TIMEOUT, LIBRARY_REFRESH, LibraryCache, LibraryPlaylist, LibrarySource,
+		LibraryState, PlaylistContents, PlaylistRow, SLOW_REASON, playlist_contents,
+		rootlist_playlists,
 	};
 	use crate::link::{Link, LinkKind};
 	use crate::{CoreError, SpotifyId};
@@ -1142,7 +1161,7 @@ mod tests {
 		let ticket = ticket.unwrap();
 		let task = tokio::spawn({
 			let (cache, source) = (cache.clone(), Arc::clone(&source));
-			async move { cache.fetch_of(ticket, &*source, now).await }
+			async move { cache.fetch_of(ticket, &*source).await }
 		});
 		until(|| is_ready(&cache.held())).await;
 		let later = now + LIBRARY_REFRESH + Duration::from_secs(1);
@@ -1159,6 +1178,31 @@ mod tests {
 		gate.notify_one();
 		task.await.unwrap();
 		assert_eq!(started.load(Ordering::SeqCst), 1);
-		assert!(cache.snapshot_ticket(later, None).1.is_none());
+		let much_later = later + LIBRARY_REFRESH + Duration::from_secs(1);
+		assert!(cache.snapshot_ticket(much_later, None).1.is_none());
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_fetch_that_runs_out_of_time_fails_and_runs_the_listeners() {
+		let source = fake();
+		source.hang_rootlist.store(true, Ordering::SeqCst);
+		let cache = LibraryCache::default();
+		let now = Instant::now();
+		let calls = Arc::new(AtomicUsize::new(0));
+		let listener = {
+			let calls = Arc::clone(&calls);
+			Box::new(move || {
+				calls.fetch_add(1, Ordering::SeqCst);
+			})
+		};
+		let ticket = cache.snapshot_ticket(now, Some(listener)).1.unwrap();
+		cache.run_within(ticket, LIBRARY_FETCH_TIMEOUT, cache.fetch_of(ticket, &source)).await;
+		assert!(
+			matches!(cache.held(), LibraryState::Failed(reason) if reason == SLOW_REASON),
+			"{:?}",
+			cache.held()
+		);
+		assert_eq!(calls.load(Ordering::SeqCst), 1);
+		assert!(cache.snapshot_ticket(now, None).1.is_some());
 	}
 }

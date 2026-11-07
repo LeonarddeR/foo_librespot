@@ -143,19 +143,12 @@ impl Core {
 				let read = async {
 					match sessions.session().await {
 						Ok(session) => {
-							library.fetch_of(ticket, &LibrespotLibrary::new(session), now).await;
+							library.fetch_of(ticket, &LibrespotLibrary::new(session)).await;
 						}
 						Err(error) => library.fail_of(ticket, &error),
 					}
 				};
-				if tokio::time::timeout(LIBRARY_FETCH_TIMEOUT, read).await.is_err() {
-					library.fail_of(
-						ticket,
-						&CoreError::Unavailable(
-							"Spotify took too long to send your playlists".to_owned(),
-						),
-					);
-				}
+				library.run_within(ticket, LIBRARY_FETCH_TIMEOUT, read).await;
 			});
 		}
 		state
