@@ -121,26 +121,32 @@ impl Held {
 pub struct Library {
 	pub playlists: Vec<LibraryPlaylist>,
 	items: HashMap<SpotifyId, Held>,
+	/// The playlists without items whose read failed in the last fetch that finished.
+	unreadable: HashSet<SpotifyId>,
 	liked: Option<HashSet<String>>,
 }
 
 impl Library {
 	/// A library of `playlists` that keeps what `previous` knew of them: the items of each
-	/// playlist, whatever their revision, and Liked Songs.
+	/// playlist, whatever their revision, which ones couldn't be read, and Liked Songs.
 	fn new(playlists: Vec<LibraryPlaylist>, previous: Option<&Self>) -> Self {
-		let items = previous
-			.map(|previous| {
-				playlists
-					.iter()
-					.filter(|playlist| playlist.can_edit)
-					.filter_map(|playlist| {
-						let held = previous.items.get(&playlist.id)?;
-						Some((playlist.id, held.clone()))
-					})
-					.collect()
-			})
-			.unwrap_or_default();
-		Self { playlists, items, liked: previous.and_then(|previous| previous.liked.clone()) }
+		let mut library = Self {
+			playlists,
+			items: HashMap::new(),
+			unreadable: HashSet::new(),
+			liked: previous.and_then(|previous| previous.liked.clone()),
+		};
+		if let Some(previous) = previous {
+			let editable: Vec<SpotifyId> = library.editable().map(|playlist| playlist.id).collect();
+			for id in editable {
+				if let Some(held) = previous.items.get(&id) {
+					library.items.insert(id, held.clone());
+				} else if previous.unreadable.contains(&id) {
+					library.unreadable.insert(id);
+				}
+			}
+		}
+		library
 	}
 
 	/// A library holding exactly `playlists`, the `contents` of some of them, and `liked`.
@@ -150,13 +156,22 @@ impl Library {
 		liked: Option<HashSet<String>>,
 	) -> Self {
 		let items = contents.into_iter().map(|(id, contents)| (id, Held::new(contents))).collect();
-		Self { playlists, items, liked }
+		Self { playlists, items, unreadable: HashSet::new(), liked }
 	}
 
-	/// Every playlist the account can change has its items, and Liked Songs is known.
+	/// Liked Songs is known, and every playlist the account can change has its items or couldn't
+	/// be read in the last fetch that finished.
 	pub fn is_complete(&self) -> bool {
 		self.liked.is_some()
-			&& self.editable().all(|playlist| self.items.contains_key(&playlist.id))
+			&& self.editable().all(|playlist| {
+				self.items.contains_key(&playlist.id) || self.unreadable.contains(&playlist.id)
+			})
+	}
+
+	/// Keeps `contents` as the items of playlist `id`.
+	fn store(&mut self, id: SpotifyId, contents: PlaylistContents) {
+		self.items.insert(id, Held::new(contents));
+		self.unreadable.remove(&id);
 	}
 
 	pub fn editable(&self) -> impl Iterator<Item = &LibraryPlaylist> {
@@ -168,7 +183,8 @@ impl Library {
 		self.items.get(&id).map(|held| &held.contents)
 	}
 
-	/// Whether playlist `id` holds every one of `uris`; `None` while its items aren't known.
+	/// Whether playlist `id` holds every one of `uris`; `None` while its items aren't known,
+	/// also when they couldn't be read.
 	pub fn holds_all(&self, id: SpotifyId, uris: &[String]) -> Option<bool> {
 		let held = self.items.get(&id)?;
 		Some(uris.iter().all(|uri| held.uris.contains(uri)))
@@ -204,6 +220,7 @@ pub enum LibraryState {
 	LoggedOut,
 	/// Nothing is known yet; a fetch is running.
 	Loading,
+	/// The playlist list or Liked Songs couldn't be read, and no complete library is held.
 	Failed(String),
 	/// The playlist list is known; check [`Library::is_complete`] for the items.
 	Ready(Arc<Library>),
@@ -404,6 +421,8 @@ struct Inner {
 	/// The token of the running fetch.
 	running: Option<u64>,
 	started: Option<Instant>,
+	/// The running fetch has published the playlist list.
+	listed: bool,
 	listeners: Vec<OnLibraryChange>,
 	/// Counts the calls of `clear`; a change publishes only into the epoch it began in.
 	epoch: u64,
@@ -427,6 +446,26 @@ impl Inner {
 
 	fn is_complete(&self) -> bool {
 		self.library.as_ref().is_some_and(|library| library.is_complete())
+	}
+
+	/// Marks a new fetch, started at `now`, as running and hands out its ticket.
+	fn start(&mut self, now: Instant) -> FetchTicket {
+		let ticket = FetchTicket(self.next_token);
+		self.next_token += 1;
+		self.running = Some(ticket.0);
+		self.started = Some(now);
+		self.listed = false;
+		self.changed_playlists.clear();
+		self.changed_liked = false;
+		ticket
+	}
+
+	/// The held library, for `ticket`'s fetch to change; `None` once another ticket is current.
+	fn library_of(&mut self, ticket: FetchTicket) -> Option<&mut Library> {
+		if self.running != Some(ticket.0) {
+			return None;
+		}
+		self.library.as_mut().map(Arc::make_mut)
 	}
 }
 
@@ -488,15 +527,7 @@ impl LibraryCache {
 				|| inner.started.is_none_or(|started| {
 					now.saturating_duration_since(started) > LIBRARY_REFRESH
 				}));
-		let ticket = start.then(|| {
-			let ticket = FetchTicket(inner.next_token);
-			inner.next_token += 1;
-			inner.running = Some(ticket.0);
-			inner.started = Some(now);
-			inner.changed_playlists.clear();
-			inner.changed_liked = false;
-			ticket
-		});
+		let ticket = start.then(|| inner.start(now));
 		if inner.running.is_some()
 			&& let Some(on_change) = on_change
 		{
@@ -511,9 +542,11 @@ impl LibraryCache {
 	}
 
 	/// Reads the playlist list and publishes it. Then it reads the items of each playlist the
-	/// account can change whose revision is new, and Liked Songs, and publishes again. Items whose
-	/// revision didn't change are kept, and a playlist whose revision changed keeps its old rows
-	/// until the new ones arrive; if they can't be read, the old ones stay.
+	/// account can change whose revision is new, and Liked Songs, and keeps each as its read
+	/// finishes. Items whose revision didn't change are kept, and a playlist whose revision changed
+	/// keeps its old rows until the new ones arrive; if they can't be read, the old ones stay. A
+	/// playlist without old rows whose read fails counts as unreadable once the fetch ends, until
+	/// a later fetch reads it. Listeners run when the list is published and when the fetch ends.
 	pub async fn fetch<S: LibrarySource>(&self, source: &S, now: Instant) {
 		let ticket = self.current_ticket(now);
 		self.fetch_of(ticket, source).await;
@@ -522,16 +555,10 @@ impl LibraryCache {
 	/// The ticket of the running fetch, or of a new one when none runs.
 	fn current_ticket(&self, now: Instant) -> FetchTicket {
 		let mut inner = self.lock();
-		if let Some(token) = inner.running {
-			return FetchTicket(token);
+		match inner.running {
+			Some(token) => FetchTicket(token),
+			None => inner.start(now),
 		}
-		let ticket = FetchTicket(inner.next_token);
-		inner.next_token += 1;
-		inner.running = Some(ticket.0);
-		inner.started = Some(now);
-		inner.changed_playlists.clear();
-		inner.changed_liked = false;
-		ticket
 	}
 
 	/// [`fetch`](Self::fetch) for the fetch `ticket` names; it does nothing, and changes nothing,
@@ -557,64 +584,88 @@ impl LibraryCache {
 			let unread = library.unread();
 			inner.library = Some(Arc::new(library));
 			inner.failed = None;
+			inner.listed = true;
 			unread
 		};
 		self.notify(ticket);
 
-		let read = async {
-			stream::iter(unread)
+		let rows = async {
+			let mut reads = stream::iter(unread)
 				.map(|id| async move { (id, source.contents(id).await) })
-				.buffer_unordered(PLAYLIST_CONCURRENCY)
-				.collect::<Vec<_>>()
-				.await
-		};
-		let (contents, liked) = futures_util::future::join(read, source.liked()).await;
-
-		let listeners = {
-			let mut inner = self.lock();
-			if inner.running != Some(ticket.0) {
-				return;
-			}
-			let mut library =
-				inner.library.as_deref().cloned().unwrap_or_else(|| Library::new(Vec::new(), None));
-			let mut first_error = None;
-			for (id, result) in contents {
+				.buffer_unordered(PLAYLIST_CONCURRENCY);
+			let mut failed = Vec::new();
+			while let Some((id, result)) = reads.next().await {
 				match result {
-					Ok(contents) => {
-						// A change published a newer copy while this one was being read.
-						if !inner.changed_playlists.contains(&id) {
-							library.items.insert(id, Held::new(contents));
-						}
-					}
+					Ok(contents) => self.store_rows(ticket, id, contents),
 					Err(error) => {
-						// A playlist that was read before keeps its old rows.
 						log::warn!("couldn't read a Spotify playlist: {error}");
-						first_error.get_or_insert_with(|| error.to_string());
+						failed.push(id);
 					}
 				}
 			}
-			match liked {
+			failed
+		};
+		let liked = async {
+			match source.liked().await {
 				Ok(liked) => {
-					if !(inner.changed_liked && library.liked.is_some()) {
-						library.liked = Some(liked);
-					}
+					self.store_liked(ticket, liked);
+					None
 				}
 				Err(error) => {
 					log::warn!("couldn't read Liked Songs: {error}");
-					first_error.get_or_insert_with(|| error.to_string());
+					Some(error.to_string())
 				}
 			}
-			inner.failed = first_error.filter(|_| !library.is_complete());
-			inner.library = Some(Arc::new(library));
+		};
+		let (failed, liked_error) = futures_util::future::join(rows, liked).await;
+
+		let listeners = {
+			let mut inner = self.lock();
+			let Some(library) = inner.library_of(ticket) else {
+				return;
+			};
+			for id in failed {
+				if !library.items.contains_key(&id) {
+					library.unreadable.insert(id);
+				}
+			}
+			let complete = library.is_complete();
+			inner.failed = liked_error.filter(|_| !complete);
 			inner.running = None;
 			std::mem::take(&mut inner.listeners)
 		};
 		run(listeners);
 	}
 
-	/// A fetch that couldn't start, for example because there is no session. It ends the fetch
-	/// that is running; when none runs, it counts as one that started at the call, so the next
-	/// refresh waits [`LIBRARY_REFRESH`].
+	/// Keeps the `contents` that `ticket`'s fetch read for playlist `id`, unless another ticket is
+	/// current or a change published the playlist since the fetch began.
+	fn store_rows(&self, ticket: FetchTicket, id: SpotifyId, contents: PlaylistContents) {
+		let mut inner = self.lock();
+		if inner.changed_playlists.contains(&id) {
+			return;
+		}
+		if let Some(library) = inner.library_of(ticket) {
+			library.store(id, contents);
+		}
+	}
+
+	/// Keeps the Liked Songs that `ticket`'s fetch read, unless another ticket is current or a
+	/// change published Liked Songs since the fetch began.
+	fn store_liked(&self, ticket: FetchTicket, liked: HashSet<String>) {
+		let mut inner = self.lock();
+		let changed = inner.changed_liked;
+		if let Some(library) = inner.library_of(ticket)
+			&& !(changed && library.liked.is_some())
+		{
+			library.liked = Some(liked);
+		}
+	}
+
+	/// A fetch that couldn't start, for example because there is no session. It ends the running
+	/// fetch with `error`, or, when none runs, one that counts as started at the call. A complete
+	/// library stays as it is, so the next refresh waits [`LIBRARY_REFRESH`] from that start. An
+	/// incomplete one answers `Failed` with `error`, unless the ended fetch had published the
+	/// playlist list and Liked Songs is known; either way the next snapshot starts a fetch.
 	pub fn fail(&self, error: &CoreError) {
 		let ticket = self.current_ticket(Instant::now());
 		self.fetch_failed(ticket, error);
@@ -754,7 +805,7 @@ impl LibraryCache {
 		};
 		if let Some(playlist) = library.playlists.iter_mut().find(|playlist| playlist.id == id) {
 			playlist.revision.clone_from(&contents.revision);
-			library.items.insert(id, Held::new(contents));
+			library.store(id, contents);
 			inner.library = Some(Arc::new(library));
 			if inner.running.is_some() {
 				inner.changed_playlists.insert(id);
@@ -780,7 +831,9 @@ impl LibraryCache {
 		}
 	}
 
-	/// Ends the fetch of `ticket` with `error`: a complete library stays as it is.
+	/// Ends the fetch of `ticket` with `error`. A complete library stays as it is, and so does an
+	/// incomplete one whose list this fetch published while Liked Songs is known; any other
+	/// answers `Failed`.
 	fn fetch_failed(&self, ticket: FetchTicket, error: &CoreError) {
 		let listeners = {
 			let mut inner = self.lock();
@@ -788,8 +841,11 @@ impl LibraryCache {
 				return;
 			}
 			inner.running = None;
+			let liked_known = inner.library.as_ref().is_some_and(|library| library.liked.is_some());
 			if inner.is_complete() {
 				log::warn!("couldn't refresh the Spotify library: {error}");
+			} else if inner.listed && liked_known {
+				log::warn!("couldn't read every Spotify playlist: {error}");
 			} else {
 				inner.failed = Some(error.to_string());
 			}
@@ -1214,6 +1270,11 @@ mod tests {
 		/// The playlists whose `contents` waits for `held_gate` before answering.
 		held: Mutex<HashSet<SpotifyId>>,
 		held_gate: Arc<Notify>,
+		/// The playlists whose `contents` fails.
+		failing: Mutex<HashSet<SpotifyId>>,
+		/// The playlist of each `contents` call, in order.
+		contents_ids: Mutex<Vec<SpotifyId>>,
+		fail_liked: AtomicBool,
 		/// The calls to `add`: the base revision and the URIs.
 		adds: Mutex<Vec<(Vec<u8>, Vec<String>)>>,
 		/// The calls to `remove`: the base revision and the rows.
@@ -1237,6 +1298,7 @@ mod tests {
 
 		async fn contents(&self, id: SpotifyId) -> Result<PlaylistContents, CoreError> {
 			let call = self.contents_calls.fetch_add(1, Ordering::SeqCst) + 1;
+			self.contents_ids.lock().unwrap().push(id);
 			if let Some(gate) = &self.gate {
 				gate.notified().await;
 			}
@@ -1246,6 +1308,7 @@ mod tests {
 			}
 			if self.fail_contents.load(Ordering::SeqCst)
 				|| self.fail_contents_call.load(Ordering::SeqCst) == call
+				|| self.failing.lock().unwrap().contains(&id)
 			{
 				return Err(CoreError::Unavailable("playlist failed".to_owned()));
 			}
@@ -1259,6 +1322,9 @@ mod tests {
 		async fn liked(&self) -> Result<HashSet<String>, CoreError> {
 			self.liked_calls.fetch_add(1, Ordering::SeqCst);
 			tokio::task::yield_now().await;
+			if self.fail_liked.load(Ordering::SeqCst) {
+				return Err(CoreError::Unavailable("Liked Songs failed".to_owned()));
+			}
 			let answer = self.liked.lock().unwrap().clone();
 			if self.hold_liked.load(Ordering::SeqCst) {
 				self.liked_gate.notified().await;
@@ -1653,7 +1719,7 @@ mod tests {
 	async fn a_fetch_that_read_a_playlist_before_a_change_keeps_the_change() {
 		let source = Arc::new(fake());
 		let cache = loaded(&source).await;
-		// The playlist changed elsewhere, so the next fetch reads it again.
+		// Playlist A has a new revision on Spotify.
 		source.playlists.lock().unwrap()[0].revision = b"r2".to_vec();
 		source.contents.lock().unwrap().get_mut(&id(1)).unwrap().revision = b"r2".to_vec();
 		source.hold_contents_once.store(true, Ordering::SeqCst);
@@ -2084,5 +2150,109 @@ mod tests {
 		);
 		assert_eq!(started.elapsed(), LIBRARY_CHANGE_TIMEOUT);
 		assert!(source.adds.lock().unwrap().is_empty());
+	}
+
+	/// Adds playlist C, which the account can change, holding `t3`.
+	fn add_c(source: &FakeLibrary) {
+		source.playlists.lock().unwrap().push(playlist(3, "C", true, "r3"));
+		source.contents.lock().unwrap().insert(id(3), contents("r3", &["t3"]));
+	}
+
+	#[tokio::test]
+	async fn a_playlist_that_cant_be_read_leaves_the_library_complete_without_its_rows() {
+		let source = fake();
+		source.failing.lock().unwrap().insert(id(1));
+		let cache = LibraryCache::default();
+		let start = Instant::now();
+		cache.fetch(&source, start).await;
+		let (state, fetch) = cache.snapshot(start, None);
+		let library = ready(state);
+		assert!(library.is_complete());
+		assert_eq!(library.holds_all(id(1), &["t1".to_owned()]), None);
+		assert!(!fetch);
+		source.failing.lock().unwrap().clear();
+		let later = start + LIBRARY_REFRESH + Duration::from_secs(1);
+		assert!(cache.snapshot(later, None).1);
+		cache.fetch(&source, later).await;
+		assert_eq!(ready(cache.held()).holds_all(id(1), &["t1".to_owned()]), Some(true));
+	}
+
+	#[tokio::test]
+	async fn a_playlist_that_cant_be_read_counts_only_once_the_fetch_ends() {
+		let source = Arc::new(fake());
+		add_c(&source);
+		source.failing.lock().unwrap().insert(id(1));
+		source.held.lock().unwrap().insert(id(3));
+		let cache = LibraryCache::default();
+		let task = tokio::spawn({
+			let (cache, source) = (cache.clone(), Arc::clone(&source));
+			async move { cache.fetch(&*source, Instant::now()).await }
+		});
+		until(|| source.contents_calls.load(Ordering::SeqCst) == 2).await;
+		tokio::task::yield_now().await;
+		assert!(!ready(cache.held()).is_complete());
+		source.held_gate.notify_one();
+		task.await.unwrap();
+		let library = ready(cache.held());
+		assert!(library.is_complete());
+		assert_eq!(library.holds_all(id(1), &["t1".to_owned()]), None);
+		assert_eq!(library.holds_all(id(3), &["t3".to_owned()]), Some(true));
+	}
+
+	#[tokio::test]
+	async fn a_playlist_that_couldnt_be_read_keeps_the_library_complete_while_it_is_read_again() {
+		let source = Arc::new(fake());
+		source.failing.lock().unwrap().insert(id(1));
+		let cache = LibraryCache::default();
+		cache.fetch(&*source, Instant::now()).await;
+		source.failing.lock().unwrap().clear();
+		source.held.lock().unwrap().insert(id(1));
+		let task = tokio::spawn({
+			let (cache, source) = (cache.clone(), Arc::clone(&source));
+			async move { cache.fetch(&*source, Instant::now()).await }
+		});
+		until(|| source.contents_calls.load(Ordering::SeqCst) == 2).await;
+		assert!(ready(cache.held()).is_complete());
+		source.held_gate.notify_one();
+		task.await.unwrap();
+		assert_eq!(ready(cache.held()).holds_all(id(1), &["t1".to_owned()]), Some(true));
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_fetch_that_runs_out_of_time_keeps_the_rows_it_read() {
+		let source = fake();
+		add_c(&source);
+		source.held.lock().unwrap().insert(id(3));
+		let cache = LibraryCache::default();
+		let now = Instant::now();
+		let ticket = cache.snapshot_ticket(now, None).1.unwrap();
+		cache.run_within(ticket, LIBRARY_FETCH_TIMEOUT, cache.fetch_of(ticket, &source)).await;
+		let library = ready(cache.held());
+		assert!(!library.is_complete());
+		assert_eq!(library.holds_all(id(1), &["t1".to_owned()]), Some(true));
+		assert_eq!(library.holds_all(id(3), &["t3".to_owned()]), None);
+		assert_eq!(library.liked_holds_all(&["t2".to_owned()]), Some(true));
+		source.held.lock().unwrap().clear();
+		let read_before = source.contents_ids.lock().unwrap().len();
+		let ticket = cache.snapshot_ticket(now, None).1.expect("no fetch started");
+		cache.fetch_of(ticket, &source).await;
+		assert_eq!(source.contents_ids.lock().unwrap()[read_before..], [id(3)]);
+		assert!(ready(cache.held()).is_complete());
+	}
+
+	#[tokio::test]
+	async fn a_failing_liked_songs_read_still_fails_the_library() {
+		let source = fake();
+		source.failing.lock().unwrap().insert(id(1));
+		source.fail_liked.store(true, Ordering::SeqCst);
+		let cache = LibraryCache::default();
+		let now = Instant::now();
+		cache.fetch(&source, now).await;
+		let (state, fetch) = cache.snapshot(now, None);
+		assert!(
+			matches!(&state, LibraryState::Failed(reason) if reason == "Liked Songs failed"),
+			"{state:?}"
+		);
+		assert!(fetch);
 	}
 }
