@@ -72,7 +72,7 @@ const fn artist_guid(index: u8) -> Guid {
 /// shortcut-only right-click "Open artist…" does.
 pub struct PlayingArtist;
 
-impl MainMenuDynamicCommand for PlayingArtist {
+impl MainMenuCommand for PlayingArtist {
 	const GUID: Guid = Guid::from_u128(0x00fbed21_419c_4b8a_905f_b0047d78b2ac);
 	const PARENT: Guid = PlayingTrack::GUID;
 	const SORT_PRIORITY: u32 = SORT_PRIORITY_BASE + 1;
@@ -83,6 +83,13 @@ impl MainMenuDynamicCommand for PlayingArtist {
 		shown(&playing(), Kind::Track)
 	}
 
+	fn execute() -> Result<()> {
+		open_artists(playing(), Source::Playing, Self::NAME);
+		Ok(())
+	}
+}
+
+impl MainMenuDynamicCommand for PlayingArtist {
 	fn build() -> MainMenuNode {
 		let items = playing();
 		match shown(&items, Kind::Track) {
@@ -96,11 +103,6 @@ impl MainMenuDynamicCommand for PlayingArtist {
 				})
 			}
 		}
-	}
-
-	fn execute() -> Result<()> {
-		open_artists(playing(), Source::Playing, Self::NAME);
-		Ok(())
 	}
 }
 

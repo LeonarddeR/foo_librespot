@@ -179,6 +179,11 @@ impl Dialog {
 		String::from_utf16_lossy(&buffer[..usize::try_from(copied).unwrap_or(0)])
 	}
 
+	/// The text of every item, in order.
+	pub fn list_texts(&self, id: u16) -> Vec<String> {
+		(0..self.list_count(id)).map(|index| self.list_text(id, index)).collect()
+	}
+
 	pub fn is_checked(&self, id: u16) -> bool {
 		let state =
 			unsafe { SendMessageW(self.control(id), BM_GETCHECK as u32, WPARAM(0), LPARAM(0)) };
@@ -658,11 +663,16 @@ pub(crate) mod tests {
 		}
 		assert_eq!(dialog.list_count(109), 3);
 		assert_eq!(dialog.list_text(109, 1), "Church / Sunday set");
+		assert_eq!(
+			dialog.list_texts(109),
+			["Liked Songs", "Church / Sunday set", "Getty favourites"]
+		);
 		assert_eq!(dialog.list_selection(109), None);
 		dialog.list_select(109, 1);
 		assert_eq!(dialog.list_selection(109), Some(1));
 		dialog.list_clear(109);
 		assert_eq!(dialog.list_count(109), 0);
+		assert!(dialog.list_texts(109).is_empty());
 		assert_eq!(dialog.list_selection(109), None);
 		destroy(dialog);
 	}

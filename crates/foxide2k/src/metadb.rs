@@ -1,8 +1,10 @@
 //! The tracks foobar2000 passes to a component, such as the selection under a right-click menu.
 
 use std::borrow::Cow;
+use std::convert::Infallible;
 use std::ffi::CStr;
 use std::marker::PhantomData;
+use std::ops::ControlFlow;
 use std::ptr::NonNull;
 
 use crate::abi::metadb_handle::{HandleListRaw, MetadbHandleVtbl};
@@ -99,15 +101,32 @@ impl HandleList<'_> {
 		Ok(handle.map(|handle| unsafe { Track::from_handle(handle) }))
 	}
 
-	/// Calls `f` with each item's path, in order, borrowed from the item. Invalid UTF-8 in a path
-	/// is replaced; an item without a path gives an empty one.
-	pub fn for_each_path(&self, mut f: impl FnMut(&str)) -> Result<()> {
+	/// Calls `f` with each item's path, in order, borrowed from the item, until `f` breaks; returns
+	/// where it broke, or `Continue` when it never did. Invalid UTF-8 in a path is replaced; an item
+	/// without a path gives an empty one.
+	pub fn try_for_each_path<B>(
+		&self,
+		mut f: impl FnMut(&str) -> ControlFlow<B>,
+	) -> Result<ControlFlow<B>> {
 		for index in 0..self.len()? {
-			match self.item(index)? {
+			let flow = match self.item(index)? {
 				Some(track) => track.with_path(&mut f)?,
 				None => f(""),
+			};
+			if flow.is_break() {
+				return Ok(flow);
 			}
 		}
+		Ok(ControlFlow::Continue(()))
+	}
+
+	/// Calls `f` with each item's path, in order, as [`try_for_each_path`](Self::try_for_each_path)
+	/// does without a break.
+	pub fn for_each_path(&self, mut f: impl FnMut(&str)) -> Result<()> {
+		let ControlFlow::Continue(()) = self.try_for_each_path(|path| {
+			f(path);
+			ControlFlow::<Infallible>::Continue(())
+		})?;
 		Ok(())
 	}
 
@@ -126,8 +145,12 @@ impl HandleList<'_> {
 
 #[cfg(test)]
 mod tests {
+	use std::ops::ControlFlow;
+
 	use super::HandleList;
 	use crate::testing::FakeHandleList;
+
+	const PATH: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
 
 	#[test]
 	fn paths_reads_each_items_path_in_order() {
@@ -153,7 +176,35 @@ mod tests {
 		assert_eq!(seen, [43, 0]);
 	}
 
-	const PATH: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
+	#[test]
+	fn try_for_each_path_stops_at_the_first_break() {
+		let list = FakeHandleList::new(&["file://C:\\a.mp3", PATH, "", PATH]);
+		let handles = unsafe { HandleList::from_raw(list.as_raw()) };
+		let mut seen = Vec::new();
+		let flow = handles.try_for_each_path(|path| {
+			seen.push(path.len());
+			if path.starts_with("sptf://") {
+				ControlFlow::Break(path.len())
+			} else {
+				ControlFlow::Continue(())
+			}
+		});
+		assert_eq!(flow.unwrap(), ControlFlow::Break(43));
+		assert_eq!(seen, [15, 43]);
+	}
+
+	#[test]
+	fn try_for_each_path_without_a_break_lends_every_path() {
+		let list = FakeHandleList::new(&["file://C:\\a.mp3", ""]);
+		let handles = unsafe { HandleList::from_raw(list.as_raw()) };
+		let mut seen = Vec::new();
+		let flow = handles.try_for_each_path(|path| {
+			seen.push(path.to_owned());
+			ControlFlow::<()>::Continue(())
+		});
+		assert_eq!(flow.unwrap(), ControlFlow::Continue(()));
+		assert_eq!(seen, ["file://C:\\a.mp3", ""]);
+	}
 
 	#[test]
 	fn a_tracks_fields_come_through_get_info() {

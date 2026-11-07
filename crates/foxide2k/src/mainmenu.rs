@@ -50,26 +50,13 @@ pub trait MainMenuCommand: 'static {
 }
 
 /// A command whose menu entry is built each time the menu opens, such as a submenu that lists
-/// what is playing.
-pub trait MainMenuDynamicCommand: 'static {
-	const GUID: Guid;
-	const PARENT: Guid;
-	const SORT_PRIORITY: u32 = SORT_PRIORITY_BASE;
-	/// Its name in the keyboard shortcut list.
-	const NAME: &'static str;
-	const DESCRIPTION: &'static str;
-	/// How it shows each time the menu opens. Runs on the main thread, and never waits. A
-	/// shortcut bound to the command, or to a command in its entry, ignores it.
-	fn shown() -> Shown {
-		Shown::Enabled
-	}
+/// what is playing. Its [`MainMenuCommand`] values name it in the keyboard shortcut list, its
+/// `execute` is what a shortcut bound to `NAME` does, and a shortcut bound to a command in its
+/// entry ignores its `shown` too.
+pub trait MainMenuDynamicCommand: MainMenuCommand {
 	/// The entry for the menu. Runs on the main thread while the menu opens, and also when a
 	/// shortcut runs one of its entries, to find that entry's command. It never waits.
 	fn build() -> MainMenuNode;
-	/// What a shortcut bound to `NAME` does. Runs on the main thread. An `Err` reaches
-	/// foobar2000, whose menu helpers wrap commands in `crashOnException`, so it can crash
-	/// foobar2000: a command reports its own failures and returns `Ok`.
-	fn execute() -> Result<()>;
 }
 
 /// A main-menu entry built as the menu opens. Each name is an `Arc<str>` that the command behind
@@ -92,6 +79,14 @@ pub enum MainMenuNode {
 		name: Arc<str>,
 		children: Vec<Self>,
 	},
+}
+
+impl MainMenuNode {
+	/// A command named `name`, told apart by `guid`, that runs `run`; greyed out unless
+	/// `enabled`.
+	pub fn command(name: impl Into<Arc<str>>, guid: Guid, enabled: bool, run: RunFn) -> Self {
+		Self::Command { name: name.into(), guid, enabled, run }
+	}
 }
 
 /// The factory that registers popup `T` with foobar2000.
@@ -165,79 +160,36 @@ unsafe extern "C-unwind" fn popup_display_string<T: MainMenuPopup>(
 	unsafe { guard(|| set_string(out, T::NAME)) }
 }
 
-/// What a `mainmenu_commands` service with one command says about it.
-trait Entry: 'static {
-	const GUID: Guid;
-	const PARENT: Guid;
-	const SORT_PRIORITY: u32;
-	const NAME: &'static str;
-	const DESCRIPTION: &'static str;
-	fn shown() -> Shown;
-	fn execute() -> Result<()>;
-}
-
-/// The `mainmenu_commands` slots of the service `E`.
-const fn commands_vtbl<E: Entry + ServiceImpl>() -> CommandsVtbl {
+/// The `mainmenu_commands` slots of service `S`, whose one command is `T`.
+const fn commands_vtbl<S: ServiceImpl, T: MainMenuCommand>() -> CommandsVtbl {
 	CommandsVtbl {
-		base: ServiceBaseVtbl::new::<E>(),
+		base: ServiceBaseVtbl::new::<S>(),
 		get_command_count: command_count,
-		get_command: command_guid::<E>,
-		get_name: command_name::<E>,
-		get_description: command_description::<E>,
-		get_parent: command_parent::<E>,
-		get_sort_priority: command_sort_priority::<E>,
-		get_display: command_display::<E>,
-		execute: command_execute::<E>,
+		get_command: command_guid::<T>,
+		get_name: command_name::<T>,
+		get_description: command_description::<T>,
+		get_parent: command_parent::<T>,
+		get_sort_priority: command_sort_priority::<T>,
+		get_display: command_display::<T>,
+		execute: command_execute::<T>,
 	}
 }
 
 struct Command<T>(PhantomData<fn() -> T>);
 
-impl<T: MainMenuCommand> Entry for Command<T> {
-	const GUID: Guid = T::GUID;
-	const PARENT: Guid = T::PARENT;
-	const SORT_PRIORITY: u32 = T::SORT_PRIORITY;
-	const NAME: &'static str = T::NAME;
-	const DESCRIPTION: &'static str = T::DESCRIPTION;
-
-	fn shown() -> Shown {
-		T::shown()
-	}
-
-	fn execute() -> Result<()> {
-		T::execute()
-	}
-}
-
 unsafe impl<T: MainMenuCommand> ServiceImpl for Command<T> {
 	type Vtbl = CommandsVtbl;
 	const IIDS: &'static [Guid] = &[COMMANDS_IID];
-	const VTBL: &'static CommandsVtbl = &commands_vtbl::<Self>();
+	const VTBL: &'static CommandsVtbl = &commands_vtbl::<Self, T>();
 }
 
 struct Dynamic<T>(PhantomData<fn() -> T>);
-
-impl<T: MainMenuDynamicCommand> Entry for Dynamic<T> {
-	const GUID: Guid = T::GUID;
-	const PARENT: Guid = T::PARENT;
-	const SORT_PRIORITY: u32 = T::SORT_PRIORITY;
-	const NAME: &'static str = T::NAME;
-	const DESCRIPTION: &'static str = T::DESCRIPTION;
-
-	fn shown() -> Shown {
-		T::shown()
-	}
-
-	fn execute() -> Result<()> {
-		T::execute()
-	}
-}
 
 unsafe impl<T: MainMenuDynamicCommand> ServiceImpl for Dynamic<T> {
 	type Vtbl = CommandsV2Vtbl;
 	const IIDS: &'static [Guid] = &[COMMANDS_V2_IID, COMMANDS_IID];
 	const VTBL: &'static CommandsV2Vtbl = &CommandsV2Vtbl {
-		base: commands_vtbl::<Self>(),
+		base: commands_vtbl::<Self, T>(),
 		is_command_dynamic: dynamic_is_dynamic,
 		dynamic_instantiate: dynamic_instantiate::<T>,
 		dynamic_execute: dynamic_execute::<T>,
@@ -248,50 +200,52 @@ unsafe extern "C-unwind" fn command_count(_this: *mut ServiceBase) -> u32 {
 	1
 }
 
-unsafe extern "C-unwind" fn command_guid<E: Entry>(
+unsafe extern "C-unwind" fn command_guid<T: MainMenuCommand>(
 	_this: *mut ServiceBase,
 	ret: *mut Guid,
 	_index: u32,
 ) -> *mut Guid {
-	unsafe { ret.write(E::GUID) };
+	unsafe { ret.write(T::GUID) };
 	ret
 }
 
-unsafe extern "C-unwind" fn command_name<E: Entry>(
+unsafe extern "C-unwind" fn command_name<T: MainMenuCommand>(
 	_this: *mut ServiceBase,
 	_index: u32,
 	out: *mut StringBase,
 ) {
-	unsafe { guard(|| set_string(out, E::NAME)) }
+	unsafe { guard(|| set_string(out, T::NAME)) }
 }
 
-unsafe extern "C-unwind" fn command_description<E: Entry>(
+unsafe extern "C-unwind" fn command_description<T: MainMenuCommand>(
 	_this: *mut ServiceBase,
 	_index: u32,
 	out: *mut StringBase,
 ) -> bool {
 	unsafe {
 		guard(|| {
-			set_string(out, E::DESCRIPTION)?;
+			set_string(out, T::DESCRIPTION)?;
 			Ok(true)
 		})
 	}
 }
 
-unsafe extern "C-unwind" fn command_parent<E: Entry>(
+unsafe extern "C-unwind" fn command_parent<T: MainMenuCommand>(
 	_this: *mut ServiceBase,
 	ret: *mut Guid,
 ) -> *mut Guid {
-	unsafe { ret.write(E::PARENT) };
+	unsafe { ret.write(T::PARENT) };
 	ret
 }
 
-unsafe extern "C-unwind" fn command_sort_priority<E: Entry>(_this: *mut ServiceBase) -> u32 {
-	E::SORT_PRIORITY
+unsafe extern "C-unwind" fn command_sort_priority<T: MainMenuCommand>(
+	_this: *mut ServiceBase,
+) -> u32 {
+	T::SORT_PRIORITY
 }
 
 /// Returns false for `Shown::Hidden`, which leaves the command out of the menu.
-unsafe extern "C-unwind" fn command_display<E: Entry>(
+unsafe extern "C-unwind" fn command_display<T: MainMenuCommand>(
 	_this: *mut ServiceBase,
 	_index: u32,
 	text: *mut StringBase,
@@ -299,25 +253,25 @@ unsafe extern "C-unwind" fn command_display<E: Entry>(
 ) -> bool {
 	unsafe {
 		guard(|| {
-			let shown = match E::shown() {
+			let shown = match T::shown() {
 				Shown::Hidden => return Ok(false),
 				Shown::Enabled => 0,
 				Shown::Greyed => FLAG_DISABLED,
 			};
-			set_string(text, E::NAME)?;
+			set_string(text, T::NAME)?;
 			flags.write(shown);
 			Ok(true)
 		})
 	}
 }
 
-unsafe extern "C-unwind" fn command_execute<E: Entry>(
+unsafe extern "C-unwind" fn command_execute<T: MainMenuCommand>(
 	_this: *mut ServiceBase,
 	_index: u32,
 	callback: ByValueServicePtr,
 ) {
 	drop(callback);
-	unsafe { guard(E::execute) }
+	unsafe { guard(T::execute) }
 }
 
 unsafe extern "C-unwind" fn dynamic_is_dynamic(_this: *mut ServiceBase, _index: u32) -> bool {
@@ -670,32 +624,36 @@ mod tests {
 
 	/// A command that records `name` in `RAN` when it runs.
 	fn records(name: &'static str, guid: Guid, enabled: bool) -> MainMenuNode {
-		MainMenuNode::Command {
-			name: name.into(),
+		MainMenuNode::command(
+			name,
 			guid,
 			enabled,
-			run: Box::new(move || {
+			Box::new(move || {
 				RAN.with_borrow_mut(|ran| ran.push(name));
 				Ok(())
 			}),
-		}
+		)
+	}
+
+	#[test]
+	fn command_makes_a_command_node_with_its_values() {
+		let MainMenuNode::Command { name, guid, enabled, run } = records("First", FIRST, false)
+		else {
+			panic!("not a command");
+		};
+		assert_eq!((&*name, guid, enabled), ("First", FIRST, false));
+		run().unwrap();
+		assert_eq!(RAN.take(), ["First"]);
 	}
 
 	struct TestDynamic;
 
-	impl MainMenuDynamicCommand for TestDynamic {
+	impl MainMenuCommand for TestDynamic {
 		const GUID: Guid = Guid::from_u128(0x080a91b9_2c65_4ad7_834a_95f37bcb08e7);
 		const PARENT: Guid = TestPopup::GUID;
 		const SORT_PRIORITY: u32 = SORT_PRIORITY_BASE + 1;
 		const NAME: &'static str = "Open artist";
 		const DESCRIPTION: &'static str = "Opens one of the playing track's artists.";
-
-		fn build() -> MainMenuNode {
-			MainMenuNode::Group {
-				name: "Open artist".into(),
-				children: vec![records("First", FIRST, true), records("Second", SECOND, false)],
-			}
-		}
 
 		fn execute() -> Result<()> {
 			RAN.with_borrow_mut(|ran| ran.push("shortcut"));
@@ -703,25 +661,36 @@ mod tests {
 		}
 	}
 
+	impl MainMenuDynamicCommand for TestDynamic {
+		fn build() -> MainMenuNode {
+			MainMenuNode::Group {
+				name: "Open artist".into(),
+				children: vec![records("First", FIRST, true), records("Second", SECOND, false)],
+			}
+		}
+	}
+
 	struct FailingDynamic;
 
-	impl MainMenuDynamicCommand for FailingDynamic {
+	impl MainMenuCommand for FailingDynamic {
 		const GUID: Guid = Guid::from_u128(0xdf1269fa_22ba_458b_b3a4_eff8b6717345);
 		const PARENT: Guid = TestPopup::GUID;
 		const NAME: &'static str = "Fail";
 		const DESCRIPTION: &'static str = "Always fails.";
 
-		fn build() -> MainMenuNode {
-			MainMenuNode::Command {
-				name: "Fail".into(),
-				guid: FIRST,
-				enabled: true,
-				run: Box::new(|| Err(Error::new(ExceptionKind::Io, "can't open"))),
-			}
-		}
-
 		fn execute() -> Result<()> {
 			Err(Error::new(ExceptionKind::Io, "can't open"))
+		}
+	}
+
+	impl MainMenuDynamicCommand for FailingDynamic {
+		fn build() -> MainMenuNode {
+			MainMenuNode::command(
+				"Fail",
+				FIRST,
+				true,
+				Box::new(|| Err(Error::new(ExceptionKind::Io, "can't open"))),
+			)
 		}
 	}
 
@@ -736,30 +705,32 @@ mod tests {
 	/// A group whose only child holds a `DropFlag` from `FLAG`.
 	struct FlagDynamic;
 
-	impl MainMenuDynamicCommand for FlagDynamic {
+	impl MainMenuCommand for FlagDynamic {
 		const GUID: Guid = Guid::from_u128(0xdf1269fa_22ba_458b_b3a4_eff8b6717346);
 		const PARENT: Guid = TestPopup::GUID;
 		const NAME: &'static str = "Flag";
 		const DESCRIPTION: &'static str = "Holds a drop flag.";
 
+		fn execute() -> Result<()> {
+			Ok(())
+		}
+	}
+
+	impl MainMenuDynamicCommand for FlagDynamic {
 		fn build() -> MainMenuNode {
 			let flag = DropFlag(FLAG.with_borrow(Arc::clone));
 			MainMenuNode::Group {
 				name: "Flag".into(),
-				children: vec![MainMenuNode::Command {
-					name: "Child".into(),
-					guid: FIRST,
-					enabled: true,
-					run: Box::new(move || {
+				children: vec![MainMenuNode::command(
+					"Child",
+					FIRST,
+					true,
+					Box::new(move || {
 						let _held = &flag;
 						Ok(())
 					}),
-				}],
+				)],
 			}
-		}
-
-		fn execute() -> Result<()> {
-			Ok(())
 		}
 	}
 
@@ -769,7 +740,7 @@ mod tests {
 
 	struct HiddenDynamic;
 
-	impl MainMenuDynamicCommand for HiddenDynamic {
+	impl MainMenuCommand for HiddenDynamic {
 		const GUID: Guid = Guid::from_u128(0x119610c7_c4f3_4825_8987_f23287117925);
 		const PARENT: Guid = TestPopup::GUID;
 		const NAME: &'static str = "Open artist";
@@ -779,19 +750,21 @@ mod tests {
 			Shown::Hidden
 		}
 
-		fn build() -> MainMenuNode {
-			records("Hidden", FIRST, true)
-		}
-
 		fn execute() -> Result<()> {
 			RAN.with_borrow_mut(|ran| ran.push("hidden shortcut"));
 			Ok(())
 		}
 	}
 
+	impl MainMenuDynamicCommand for HiddenDynamic {
+		fn build() -> MainMenuNode {
+			records("Hidden", FIRST, true)
+		}
+	}
+
 	struct GreyedDynamic;
 
-	impl MainMenuDynamicCommand for GreyedDynamic {
+	impl MainMenuCommand for GreyedDynamic {
 		const GUID: Guid = Guid::from_u128(0x88026a85_8e5c_4f5b_b1f0_1932fe59ae7a);
 		const PARENT: Guid = TestPopup::GUID;
 		const NAME: &'static str = "Open artist";
@@ -801,12 +774,14 @@ mod tests {
 			Shown::Greyed
 		}
 
-		fn build() -> MainMenuNode {
-			records("Greyed", FIRST, false)
-		}
-
 		fn execute() -> Result<()> {
 			Ok(())
+		}
+	}
+
+	impl MainMenuDynamicCommand for GreyedDynamic {
+		fn build() -> MainMenuNode {
+			records("Greyed", FIRST, false)
 		}
 	}
 

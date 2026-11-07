@@ -40,6 +40,13 @@ pub enum MenuNode {
 	},
 }
 
+impl MenuNode {
+	/// An unchecked command named `name` that runs `run`; greyed out unless `enabled`.
+	pub fn command(name: impl Into<Arc<str>>, enabled: bool, run: RunFn) -> Self {
+		Self::Command { name: name.into(), checked: false, enabled, run }
+	}
+}
+
 pub trait ContextMenuItem: 'static {
 	const GUID: Guid;
 	/// Its name in the keyboard shortcut list and in Preferences > Context Menu.
@@ -142,19 +149,33 @@ impl<T: ContextMenuItem> Entry for Item<T> {
 unsafe impl<T: ContextMenuItem> ServiceImpl for Item<T> {
 	type Vtbl = ItemVtbl;
 	const IIDS: &'static [Guid] = &[ITEM_V2_IID, ITEM_IID];
-	const VTBL: &'static ItemVtbl = &ItemVtbl {
-		base: ServiceBaseVtbl::new::<Self>(),
+	const VTBL: &'static ItemVtbl = &item_vtbl::<Self>(item_instantiate::<T>);
+}
+
+/// The `contextmenu_item_v2` slots of service `E`, whose one item's node `instantiate_item`
+/// makes. The item is on by default and a shortcut runs nothing; a command replaces those two
+/// slots.
+const fn item_vtbl<E: Entry + ServiceImpl>(
+	instantiate_item: unsafe extern "C-unwind" fn(
+		*mut ServiceBase,
+		u32,
+		*const HandleListRaw,
+		*const Guid,
+	) -> *mut Node,
+) -> ItemVtbl {
+	ItemVtbl {
+		base: ServiceBaseVtbl::new::<E>(),
 		get_num_items: item_count,
-		instantiate_item: item_instantiate::<T>,
-		get_item_guid: item_guid::<Self>,
-		get_item_name: item_name::<Self>,
+		instantiate_item,
+		get_item_guid: item_guid::<E>,
+		get_item_name: item_name::<E>,
 		get_item_default_path: item_default_path,
-		get_item_description: item_description::<Self>,
+		get_item_description: item_description::<E>,
 		get_enabled_state: item_enabled_state,
 		item_execute_simple,
-		get_sort_priority: item_sort_priority::<Self>,
-		get_parent: item_parent::<Self>,
-	};
+		get_sort_priority: item_sort_priority::<E>,
+		get_parent: item_parent::<E>,
+	}
 }
 
 struct Command<T>(PhantomData<fn() -> T>);
@@ -171,17 +192,9 @@ unsafe impl<T: ContextMenuCommand> ServiceImpl for Command<T> {
 	type Vtbl = ItemVtbl;
 	const IIDS: &'static [Guid] = &[ITEM_V2_IID, ITEM_IID];
 	const VTBL: &'static ItemVtbl = &ItemVtbl {
-		base: ServiceBaseVtbl::new::<Self>(),
-		get_num_items: item_count,
-		instantiate_item: command_instantiate::<T>,
-		get_item_guid: item_guid::<Self>,
-		get_item_name: item_name::<Self>,
-		get_item_default_path: item_default_path,
-		get_item_description: item_description::<Self>,
 		get_enabled_state: command_enabled_state::<T>,
 		item_execute_simple: command_execute_simple::<T>,
-		get_sort_priority: item_sort_priority::<Self>,
-		get_parent: item_parent::<Self>,
+		..item_vtbl::<Self>(command_instantiate::<T>)
 	};
 }
 
@@ -674,12 +687,11 @@ mod tests {
 		const DESCRIPTION: &'static str = "Always fails.";
 
 		fn build(_selection: &HandleList<'_>) -> Option<MenuNode> {
-			Some(MenuNode::Command {
-				name: "Fail".into(),
-				checked: false,
-				enabled: true,
-				run: Box::new(|| Err(Error::new(ExceptionKind::Io, "can't add"))),
-			})
+			Some(MenuNode::command(
+				"Fail",
+				true,
+				Box::new(|| Err(Error::new(ExceptionKind::Io, "can't add"))),
+			))
 		}
 	}
 
@@ -702,15 +714,14 @@ mod tests {
 			let flag = DropFlag(FLAG.with_borrow(Arc::clone));
 			Some(MenuNode::Popup {
 				name: "Flag".into(),
-				children: vec![MenuNode::Command {
-					name: "Child".into(),
-					checked: false,
-					enabled: true,
-					run: Box::new(move || {
+				children: vec![MenuNode::command(
+					"Child",
+					true,
+					Box::new(move || {
 						let _held = &flag;
 						Ok(())
 					}),
-				}],
+				)],
 			})
 		}
 	}
@@ -723,13 +734,26 @@ mod tests {
 		const DESCRIPTION: &'static str = "Shows the name in `SHARED`.";
 
 		fn build(_selection: &HandleList<'_>) -> Option<MenuNode> {
-			Some(MenuNode::Command {
-				name: SHARED.with_borrow(Arc::clone),
-				checked: false,
-				enabled: true,
-				run: Box::new(|| Ok(())),
-			})
+			Some(MenuNode::command(SHARED.with_borrow(Arc::clone), true, Box::new(|| Ok(()))))
 		}
+	}
+
+	#[test]
+	fn command_makes_an_unchecked_command_node_with_its_values() {
+		let node = MenuNode::command(
+			"Plain",
+			false,
+			Box::new(|| {
+				RUNS.set(RUNS.get() + 1);
+				Ok(())
+			}),
+		);
+		let MenuNode::Command { name, checked, enabled, run } = node else {
+			panic!("not a command");
+		};
+		assert_eq!((&*name, checked, enabled), ("Plain", false, false));
+		run().unwrap();
+		assert_eq!(RUNS.get(), 1);
 	}
 
 	fn item() -> ContextMenuHandle {
