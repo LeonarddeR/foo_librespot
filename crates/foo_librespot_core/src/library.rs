@@ -800,14 +800,15 @@ where
 }
 
 /// Reads every page of Liked Songs in turn: `page` gets the token of each page after the first
-/// and returns Spotify's answer. The read keeps the sync token of the first page; the next read
-/// then also lists what changed while the later pages were read.
+/// and returns Spotify's answer. The read keeps the first sync token a page carries; Spotify sends
+/// it only with the last page. A page that names a page already read as the next fails the read.
 async fn read_every_page<P, PF>(mut page: P) -> Result<LikedRead, CoreError>
 where
 	P: FnMut(String) -> PF,
 	PF: Future<Output = Result<Vec<u8>, CoreError>>,
 {
 	let (mut items, mut token, mut from) = (HashSet::new(), String::new(), String::new());
+	let mut asked = HashSet::new();
 	loop {
 		let answer = decoded(CollectionAnswer::page(&page(from.clone()).await?))?;
 		if token.is_empty() {
@@ -825,7 +826,7 @@ where
 		if answer.next.is_empty() {
 			break;
 		}
-		if answer.next == from {
+		if !asked.insert(answer.next.clone()) {
 			return Err(CoreError::Unavailable(REPEATED_PAGE_REASON.to_owned()));
 		}
 		from = answer.next;
@@ -2252,7 +2253,9 @@ mod tests {
 				},
 				|from| {
 					let answer = self.pages.get(&from).cloned().expect("an unknown page");
-					self.asked_pages.lock().unwrap().push(from);
+					let mut asked = self.asked_pages.lock().unwrap();
+					assert!(asked.len() < 10, "the read never ended: {asked:?}");
+					asked.push(from);
 					std::future::ready(Ok(answer))
 				},
 			)
@@ -2329,6 +2332,35 @@ mod tests {
 		assert!(
 			matches!(&result, Err(CoreError::Unavailable(reason)) if reason == "Spotify kept sending the same page of Liked Songs"),
 			"{result:?}"
+		);
+		assert_eq!(collection.asked_pages(), ["", "page 2"]);
+	}
+
+	#[tokio::test]
+	async fn a_page_that_names_an_earlier_page_as_the_next_fails_the_read() {
+		let mut collection = FakeCollection::new();
+		let second = page_answer(&[(uri_of(t3()), false)], "page 3", "");
+		let third = page_answer(&[(uri_of(t2()), false)], "page 2", &token(2));
+		collection.pages.insert("page 2".to_owned(), second);
+		collection.pages.insert("page 3".to_owned(), third);
+		let result = collection.read(None).await;
+		assert!(
+			matches!(&result, Err(CoreError::Unavailable(reason)) if reason == "Spotify kept sending the same page of Liked Songs"),
+			"{result:?}"
+		);
+		assert_eq!(collection.asked_pages(), ["", "page 2", "page 3"]);
+	}
+
+	/// Spotify sends the sync token only with the last page, as a read in pages of 2 showed.
+	#[tokio::test]
+	async fn a_read_keeps_the_sync_token_only_the_last_page_carries() {
+		let mut collection = FakeCollection::new();
+		let first = page_answer(&[(uri_of(t1()), false), (album_uri(), false)], "page 2", "");
+		let second = page_answer(&[(uri_of(t3()), false)], "", &token(2));
+		collection.pages = HashMap::from([(String::new(), first), ("page 2".to_owned(), second)]);
+		assert_eq!(
+			collection.read(None).await.unwrap(),
+			LikedRead::Whole { items: HashSet::from([t1(), t3()]), token: token(2) }
 		);
 		assert_eq!(collection.asked_pages(), ["", "page 2"]);
 	}

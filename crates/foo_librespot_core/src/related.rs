@@ -86,20 +86,15 @@ pub(crate) fn radio_seed(item: ItemId) -> Result<SpotifyId, CoreError> {
 	}
 }
 
-/// The playlist named in an answer to `get_radio_for_track` (Spotify's `seed_to_playlist`).
+/// The playlist an answer to `get_radio_for_track` (Spotify's `seed_to_playlist`) names as its
+/// first item. An answer whose first item is anything else names none.
 pub fn radio_playlist(json: &[u8]) -> Result<SpotifyId, CoreError> {
 	let answer: serde_json::Value =
 		serde_json::from_slice(json).map_err(|_| unavailable(NO_RADIO))?;
-	answer["mediaItems"]
-		.as_array()
-		.into_iter()
-		.flatten()
-		.filter_map(|item| item["uri"].as_str())
-		.find_map(|uri| match SpotifyUri::from_uri(uri) {
-			Ok(SpotifyUri::Playlist { id, .. }) => Some(id),
-			_ => None,
-		})
-		.ok_or_else(|| unavailable(NO_RADIO))
+	match answer["mediaItems"][0]["uri"].as_str().map(SpotifyUri::from_uri) {
+		Some(Ok(SpotifyUri::Playlist { id, .. })) => Ok(id),
+		_ => Err(unavailable(NO_RADIO)),
+	}
 }
 
 fn opened(name: &str, kind: LinkKind, id: SpotifyId) -> Opened {
@@ -279,6 +274,12 @@ mod tests {
 	fn radio_playlist_that_isnt_a_playlist_fails() {
 		let answer =
 			br#"{"total": 1,"mediaItems": [{"uri": "spotify:track:2hQxLiI93xdjqENJuKeXjO"}]}"#;
+		assert_eq!(unavailable(radio_playlist(answer)), "Spotify's answer named no radio playlist");
+	}
+
+	#[test]
+	fn radio_playlist_whose_first_item_isnt_a_playlist_fails() {
+		let answer = br#"{"total": 2,"mediaItems": [{"uri": "spotify:track:2hQxLiI93xdjqENJuKeXjO"},{"uri": "spotify:playlist:37i9dQZF1E8O9hzsgLi5jr"}]}"#;
 		assert_eq!(unavailable(radio_playlist(answer)), "Spotify's answer named no radio playlist");
 	}
 }
