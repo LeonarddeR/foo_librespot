@@ -3,10 +3,10 @@
 //!
 //! The commands follow the right-click rules ([`crate::spotify_menu`]) for the playing track
 //! alone, except that they are greyed out rather than hidden when nothing plays or the playing
-//! track isn't from Spotify. Open artist is built each time the menu opens, so it can't be
-//! hidden: it is greyed out for an episode too. A bound key runs a command whatever the menu
-//! would show, so each command reads the playing track again when it runs; when that isn't a
-//! Spotify item of its kind, a popup says to play one, and nothing is looked up.
+//! track isn't from Spotify. Open artist builds its entry, a submenu or a command, each time the
+//! menu opens. A bound key runs a command whatever the menu would show, so each command reads
+//! the playing track again when it runs; when that isn't a Spotify item of its kind, a popup
+//! says to play one, and nothing is looked up.
 
 use std::sync::Arc;
 
@@ -78,6 +78,10 @@ impl MainMenuDynamicCommand for PlayingArtist {
 	const SORT_PRIORITY: u32 = SORT_PRIORITY_BASE + 1;
 	const NAME: &'static str = "Open artist";
 	const DESCRIPTION: &'static str = "Opens an artist of the playing Spotify track in a playlist tab, or lists its artists to pick from.";
+
+	fn shown() -> Shown {
+		shown(&playing(), Kind::Track)
+	}
 
 	fn build() -> MainMenuNode {
 		let items = playing();
@@ -253,13 +257,23 @@ mod tests {
 	fn shown() -> Vec<(String, u32)> {
 		[
 			command::<PlayingAlbum>().display(0),
-			Some(open_artist().instantiate(0).display()),
+			artist_shown(),
 			command::<PlayingRadio>().display(0),
 			command::<PlayingShow>().display(0),
 		]
 		.into_iter()
 		.flatten()
 		.collect()
+	}
+
+	/// How Open artist shows: its own display, which the entry it builds agrees with when it
+	/// shows.
+	fn artist_shown() -> Option<(String, u32)> {
+		let shown = open_artist().display(0);
+		if let Some(display) = &shown {
+			assert_eq!(&open_artist().instantiate(0).display(), display, "the built entry");
+		}
+		shown
 	}
 
 	fn entry(name: &str, flags: u32) -> (String, u32) {
@@ -372,12 +386,13 @@ mod tests {
 	}
 
 	#[test]
-	fn a_playing_episode_enables_show_hides_album_and_radio_and_greys_artist() {
+	fn a_playing_episode_enables_show_and_hides_album_artist_and_radio() {
 		let api = installed_api();
 		api.set_now_playing(Some((EPISODE, &[("ARTIST", &["Sing! Podcast"])])));
-		assert_eq!(shown(), [entry("Open artist", FLAG_DISABLED), entry("Open show", 0)]);
+		assert_eq!(shown(), [entry("Open show", 0)]);
 		let root = open_artist().instantiate(0);
 		assert_eq!(root.kind(), TYPE_COMMAND);
+		assert_eq!(root.display(), entry("Open artist", FLAG_DISABLED));
 		assert_eq!(root.guid(), EVERY_ARTIST);
 	}
 

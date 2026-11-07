@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - For developers: foxide2k can ask a yes/no question in foobar2000's own message window (`foxide2k::popup::ask`), and dialogs can hold list boxes (`ControlClass::ListBox` and the `Dialog::list_*` methods).
 - For developers: foxide2k reads a track's stored fields (`metadb::Track::meta`) and the playing track (`playback::now_playing`).
 - For developers: foxide2k can add right-click submenus (`contextmenu::ContextMenuGroup`), and right-click commands that can be bound to keys, including ones shown only in the keyboard shortcut list (`contextmenu::ContextMenuCommand`).
-- For developers: foxide2k's main-menu commands can be hidden or greyed out each time the menu opens (`MainMenuCommand::shown`), and a main-menu command can build its entry, a command or a submenu, each time the menu opens (`mainmenu::MainMenuDynamicCommand`).
+- For developers: foxide2k's main-menu commands can be hidden or greyed out each time the menu opens (`MainMenuCommand::shown`), and a main-menu command can build its entry, a command or a submenu, each time the menu opens (`mainmenu::MainMenuDynamicCommand`), and be hidden or greyed out too (`MainMenuDynamicCommand::shown`).
 
 ### Changed
 

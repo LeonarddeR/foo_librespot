@@ -55,6 +55,11 @@ pub trait MainMenuDynamicCommand: 'static {
 	/// Its name in the keyboard shortcut list.
 	const NAME: &'static str;
 	const DESCRIPTION: &'static str;
+	/// How it shows each time the menu opens. Runs on the main thread, and never waits. A
+	/// shortcut bound to the command, or to a command in its entry, ignores it.
+	fn shown() -> Shown {
+		Shown::Enabled
+	}
 	/// The entry for the menu. Runs on the main thread while the menu opens, and never waits.
 	fn build() -> MainMenuNode;
 	/// What a shortcut bound to `NAME` does. Runs on the main thread.
@@ -210,7 +215,7 @@ impl<T: MainMenuDynamicCommand> Entry for Dynamic<T> {
 	const DESCRIPTION: &'static str = T::DESCRIPTION;
 
 	fn shown() -> Shown {
-		Shown::Enabled
+		T::shown()
 	}
 
 	fn execute() -> Result<()> {
@@ -750,6 +755,64 @@ mod tests {
 
 	fn dynamic() -> MainMenuHandle {
 		MainMenuHandle::new(mainmenu_dynamic_service::<TestDynamic>())
+	}
+
+	struct HiddenDynamic;
+
+	impl MainMenuDynamicCommand for HiddenDynamic {
+		const GUID: Guid = Guid::from_u128(0x119610c7_c4f3_4825_8987_f23287117925);
+		const PARENT: Guid = TestPopup::GUID;
+		const NAME: &'static str = "Open artist";
+		const DESCRIPTION: &'static str = "Shows only for a track.";
+
+		fn shown() -> Shown {
+			Shown::Hidden
+		}
+
+		fn build() -> MainMenuNode {
+			records("Hidden", FIRST, true)
+		}
+
+		fn execute() -> Result<()> {
+			RAN.with_borrow_mut(|ran| ran.push("hidden shortcut"));
+			Ok(())
+		}
+	}
+
+	struct GreyedDynamic;
+
+	impl MainMenuDynamicCommand for GreyedDynamic {
+		const GUID: Guid = Guid::from_u128(0x88026a85_8e5c_4f5b_b1f0_1932fe59ae7a);
+		const PARENT: Guid = TestPopup::GUID;
+		const NAME: &'static str = "Open artist";
+		const DESCRIPTION: &'static str = "Greyed out while nothing plays.";
+
+		fn shown() -> Shown {
+			Shown::Greyed
+		}
+
+		fn build() -> MainMenuNode {
+			records("Greyed", FIRST, false)
+		}
+
+		fn execute() -> Result<()> {
+			Ok(())
+		}
+	}
+
+	#[test]
+	fn a_hidden_dynamic_command_isnt_displayed_but_its_shortcuts_still_run() {
+		let command = MainMenuHandle::new(mainmenu_dynamic_service::<HiddenDynamic>());
+		assert_eq!(command.display(0), None);
+		command.execute(0, None).unwrap();
+		assert!(command.dynamic_execute(0, &FIRST).unwrap());
+		assert_eq!(RAN.take(), ["hidden shortcut", "Hidden"]);
+	}
+
+	#[test]
+	fn a_greyed_dynamic_command_is_displayed_disabled() {
+		let command = MainMenuHandle::new(mainmenu_dynamic_service::<GreyedDynamic>());
+		assert_eq!(command.display(0), Some(("Open artist".into(), FLAG_DISABLED)));
 	}
 
 	#[test]
