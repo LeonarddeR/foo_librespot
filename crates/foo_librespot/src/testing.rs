@@ -7,6 +7,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use foo_librespot_core::audio::decoder::PcmDecoder;
 use foo_librespot_core::audio::format::FileFormat;
+use foo_librespot_core::library::{
+	Library, LibraryPlaylist, LibraryState, OnLibraryChange, PlaylistContents,
+};
 use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
@@ -129,6 +132,9 @@ struct State {
 	require_login: AtomicBool,
 	/// Runs once, during the next read of the stored login, after the value was read.
 	during_username_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+	library: Mutex<Option<LibraryState>>,
+	library_listeners: Mutex<Vec<OnLibraryChange>>,
+	library_calls: AtomicUsize,
 }
 
 /// A login the test answers itself, with [`FakeBackend::send_code`] and
@@ -213,6 +219,36 @@ impl FakeBackend {
 	pub fn set_username(&self, username: Option<&str>) {
 		*self.0.username.lock().unwrap_or_else(PoisonError::into_inner) =
 			username.map(str::to_owned);
+	}
+
+	/// What `library` and `held_library` answer from now on; `LoggedOut` until set.
+	pub fn set_library(&self, state: LibraryState) {
+		*self.0.library.lock().unwrap_or_else(PoisonError::into_inner) = Some(state);
+	}
+
+	/// [`Self::set_library`], then runs the listeners kept so far.
+	pub fn publish_library(&self, state: LibraryState) {
+		self.set_library(state);
+		let listeners = std::mem::take(
+			&mut *self.0.library_listeners.lock().unwrap_or_else(PoisonError::into_inner),
+		);
+		for listener in listeners {
+			listener();
+		}
+	}
+
+	/// How many times `library` was called; `held_library` isn't counted.
+	pub fn library_calls(&self) -> usize {
+		self.0.library_calls.load(Ordering::SeqCst)
+	}
+
+	fn library_state(&self) -> LibraryState {
+		self.0
+			.library
+			.lock()
+			.unwrap_or_else(PoisonError::into_inner)
+			.clone()
+			.unwrap_or(LibraryState::LoggedOut)
 	}
 
 	pub fn logins_started(&self) -> usize {
@@ -364,6 +400,18 @@ impl Backend for FakeBackend {
 		}
 		Ok(username)
 	}
+
+	fn library(&self, on_change: Option<OnLibraryChange>) -> LibraryState {
+		self.0.library_calls.fetch_add(1, Ordering::SeqCst);
+		if let Some(on_change) = on_change {
+			self.0.library_listeners.lock().unwrap_or_else(PoisonError::into_inner).push(on_change);
+		}
+		self.library_state()
+	}
+
+	fn held_library(&self) -> LibraryState {
+		self.library_state()
+	}
 }
 
 /// The fixture, decoded.
@@ -408,6 +456,55 @@ pub fn fixture_samples() -> Vec<f64> {
 		all.extend_from_slice(&buffer);
 	}
 	all
+}
+
+const SUNDAY_SET_ID: &str = "37i9dQZF1DXcBWIGoYBM5M";
+const GETTY_FAVOURITES_ID: &str = "0vvXsWCC9xrXsKd4FyS8kM";
+
+pub fn sunday_set_id() -> SpotifyId {
+	SpotifyId::from_base62(SUNDAY_SET_ID).unwrap()
+}
+
+pub fn getty_favourites_id() -> SpotifyId {
+	SpotifyId::from_base62(GETTY_FAVOURITES_ID).unwrap()
+}
+
+/// "Sunday set", in the folder "Church", which the account can change.
+pub fn sunday_set() -> LibraryPlaylist {
+	LibraryPlaylist {
+		id: sunday_set_id(),
+		name: "Sunday set".to_owned(),
+		folders: vec!["Church".to_owned()],
+		can_edit: true,
+		revision: b"r1".to_vec(),
+	}
+}
+
+/// "Getty favourites", a playlist the account follows.
+pub fn getty_favourites() -> LibraryPlaylist {
+	LibraryPlaylist {
+		id: getty_favourites_id(),
+		name: "Getty favourites".to_owned(),
+		folders: Vec::new(),
+		can_edit: false,
+		revision: b"r1".to_vec(),
+	}
+}
+
+/// A complete library of `playlists`: the ones the account can change are empty, and Liked
+/// Songs is empty too.
+pub fn library_with(playlists: Vec<LibraryPlaylist>) -> Arc<Library> {
+	let contents = playlists
+		.iter()
+		.filter(|playlist| playlist.can_edit)
+		.map(|playlist| {
+			(
+				playlist.id,
+				PlaylistContents { revision: playlist.revision.clone(), rows: Vec::new() },
+			)
+		})
+		.collect();
+	Arc::new(Library::from_parts(playlists, contents, Some(std::collections::HashSet::new())))
 }
 
 /// A login prompt that only counts how often it was shown.

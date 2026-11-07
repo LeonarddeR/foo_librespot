@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use foo_librespot_core::audio::format::FileFormat;
 use foo_librespot_core::audio::track::SpotifyTrack;
+use foo_librespot_core::library::{LibraryState, OnLibraryChange};
 use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
@@ -56,6 +57,12 @@ pub trait Backend: Send + Sync {
 	/// The Spotify username of the stored login, or `None` when logged out. An error means the
 	/// stored login can't be read, for example because Spotify's core couldn't start.
 	fn username(&self) -> Result<Option<String>, CoreError>;
+	/// The account's playlists as last read, without waiting for Spotify. Starts a read when none
+	/// runs and the held one is missing or old; `on_change` runs once when a running read next
+	/// publishes. It may run on any thread.
+	fn library(&self, on_change: Option<OnLibraryChange>) -> LibraryState;
+	/// What [`Backend::library`] would answer, without starting a read.
+	fn held_library(&self) -> LibraryState;
 }
 
 /// A login running in the background.
@@ -165,6 +172,20 @@ impl Backend for CoreBackend {
 
 	fn username(&self) -> Result<Option<String>, CoreError> {
 		Ok(core()?.username())
+	}
+
+	fn library(&self, on_change: Option<OnLibraryChange>) -> LibraryState {
+		match core() {
+			Ok(core) => core.library(on_change),
+			Err(error) => LibraryState::Failed(error.to_string()),
+		}
+	}
+
+	fn held_library(&self) -> LibraryState {
+		match core() {
+			Ok(core) => core.held_library(),
+			Err(error) => LibraryState::Failed(error.to_string()),
+		}
 	}
 }
 

@@ -14,6 +14,7 @@ mod links;
 mod logging;
 mod login;
 mod login_window;
+mod open_playlist;
 mod prefs;
 mod settings;
 #[cfg(test)]
@@ -26,6 +27,7 @@ use foxide2k::component::Factory;
 use foxide2k::filesystem_service::filesystem_factory;
 use foxide2k::initquit::{InitQuit, InitQuitService};
 use foxide2k::input::input_factory;
+use foxide2k::mainmenu::{mainmenu_command_factory, mainmenu_popup_factory};
 use foxide2k::playlist_loader::playlist_loader_factory;
 use foxide2k::preferences::preferences_page_factory;
 use foxide2k::service::Singleton;
@@ -65,5 +67,7 @@ foxide2k::component! {
 		preferences_page_factory::<prefs::SpotifyPage>(),
 		advconfig_branch_factory::<advanced::SpotifyBranch>(),
 		advconfig_checkbox_factory::<advanced::DetailedLogging>(),
+		mainmenu_popup_factory::<open_playlist::SpotifyMenu>(),
+		mainmenu_command_factory::<open_playlist::OpenPlaylist>(),
 	],
 }

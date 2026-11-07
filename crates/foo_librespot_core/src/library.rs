@@ -121,6 +121,16 @@ impl Library {
 		Self { playlists, items, liked: previous.and_then(|previous| previous.liked.clone()) }
 	}
 
+	/// A library made of the given parts, such as a plugin's tests need.
+	pub fn from_parts(
+		playlists: Vec<LibraryPlaylist>,
+		contents: Vec<(SpotifyId, PlaylistContents)>,
+		liked: Option<HashSet<String>>,
+	) -> Self {
+		let items = contents.into_iter().map(|(id, contents)| (id, Held::new(contents))).collect();
+		Self { playlists, items, liked }
+	}
+
 	/// Every playlist the account can change has its items, and Liked Songs is known.
 	pub fn is_complete(&self) -> bool {
 		self.liked.is_some()
@@ -617,6 +627,23 @@ mod tests {
 			can_edit,
 			revision: revision.as_bytes().to_vec(),
 		}
+	}
+
+	#[test]
+	fn a_library_from_parts_holds_what_it_was_given() {
+		let playlists = vec![playlist(1, "Sunday set", true, "r1")];
+		let contents =
+			PlaylistContents { revision: b"r1".to_vec(), rows: rows(&["spotify:track:a"]) };
+		let incomplete = super::Library::from_parts(playlists.clone(), Vec::new(), None);
+		assert!(!incomplete.is_complete());
+		let library = super::Library::from_parts(
+			playlists,
+			vec![(id(1), contents.clone())],
+			Some(HashSet::from(["spotify:track:b".to_owned()])),
+		);
+		assert!(library.is_complete());
+		assert_eq!(library.contents(id(1)), Some(&contents));
+		assert_eq!(library.liked_count(), Some(1));
 	}
 
 	fn rows(uris: &[&str]) -> Vec<PlaylistRow> {

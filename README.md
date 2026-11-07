@@ -50,6 +50,10 @@ Each episode gets its show as artist and album, its publication date, the genre 
 Spotify streams many podcasts from the podcast's own server instead of hosting them.
 Such an episode is added as the podcast's own audio link, which foobar2000 plays with its own decoders; the episode's title, show and date come along.
 
+## Your Spotify library
+
+File > Spotify > Open playlist… lists your Liked Songs and the playlists in your Spotify library, including ones you follow. A playlist in a folder shows the folder's name in front. Choose one with the arrow keys and press Enter: it opens in a new tab named after it, filled as pasting its link would. If it already has a tab, that tab comes to the front. Tabs don't change by themselves when the Spotify playlist changes; to see the changes, close the tab and open the playlist again.
+
 ## Troubleshooting
 
 - **open.spotify.com links turn into entries that won't play, and the console mentions foo_youtube.** foo_youtube claims every web link by default, Spotify's included. foobar2000 asks its components in an order that changes each time it starts, so in some sessions foo_youtube sees Spotify links before foo_librespot does. In foo_youtube's preferences, add the line `deny spotify.com` to its host filter. Links in the `spotify:album:…` form work either way. foo_librespot prints this advice to the console when foo_youtube is loaded.

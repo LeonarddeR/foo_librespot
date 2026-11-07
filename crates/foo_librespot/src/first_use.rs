@@ -52,6 +52,12 @@ pub fn install_prompt(prompt: Box<dyn LoginPrompt>) {
 	assert!(PROMPT.set(prompt).is_ok(), "a prompt was already in use");
 }
 
+/// Starts a login and shows the login window, without waiting for the user.
+pub fn ask_for_login() {
+	controller().start();
+	prompt().show();
+}
+
 /// Starts a login and waits until the user confirms it, cancels it, or foobar2000 aborts.
 /// On the main thread it only shows the window: waiting there would freeze the window it waits
 /// for.

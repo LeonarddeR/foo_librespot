@@ -93,7 +93,7 @@ Checked by hand on 7 November 2026. The new work they showed is under "Later rou
 - [ ] Radio from a track (needs menus)
   - librespot's `SpClient::get_radio_for_track` gives a Spotify playlist of tracks like a given one, as Spotify's "Go to song radio" does.
   - A right-click command on a Spotify track could add that radio.
-- [ ] Add your own playlists (needs menus)
+- [x] Add your own playlists (needs menus)
   - librespot's `SpClient::get_rootlist` lists the logged-in user's playlists, with their names.
   - A command could list them and add the chosen ones as foobar2000 playlists, each named after its Spotify playlist. Today a user has to copy each playlist's link from Spotify.
   - This browses the user's library, which was out of scope when foo_librespot started.
