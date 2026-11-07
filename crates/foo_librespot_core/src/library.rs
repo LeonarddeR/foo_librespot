@@ -33,6 +33,22 @@ pub const LIBRARY_FETCH_TIMEOUT: Duration = Duration::from_secs(120);
 /// Why a fetch that ran out of time failed.
 pub(crate) const SLOW_REASON: &str = "Spotify took too long to send your playlists";
 
+/// How long an add or remove may wait for Spotify before it fails.
+pub const LIBRARY_CHANGE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Why a change that ran out of time failed.
+const CHANGE_SLOW_REASON: &str = "Spotify didn't answer in time";
+
+/// Runs `change` for at most [`LIBRARY_CHANGE_TIMEOUT`]; when the time runs out, `change` is
+/// dropped and the answer is [`CoreError::Unavailable`] with [`CHANGE_SLOW_REASON`].
+pub(crate) async fn within_change_limit<T>(
+	change: impl Future<Output = Result<T, CoreError>>,
+) -> Result<T, CoreError> {
+	tokio::time::timeout(LIBRARY_CHANGE_TIMEOUT, change)
+		.await
+		.unwrap_or_else(|_| Err(CoreError::Unavailable(CHANGE_SLOW_REASON.to_owned())))
+}
+
 /// How many playlists are read at once.
 const PLAYLIST_CONCURRENCY: usize = 4;
 
@@ -979,10 +995,10 @@ mod tests {
 	use tokio::sync::Notify;
 
 	use super::{
-		Change, LIBRARY_FETCH_TIMEOUT, LIBRARY_REFRESH, LibraryCache, LibraryPlaylist,
-		LibrarySource, LibraryState, PlaylistContents, PlaylistRow, SLOW_REASON, SourceClient,
-		Target, add_changes, distinct_uris, liked_write, missing, playlist_contents,
-		remove_changes, rootlist_playlists, rows_holding,
+		Change, LIBRARY_CHANGE_TIMEOUT, LIBRARY_FETCH_TIMEOUT, LIBRARY_REFRESH, LibraryCache,
+		LibraryPlaylist, LibrarySource, LibraryState, PlaylistContents, PlaylistRow, SLOW_REASON,
+		SourceClient, Target, add_changes, distinct_uris, liked_write, missing, playlist_contents,
+		remove_changes, rootlist_playlists, rows_holding, within_change_limit,
 	};
 	use crate::link::{ItemId, Link, LinkKind};
 	use crate::{CoreError, SpotifyId};
@@ -1195,6 +1211,9 @@ mod tests {
 		/// When set, `set_liked` waits for `set_liked_gate` after recording its call.
 		hold_set_liked: AtomicBool,
 		set_liked_gate: Arc<Notify>,
+		/// The playlists whose `contents` waits for `held_gate` before answering.
+		held: Mutex<HashSet<SpotifyId>>,
+		held_gate: Arc<Notify>,
 		/// The calls to `add`: the base revision and the URIs.
 		adds: Mutex<Vec<(Vec<u8>, Vec<String>)>>,
 		/// The calls to `remove`: the base revision and the rows.
@@ -1220,6 +1239,10 @@ mod tests {
 			let call = self.contents_calls.fetch_add(1, Ordering::SeqCst) + 1;
 			if let Some(gate) = &self.gate {
 				gate.notified().await;
+			}
+			let held = self.held.lock().unwrap().contains(&id);
+			if held {
+				self.held_gate.notified().await;
 			}
 			if self.fail_contents.load(Ordering::SeqCst)
 				|| self.fail_contents_call.load(Ordering::SeqCst) == call
@@ -2042,5 +2065,24 @@ mod tests {
 		);
 		assert_eq!(calls.load(Ordering::SeqCst), 1);
 		assert!(cache.snapshot_ticket(now, None).1.is_some());
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_change_spotify_never_answers_fails_after_the_limit() {
+		let source = fake();
+		let cache = loaded(&source).await;
+		source.held.lock().unwrap().insert(id(1));
+		let started = tokio::time::Instant::now();
+		let items = [track(4)];
+		let change = within_change_limit(cache.add(&source, Target::Playlist(id(1)), &items));
+		let result = tokio::time::timeout(LIBRARY_CHANGE_TIMEOUT + Duration::from_secs(1), change)
+			.await
+			.expect("the change outlived its limit");
+		assert!(
+			matches!(&result, Err(CoreError::Unavailable(reason)) if reason == "Spotify didn't answer in time"),
+			"{result:?}"
+		);
+		assert_eq!(started.elapsed(), LIBRARY_CHANGE_TIMEOUT);
+		assert!(source.adds.lock().unwrap().is_empty());
 	}
 }

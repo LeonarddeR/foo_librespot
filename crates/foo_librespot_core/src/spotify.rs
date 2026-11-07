@@ -13,7 +13,7 @@ use crate::audio::track::{
 };
 use crate::library::{
 	Change, LIBRARY_FETCH_TIMEOUT, LibraryCache, LibraryState, LibrespotLibrary, OnLibraryChange,
-	Target,
+	Target, within_change_limit,
 };
 use crate::link::{ItemId, Link};
 use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
@@ -276,7 +276,8 @@ impl Core {
 	}
 
 	/// Adds `items` to a playlist or Liked Songs. Playlists are read first, so only what they
-	/// lack is sent.
+	/// lack is sent. Fails when Spotify hasn't answered within
+	/// [`LIBRARY_CHANGE_TIMEOUT`](crate::library::LIBRARY_CHANGE_TIMEOUT).
 	pub fn add_to(
 		&self,
 		target: Target,
@@ -284,15 +285,17 @@ impl Core {
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Change, CoreError> {
 		self.runtime.block_on(
-			async {
+			within_change_limit(async {
 				let session = self.sessions.session().await?;
 				self.library.add(&LibrespotLibrary::new(session), target, items).await
-			},
+			}),
 			is_aborting,
 		)?
 	}
 
-	/// Removes `items` from a playlist, every copy of each, or from Liked Songs.
+	/// Removes `items` from a playlist, every copy of each, or from Liked Songs. Fails when
+	/// Spotify hasn't answered within
+	/// [`LIBRARY_CHANGE_TIMEOUT`](crate::library::LIBRARY_CHANGE_TIMEOUT).
 	pub fn remove_from(
 		&self,
 		target: Target,
@@ -300,10 +303,10 @@ impl Core {
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Change, CoreError> {
 		self.runtime.block_on(
-			async {
+			within_change_limit(async {
 				let session = self.sessions.session().await?;
 				self.library.remove(&LibrespotLibrary::new(session), target, items).await
-			},
+			}),
 			is_aborting,
 		)?
 	}

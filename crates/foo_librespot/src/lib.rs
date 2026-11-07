@@ -22,6 +22,8 @@ mod settings;
 mod testing;
 mod worker;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use foxide2k::advconfig::{advconfig_branch_factory, advconfig_checkbox_factory};
 use foxide2k::album_art::album_art_factory;
 use foxide2k::component::Factory;
@@ -38,6 +40,14 @@ const ABOUT: &str = "Plays Spotify tracks, albums, playlists and podcasts. Paste
 
 Built on librespot (MIT licence), an unofficial Spotify client: Spotify can change its service at any time in a way that stops it working.";
 
+/// Set once foobar2000 starts quitting.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// Whether foobar2000 is quitting.
+pub(crate) fn quitting() -> bool {
+	QUITTING.load(Ordering::SeqCst)
+}
+
 struct Startup;
 
 impl InitQuit for Startup {
@@ -50,6 +60,7 @@ impl InitQuit for Startup {
 	}
 
 	fn on_quit(&self) {
+		QUITTING.store(true, Ordering::SeqCst);
 		backend::shutdown();
 	}
 }

@@ -137,7 +137,7 @@ struct State {
 	library_calls: AtomicUsize,
 	changes: Mutex<Vec<RecordedChange>>,
 	change_result: Mutex<Option<ChangeResult>>,
-	/// While set, changes block after being recorded, until released.
+	/// While set, changes that started block until released or aborted.
 	changes_held: AtomicBool,
 }
 
@@ -264,7 +264,8 @@ impl FakeBackend {
 		self.0.changes.lock().unwrap_or_else(PoisonError::into_inner).clone()
 	}
 
-	/// Makes changes block, at most 5 s each, until `hold_changes(false)`.
+	/// Makes changes that started block until `hold_changes(false)`, until they are aborted, or
+	/// for at most 5 s; then they end as [`Self::change_with`] says.
 	pub fn hold_changes(&self, held: bool) {
 		self.0.changes_held.store(held, Ordering::SeqCst);
 	}
@@ -287,13 +288,14 @@ impl FakeBackend {
 			items.to_vec(),
 			std::thread::current().id(),
 		));
+		self.enter(is_aborting)?;
 		let started = std::time::Instant::now();
 		while self.0.changes_held.load(Ordering::SeqCst)
+			&& !is_aborting()
 			&& started.elapsed() < std::time::Duration::from_secs(5)
 		{
 			std::thread::sleep(std::time::Duration::from_millis(5));
 		}
-		self.enter(is_aborting)?;
 		let result = *self.0.change_result.lock().unwrap_or_else(PoisonError::into_inner);
 		result.map_or_else(
 			|| Ok(Change { changed: items.len(), ..Change::default() }),

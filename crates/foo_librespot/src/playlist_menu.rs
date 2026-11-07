@@ -21,6 +21,7 @@ use foxide2k::popup::{self, PopupIcon};
 
 use crate::backend::backend;
 use crate::first_use::ask_for_login;
+use crate::quitting;
 
 /// Held by the change thread while it talks to Spotify, so changes run one after another.
 static CHANGING: Mutex<()> = Mutex::new(());
@@ -162,16 +163,21 @@ impl Pick {
 		}
 	}
 
+	/// Makes the change, which foobar2000 quitting aborts. Once it quits, nothing is reported.
 	fn run(&self, kind: Kind) {
 		let result = {
 			let _one_at_a_time = CHANGING.lock().unwrap_or_else(PoisonError::into_inner);
 			match kind {
-				Kind::Add => backend().add_to(self.target, &self.items, &|| false),
-				Kind::Remove => backend().remove_from(self.target, &self.items, &|| false),
+				Kind::Add => backend().add_to(self.target, &self.items, &quitting),
+				Kind::Remove => backend().remove_from(self.target, &self.items, &quitting),
 			}
 		};
+		if quitting() {
+			return;
+		}
 		match result {
 			Ok(change) => self.report(kind, change),
+			Err(CoreError::Aborted) => {}
 			Err(error) => self.fail(&error),
 		}
 	}
@@ -243,6 +249,7 @@ mod tests {
 	use foxide2k::abi::contextmenu::{FLAG_CHECKED, FLAG_DISABLED, FLAG_GRAYED, GROUP_ROOT};
 	use foxide2k::abi::popup::BUTTON_NO;
 	use foxide2k::contextmenu::{ContextMenuItem, context_menu_service};
+	use foxide2k::initquit::InitQuit;
 	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::{ContextMenuHandle, FakeApi, FakeHandleList, NodeHandle};
 
@@ -524,6 +531,40 @@ mod tests {
 		assert_eq!(fake.changes().len(), 1);
 		fake.hold_changes(false);
 		wait_until(|| fake.changes().len() == 2);
+	}
+
+	fn reported_a_failure(api: &FakeApi) -> bool {
+		!api.popups().is_empty()
+			|| api
+				.console_lines()
+				.iter()
+				.any(|line| line.starts_with("foo_librespot: can't change"))
+	}
+
+	#[test]
+	fn a_change_still_running_when_foobar2000_quits_reports_nothing() {
+		let (api, fake) = setup(library(&[], &[], &[]));
+		fake.change_with(|| Err(CoreError::Unavailable("Spotify said no".to_owned())));
+		fake.hold_changes(true);
+		let (root, data) = open(&[t1()]);
+		pick(&root, &data, "Shared");
+		wait_until(|| fake.changes().len() == 1);
+		pick(&root, &data, "Shared");
+		crate::Startup.on_quit();
+		wait_until(|| fake.changes().len() == 2);
+		std::thread::sleep(std::time::Duration::from_millis(200));
+		assert!(!reported_a_failure(api), "{:?} {:?}", api.popups(), api.console_lines());
+	}
+
+	#[test]
+	fn an_aborted_change_reports_nothing() {
+		let (api, fake) = setup(library(&[], &[], &[]));
+		fake.change_with(|| Err(CoreError::Aborted));
+		let (root, data) = open(&[t1()]);
+		pick(&root, &data, "Shared");
+		wait_until(|| fake.changes().len() == 1);
+		std::thread::sleep(std::time::Duration::from_millis(200));
+		assert!(!reported_a_failure(api), "{:?} {:?}", api.popups(), api.console_lines());
 	}
 
 	#[test]
