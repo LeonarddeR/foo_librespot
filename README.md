@@ -55,7 +55,19 @@ Such an episode is added as the podcast's own audio link, which foobar2000 plays
 
 File > Spotify > Open playlist… lists your Liked Songs and the playlists in your Spotify library, including ones you follow. A playlist in a folder shows the folder's name in front. Choose one with the arrow keys and press Enter: once its tracks have arrived, it opens in a new tab named after it, filled as pasting its link would. When nothing could be added, no tab is made. If it already has a tab, that tab comes to the front. Tabs don't change by themselves when the Spotify playlist changes; to see the changes, close the tab and open the playlist again.
 
-Right-click Spotify tracks and choose Add to Spotify playlist to add them to Liked Songs or to one of the playlists you can change. Tracks already in it aren't added again, and the console says what was added. A checkmark shows where all of them already are; choosing a checked playlist asks whether to remove them from it. Liked Songs holds songs only, so podcast episodes are left out of it.
+Right-click Spotify tracks and choose Spotify > Add to playlist to add them to Liked Songs or to one of the playlists you can change. Tracks already in it aren't added again, and the console says what was added. A checkmark shows where all of them already are; choosing a checked playlist asks whether to remove them from it. Liked Songs holds songs only, so podcast episodes are left out of it.
+
+## A track's album, artist, radio or show
+
+Right-click a Spotify track and open the Spotify submenu: Open album, Open artist and Track radio open the track's album, its artist and Spotify's radio for it. For a podcast episode, the submenu has Open show instead. Each opens in a new tab named after the album, the artist, the show or the radio playlist, such as "In Christ Alone Radio", filled as pasting its link would. If that tab already exists, it comes to the front. An artist's tab holds what an artist link adds: the whole discography, or the popular tracks when "Artist links add the whole discography" is unchecked.
+
+When a track has several artists, Open artist is a submenu that lists them, in the order the track lists them. The names come from the track's info in foobar2000; if Spotify no longer lists one of them on the track, a popup says so instead of opening another artist.
+
+These commands work on one track or episode at a time. With several Spotify tracks or episodes selected, they are greyed out. Local files in the selection don't count.
+
+File > Spotify > Playing track has the same commands for the track or episode that is playing. They are greyed out when nothing plays or the playing track isn't from Spotify. In both menus, when you're logged out, a command opens the login window instead; once you're logged in, choose it again.
+
+In File > Preferences > Keyboard Shortcuts, you can bind keys to Open album, Track radio and Open show, for the selected track or for the playing one. The artists in Open artist change from track to track, so they can't have keys. Instead, the shortcut list has Open artist…, which isn't in the right-click menu: it opens the track's artist, or, when the track has several, a window that lists them. The window says "Loading…" while it asks Spotify. Choose an artist with the arrow keys and press Enter, or press Escape to close the window. A key pressed where its command doesn't apply, such as Open show on a track, shows a message saying why, for example "Select one Spotify episode first."
 
 ## Troubleshooting
 
