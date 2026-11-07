@@ -160,7 +160,8 @@ struct OpenPlaylistWindow {
 	dialog: Option<Dialog>,
 	entries: Vec<Entry>,
 	status: String,
-	subscription: Option<u64>,
+	login_subscription: Option<u64>,
+	library_subscription: Option<u64>,
 }
 
 impl OpenPlaylistWindow {
@@ -230,9 +231,11 @@ impl DialogHandler for OpenPlaylistWindow {
 			console::print(&format!("foo_librespot: {}", error.message));
 		}
 		let poster = refresh_poster(dialog);
-		self.subscription = Some(controller().subscribe(Box::new(move || poster.post())));
+		self.login_subscription = Some(controller().subscribe(Box::new(move || poster.post())));
 		let poster = refresh_poster(dialog);
-		let state = match backend().library(Some(Box::new(move || poster.post()))) {
+		self.library_subscription =
+			Some(backend().subscribe_library(Box::new(move || poster.post())));
+		let state = match backend().library() {
 			LibraryState::LoggedOut => {
 				ask_for_login();
 				LibraryState::LoggedOut
@@ -254,10 +257,7 @@ impl DialogHandler for OpenPlaylistWindow {
 
 	fn refresh(&mut self, dialog: &Dialog) {
 		let state = match backend().held_library() {
-			LibraryState::Loading => {
-				let poster = refresh_poster(dialog);
-				backend().library(Some(Box::new(move || poster.post())))
-			}
+			LibraryState::Loading => backend().library(),
 			state => state,
 		};
 		self.render(*dialog, state);
@@ -267,8 +267,11 @@ impl DialogHandler for OpenPlaylistWindow {
 impl Drop for OpenPlaylistWindow {
 	/// Runs when the window is destroyed, also when foobar2000 quits with it open.
 	fn drop(&mut self) {
-		if let Some(subscription) = self.subscription {
+		if let Some(subscription) = self.login_subscription {
 			controller().unsubscribe(subscription);
+		}
+		if let Some(subscription) = self.library_subscription {
+			backend().unsubscribe_library(subscription);
 		}
 		if let Some(dialog) = self.dialog {
 			remove_modeless(dialog.hwnd());
@@ -600,6 +603,21 @@ mod tests {
 		send_close(&again);
 		pump_messages();
 		assert!(!again.is_alive());
+	}
+
+	#[test]
+	fn the_window_listens_to_the_library_while_it_is_open() {
+		FakeApi::new().install();
+		let fake = installed_backend();
+		fake.set_library(LibraryState::Loading);
+		let dialog = open(hidden_window()).unwrap();
+		assert_eq!(fake.library_subscribers(), 1);
+		refresh_poster(&dialog).post();
+		pump_messages();
+		assert_eq!(fake.library_calls(), 2);
+		assert_eq!(fake.library_subscribers(), 1);
+		destroy(dialog);
+		assert_eq!(fake.library_subscribers(), 0);
 	}
 
 	#[test]

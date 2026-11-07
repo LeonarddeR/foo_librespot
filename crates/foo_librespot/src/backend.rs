@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use foo_librespot_core::audio::format::FileFormat;
 use foo_librespot_core::audio::track::SpotifyTrack;
-use foo_librespot_core::library::{Change, Edit, LibraryState, OnLibraryChange, Target};
+use foo_librespot_core::library::{Change, Edit, LibraryState, Subscribers, Target};
 use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
@@ -58,12 +58,16 @@ pub trait Backend: Send + Sync {
 	/// stored login can't be read, for example because Spotify's core couldn't start.
 	fn username(&self) -> Result<Option<String>, CoreError>;
 	/// The account's playlists as last read, without waiting for Spotify. Starts a read when none
-	/// runs and the held one is missing, incomplete or old, or the last read failed; `on_change`
-	/// runs once when a running read next publishes. It may run on any thread. When Spotify's
-	/// core can't start, the answer is `Failed` and `on_change` runs before the call returns.
-	fn library(&self, on_change: Option<OnLibraryChange>) -> LibraryState;
+	/// runs and the held one is missing, incomplete or old, or the last read failed. When
+	/// Spotify's core can't start, the answer is `Failed`.
+	fn library(&self) -> LibraryState;
 	/// What [`Backend::library`] would answer, without starting a read.
 	fn held_library(&self) -> LibraryState;
+	/// Calls `notify` after each publish and failure of a library read, and after each logout
+	/// and login, on any thread. Returns the id to
+	/// [`unsubscribe_library`](Self::unsubscribe_library) with.
+	fn subscribe_library(&self, notify: Box<dyn Fn() + Send + Sync>) -> u64;
+	fn unsubscribe_library(&self, id: u64);
 	/// Adds `items` to a playlist or Liked Songs, leaving out what is already there, or removes
 	/// them from it, once every change begun before has ended.
 	fn change(
@@ -123,8 +127,15 @@ static CORE: Lifecycle<Core> = Lifecycle::new();
 /// How long quitting waits for Spotify calls still running; foobar2000 aborts them as it quits.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
+/// The subscribers of [`Backend::subscribe_library`]; every started core tells them.
+static LIBRARY_SUBSCRIBERS: Subscribers = Subscribers::new();
+
 fn core() -> Result<Arc<Core>, CoreError> {
-	CORE.get_or_start(|| Core::new(profile_folder(&foxide2k::host::host().profile_path())))
+	CORE.get_or_start(|| {
+		let core = Core::new(profile_folder(&foxide2k::host::host().profile_path()))?;
+		core.subscribe_library(Box::new(|| LIBRARY_SUBSCRIBERS.notify()));
+		Ok(core)
+	})
 }
 
 /// Stops `Core` for good, if it was started; later calls fail instead of starting it again.
@@ -184,15 +195,10 @@ impl Backend for CoreBackend {
 		Ok(core()?.username())
 	}
 
-	fn library(&self, on_change: Option<OnLibraryChange>) -> LibraryState {
+	fn library(&self) -> LibraryState {
 		match core() {
-			Ok(core) => core.library(on_change),
-			Err(error) => {
-				if let Some(on_change) = on_change {
-					on_change();
-				}
-				LibraryState::Failed(error.to_string())
-			}
+			Ok(core) => core.library(),
+			Err(error) => LibraryState::Failed(error.to_string()),
 		}
 	}
 
@@ -201,6 +207,14 @@ impl Backend for CoreBackend {
 			Ok(core) => core.held_library(),
 			Err(error) => LibraryState::Failed(error.to_string()),
 		}
+	}
+
+	fn subscribe_library(&self, notify: Box<dyn Fn() + Send + Sync>) -> u64 {
+		LIBRARY_SUBSCRIBERS.subscribe(notify)
+	}
+
+	fn unsubscribe_library(&self, id: u64) {
+		LIBRARY_SUBSCRIBERS.unsubscribe(id);
 	}
 
 	fn change(
@@ -230,24 +244,18 @@ pub fn install(fake: Box<dyn Backend>) {
 #[cfg(test)]
 mod tests {
 	use std::path::PathBuf;
-	use std::sync::Arc;
-	use std::sync::atomic::{AtomicBool, Ordering};
 
 	use foo_librespot_core::library::LibraryState;
 
 	use super::{Backend, CoreBackend, profile_folder, shutdown};
 
 	#[test]
-	fn a_library_read_that_cant_start_runs_its_listener() {
+	fn a_library_read_that_cant_start_says_why() {
 		shutdown();
-		let ran = Arc::new(AtomicBool::new(false));
-		let listener = {
-			let ran = Arc::clone(&ran);
-			Box::new(move || ran.store(true, Ordering::SeqCst))
-		};
-		let state = CoreBackend.library(Some(listener));
+		let state = CoreBackend.library();
 		assert!(matches!(state, LibraryState::Failed(_)), "{state:?}");
-		assert!(ran.load(Ordering::SeqCst));
+		let state = CoreBackend.held_library();
+		assert!(matches!(state, LibraryState::Failed(_)), "{state:?}");
 	}
 
 	#[test]

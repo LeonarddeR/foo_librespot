@@ -302,8 +302,57 @@ pub enum LibraryState {
 	Ready(Arc<Library>),
 }
 
-/// Runs once when a fetch next publishes.
-pub type OnLibraryChange = Box<dyn FnOnce() + Send>;
+/// The callbacks that hear about changes, each kept under an id until it unsubscribes.
+pub struct Subscribers(Mutex<SubscriberList>);
+
+struct SubscriberList {
+	next: u64,
+	notify: Vec<(u64, Arc<dyn Fn() + Send + Sync>)>,
+}
+
+impl Subscribers {
+	pub const fn new() -> Self {
+		Self(Mutex::new(SubscriberList { next: 0, notify: Vec::new() }))
+	}
+
+	fn lock(&self) -> MutexGuard<'_, SubscriberList> {
+		self.0.lock().unwrap_or_else(PoisonError::into_inner)
+	}
+
+	/// Keeps `notify` until [`unsubscribe`](Self::unsubscribe) gets the id this returns.
+	pub fn subscribe(&self, notify: Box<dyn Fn() + Send + Sync>) -> u64 {
+		let mut list = self.lock();
+		let id = list.next;
+		list.next += 1;
+		list.notify.push((id, Arc::from(notify)));
+		id
+	}
+
+	pub fn unsubscribe(&self, id: u64) {
+		self.lock().notify.retain(|(subscriber, _)| *subscriber != id);
+	}
+
+	/// Calls every subscriber on this thread, outside the lock, so one may subscribe or
+	/// unsubscribe.
+	pub fn notify(&self) {
+		let notify: Vec<_> =
+			self.lock().notify.iter().map(|(_, notify)| Arc::clone(notify)).collect();
+		for notify in notify {
+			notify();
+		}
+	}
+
+	/// How many are subscribed.
+	pub fn count(&self) -> usize {
+		self.lock().notify.len()
+	}
+}
+
+impl Default for Subscribers {
+	fn default() -> Self {
+		Self::new()
+	}
+}
 
 /// Where the library is read from.
 pub(crate) trait LibrarySource: Send + Sync {
@@ -541,7 +590,6 @@ struct Inner {
 	started: Option<Instant>,
 	/// The running fetch has published the playlist list.
 	listed: bool,
-	listeners: Vec<OnLibraryChange>,
 }
 
 impl Inner {
@@ -613,6 +661,7 @@ pub(crate) struct LibraryCache {
 	inner: Arc<Mutex<Inner>>,
 	/// Held by a change from its first read of Spotify to its last.
 	changing: Arc<tokio::sync::Mutex<()>>,
+	subscribers: Arc<Subscribers>,
 }
 
 impl LibraryCache {
@@ -648,14 +697,9 @@ impl LibraryCache {
 
 	/// What is held, and the fetch the caller must now [`run`](Fetch::run). A fetch starts when
 	/// none runs and any of these holds: the held library is missing or incomplete, the last
-	/// fetch failed, or it started more than [`LIBRARY_REFRESH`] before `now`. `on_change` runs
-	/// once, at the next publish of a running fetch; when none runs, it is dropped unrun. Never
-	/// returns `LoggedOut`.
-	pub(crate) fn snapshot(
-		&self,
-		now: Instant,
-		on_change: Option<OnLibraryChange>,
-	) -> (LibraryState, Option<Fetch>) {
+	/// fetch failed, or it started more than [`LIBRARY_REFRESH`] before `now`. Never returns
+	/// `LoggedOut`.
+	pub(crate) fn snapshot(&self, now: Instant) -> (LibraryState, Option<Fetch>) {
 		let mut inner = self.lock();
 		let state = inner.state();
 		let start = inner.running.is_none()
@@ -665,11 +709,6 @@ impl LibraryCache {
 					now.saturating_duration_since(started) > LIBRARY_REFRESH
 				}));
 		let fetch = start.then(|| Fetch { cache: self.clone(), stamp: inner.start(now) });
-		if inner.running.is_some()
-			&& let Some(on_change) = on_change
-		{
-			inner.listeners.push(on_change);
-		}
 		(state, fetch)
 	}
 
@@ -678,17 +717,25 @@ impl LibraryCache {
 		self.lock().state()
 	}
 
-	/// Forgets everything, including what a running fetch would publish. Listeners waiting for
-	/// that fetch run once, on the thread that calls this.
+	/// Calls `notify` after each publish and failure of a fetch, and after each
+	/// [`clear`](Self::clear), on the thread that made it, outside the lock. Returns the id to
+	/// [`unsubscribe`](Self::unsubscribe) with.
+	pub(crate) fn subscribe(&self, notify: Box<dyn Fn() + Send + Sync>) -> u64 {
+		self.subscribers.subscribe(notify)
+	}
+
+	pub(crate) fn unsubscribe(&self, id: u64) {
+		self.subscribers.unsubscribe(id);
+	}
+
+	/// Forgets everything, including what a running fetch would publish.
 	pub(crate) fn clear(&self) {
-		let listeners = {
+		{
 			let mut inner = self.lock();
-			let listeners = std::mem::take(&mut inner.listeners);
 			let next_stamp = inner.next_stamp;
 			*inner = Inner { next_stamp, floor: next_stamp, ..Inner::default() };
-			listeners
-		};
-		run(listeners);
+		}
+		self.subscribers.notify();
 	}
 
 	/// Adds `items` to `target`. A playlist is read first, so only what it lacks is sent, and
@@ -867,7 +914,7 @@ impl Fetch {
 	/// change are kept, and a playlist whose revision changed keeps its old rows until the new
 	/// ones arrive; if they can't be read, the old ones stay. A playlist without old rows whose
 	/// read fails counts as unreadable once the fetch ends, until a later fetch reads it.
-	/// Listeners run when the list is published and when the fetch ends. Each read takes its
+	/// Subscribers hear when the list is published and when the fetch ends. Each read takes its
 	/// stamp as it starts, so what a change stored since stays. Nothing it read lands once
 	/// `clear` has run.
 	async fn read<S: LibrarySource>(&self, source: &S) {
@@ -902,7 +949,7 @@ impl Fetch {
 			inner.listed = true;
 			unread
 		};
-		self.notify();
+		self.cache.subscribers.notify();
 
 		let rows = async {
 			let mut reads = stream::iter(unread)
@@ -933,7 +980,7 @@ impl Fetch {
 		};
 		let ((), liked_error) = future::join(rows, liked).await;
 
-		let listeners = {
+		{
 			let mut inner = self.cache.lock();
 			if !inner.admits(self.stamp) {
 				return;
@@ -947,9 +994,8 @@ impl Fetch {
 			if inner.running == Some(self.stamp) {
 				inner.running = None;
 			}
-			std::mem::take(&mut inner.listeners)
-		};
-		run(listeners);
+		}
+		self.cache.subscribers.notify();
 	}
 
 	/// Ends the fetch with `error`, for example because there is no session; it does nothing
@@ -959,7 +1005,7 @@ impl Fetch {
 	/// completes the library; any other library answers `Failed` with `error`, and the next
 	/// snapshot starts a fetch.
 	fn fail(&self, error: &CoreError) {
-		let listeners = {
+		{
 			let mut inner = self.cache.lock();
 			if inner.running != Some(self.stamp) {
 				return;
@@ -976,21 +1022,8 @@ impl Fetch {
 			} else {
 				inner.failed = Some(error.to_string());
 			}
-			std::mem::take(&mut inner.listeners)
-		};
-		run(listeners);
-	}
-
-	/// Runs the listeners waiting for a publish, while this fetch holds the slot.
-	fn notify(&self) {
-		let listeners = {
-			let mut inner = self.cache.lock();
-			if inner.running != Some(self.stamp) {
-				return;
-			}
-			std::mem::take(&mut inner.listeners)
-		};
-		run(listeners);
+		}
+		self.cache.subscribers.notify();
 	}
 }
 
@@ -1015,12 +1048,6 @@ async fn whole_contents<S: LibrarySource>(
 		return Err(CoreError::Unavailable(TRUNCATED_REASON.to_owned()));
 	}
 	Ok(contents)
-}
-
-fn run(listeners: Vec<OnLibraryChange>) {
-	for listener in listeners {
-		listener();
-	}
 }
 
 /// The playlists of a rootlist answer, with the folders each sits in.
@@ -2045,14 +2072,14 @@ mod tests {
 	async fn a_failed_re_read_after_a_change_makes_the_next_snapshot_fetch() {
 		let source = fake();
 		let cache = loaded(&source).await;
-		let (_, start) = cache.snapshot(Instant::now(), None);
+		let (_, start) = cache.snapshot(Instant::now());
 		assert!(start.is_none());
 		// The read before the change is the next call; the read after it is the one after.
 		let next = source.contents_calls.load(Ordering::SeqCst) + 2;
 		source.fail_contents_call.store(next, Ordering::SeqCst);
 		let change = cache.add(&source, Target::Playlist(id(1)), &[track(4)]).await.unwrap();
 		assert_eq!(change.changed, 1);
-		let (state, start) = cache.snapshot(Instant::now(), None);
+		let (state, start) = cache.snapshot(Instant::now());
 		assert!(start.is_some());
 		assert!(is_ready(&state));
 	}
@@ -2131,10 +2158,10 @@ mod tests {
 	async fn the_first_snapshot_starts_a_fetch_and_says_loading() {
 		let cache = LibraryCache::default();
 		let now = Instant::now();
-		let (state, start) = cache.snapshot(now, None);
+		let (state, start) = cache.snapshot(now);
 		assert!(matches!(state, LibraryState::Loading));
 		assert!(start.is_some());
-		let (state, start) = cache.snapshot(now, None);
+		let (state, start) = cache.snapshot(now);
 		assert!(matches!(state, LibraryState::Loading));
 		assert!(start.is_none());
 	}
@@ -2215,12 +2242,12 @@ mod tests {
 		let source = fake();
 		let cache = LibraryCache::default();
 		let start = Instant::now();
-		assert!(cache.snapshot(start, None).1.is_some());
+		assert!(cache.snapshot(start).1.is_some());
 		cache.fetch(&source, start).await;
-		let (state, fetch) = cache.snapshot(start + Duration::from_secs(30), None);
+		let (state, fetch) = cache.snapshot(start + Duration::from_secs(30));
 		assert!(is_ready(&state));
 		assert!(fetch.is_none());
-		let (state, fetch) = cache.snapshot(start + LIBRARY_REFRESH + Duration::from_secs(1), None);
+		let (state, fetch) = cache.snapshot(start + LIBRARY_REFRESH + Duration::from_secs(1));
 		assert!(is_ready(&state));
 		assert!(fetch.is_some());
 	}
@@ -2231,9 +2258,9 @@ mod tests {
 		source.fail_rootlist.store(true, Ordering::SeqCst);
 		let cache = LibraryCache::default();
 		let now = Instant::now();
-		assert!(cache.snapshot(now, None).1.is_some());
+		assert!(cache.snapshot(now).1.is_some());
 		cache.fetch(&source, now).await;
-		let (state, fetch) = cache.snapshot(now, None);
+		let (state, fetch) = cache.snapshot(now);
 		assert!(
 			matches!(&state, LibraryState::Failed(reason) if reason == "no network"),
 			"{state:?}"
@@ -2249,54 +2276,58 @@ mod tests {
 		cache.fetch(&source, start).await;
 		source.fail_rootlist.store(true, Ordering::SeqCst);
 		let later = start + LIBRARY_REFRESH + Duration::from_secs(1);
-		let fetch = cache.snapshot(later, None).1.expect("no refresh started");
+		let fetch = cache.snapshot(later).1.expect("no refresh started");
 		fetch.read(&source).await;
 		assert!(ready(cache.held()).is_complete());
 		cache.fail(&CoreError::NotLoggedIn);
 		assert!(ready(cache.held()).is_complete());
 	}
 
+	/// Subscribes to `cache` a counter that reads what it holds each time; returns its id and
+	/// the count.
+	fn counting(cache: &LibraryCache) -> (u64, Arc<AtomicUsize>) {
+		let calls = Arc::new(AtomicUsize::new(0));
+		let id = cache.subscribe(Box::new({
+			let (cache, calls) = (cache.clone(), Arc::clone(&calls));
+			move || {
+				let _ = cache.held();
+				calls.fetch_add(1, Ordering::SeqCst);
+			}
+		}));
+		(id, calls)
+	}
+
 	#[tokio::test]
-	async fn a_listener_runs_once_when_the_fetch_publishes() {
+	async fn a_subscriber_hears_the_list_and_the_end_of_each_fetch() {
 		let gate = Arc::new(Notify::new());
 		let source = Arc::new(FakeLibrary { gate: Some(Arc::clone(&gate)), ..fake() });
 		let cache = LibraryCache::default();
+		let (_, calls) = counting(&cache);
 		let now = Instant::now();
-		let calls = Arc::new(AtomicUsize::new(0));
-		let listener = {
-			let calls = Arc::clone(&calls);
-			Box::new(move || {
-				calls.fetch_add(1, Ordering::SeqCst);
-			})
-		};
-		assert!(cache.snapshot(now, Some(listener)).1.is_some());
 		let task = tokio::spawn({
 			let (cache, source) = (cache.clone(), Arc::clone(&source));
 			async move { cache.fetch(&*source, now).await }
 		});
 		until(|| calls.load(Ordering::SeqCst) == 1).await;
+		assert!(is_ready(&cache.held()));
 		gate.notify_one();
 		task.await.unwrap();
-		assert_eq!(calls.load(Ordering::SeqCst), 1);
+		assert_eq!(calls.load(Ordering::SeqCst), 2);
+		cache.fetch(&*source, now).await;
+		assert_eq!(calls.load(Ordering::SeqCst), 4);
 	}
 
 	#[tokio::test]
-	async fn a_listener_without_a_fetch_is_dropped() {
+	async fn an_unsubscribed_subscriber_hears_nothing() {
 		let source = fake();
 		let cache = LibraryCache::default();
-		let start = Instant::now();
-		cache.fetch(&source, start).await;
-		let calls = Arc::new(AtomicUsize::new(0));
-		let listener = {
-			let calls = Arc::clone(&calls);
-			Box::new(move || {
-				calls.fetch_add(1, Ordering::SeqCst);
-			})
-		};
-		let (_, fetch) = cache.snapshot(start + Duration::from_secs(1), Some(listener));
-		assert!(fetch.is_none());
-		cache.fetch(&source, start).await;
+		let (id, calls) = counting(&cache);
+		let (_, other) = counting(&cache);
+		cache.unsubscribe(id);
+		cache.fetch(&source, Instant::now()).await;
+		cache.clear();
 		assert_eq!(calls.load(Ordering::SeqCst), 0);
+		assert_eq!(other.load(Ordering::SeqCst), 3);
 	}
 
 	#[tokio::test]
@@ -2307,7 +2338,7 @@ mod tests {
 		cache.fetch(&source, now).await;
 		cache.clear();
 		assert!(matches!(cache.held(), LibraryState::Loading));
-		let (state, fetch) = cache.snapshot(now, None);
+		let (state, fetch) = cache.snapshot(now);
 		assert!(matches!(state, LibraryState::Loading));
 		assert!(fetch.is_some());
 	}
@@ -2387,11 +2418,11 @@ mod tests {
 		source.hang_rootlist.store(true, Ordering::SeqCst);
 		let cache = LibraryCache::default();
 		let now = Instant::now();
-		let fetch = cache.snapshot(now, None).1.expect("no fetch started");
+		let fetch = cache.snapshot(now).1.expect("no fetch started");
 		let read = async move { fetch.read(&source).await };
 		let result = tokio::time::timeout(Duration::from_millis(20), read).await;
 		assert!(result.is_err());
-		assert!(cache.snapshot(now, None).1.is_some());
+		assert!(cache.snapshot(now).1.is_some());
 	}
 
 	#[tokio::test]
@@ -2400,59 +2431,52 @@ mod tests {
 		let source = Arc::new(FakeLibrary { gate: Some(Arc::clone(&gate)), ..fake() });
 		let cache = LibraryCache::default();
 		let now = Instant::now();
-		let old = cache.snapshot(now, None).1.expect("no fetch started");
+		let old = cache.snapshot(now).1.expect("no fetch started");
 		let task = tokio::spawn({
 			let source = Arc::clone(&source);
 			async move { old.read(&*source).await }
 		});
 		until(|| is_ready(&cache.held())).await;
 		cache.clear();
-		let new = cache.snapshot(now, None).1;
+		let new = cache.snapshot(now).1;
 		assert!(new.is_some());
 		gate.notify_one();
 		task.await.unwrap();
 		assert!(matches!(cache.held(), LibraryState::Loading));
 		// The new fetch still runs: the old one's end must not mark it finished.
-		assert!(cache.snapshot(now, None).1.is_none());
+		assert!(cache.snapshot(now).1.is_none());
 	}
 
 	#[tokio::test]
-	async fn clearing_runs_a_waiting_listener_once() {
+	async fn a_subscriber_hears_each_clear() {
 		let cache = LibraryCache::default();
-		let calls = Arc::new(AtomicUsize::new(0));
-		let listener = {
-			let calls = Arc::clone(&calls);
-			Box::new(move || {
-				calls.fetch_add(1, Ordering::SeqCst);
-			})
-		};
-		assert!(cache.snapshot(Instant::now(), Some(listener)).1.is_some());
+		let (_, calls) = counting(&cache);
 		cache.clear();
 		cache.clear();
-		assert_eq!(calls.load(Ordering::SeqCst), 1);
+		assert_eq!(calls.load(Ordering::SeqCst), 2);
 	}
 
 	#[tokio::test]
 	async fn an_old_fetch_that_fails_and_ends_leaves_a_newer_one_alone() {
 		let cache = LibraryCache::default();
 		let now = Instant::now();
-		let old = cache.snapshot(now, None).1.expect("no fetch started");
+		let old = cache.snapshot(now).1.expect("no fetch started");
 		cache.clear();
-		let new = cache.snapshot(now, None).1;
+		let new = cache.snapshot(now).1;
 		assert!(new.is_some());
 		old.fail(&CoreError::Unavailable("too slow".to_owned()));
 		drop(old);
 		assert!(matches!(cache.held(), LibraryState::Loading));
-		assert!(cache.snapshot(now, None).1.is_none());
+		assert!(cache.snapshot(now).1.is_none());
 	}
 
 	#[tokio::test]
-	async fn a_finished_fetch_leaves_the_mark_of_a_fetch_its_listener_started() {
+	async fn a_finished_fetch_leaves_the_mark_of_a_fetch_its_subscriber_started() {
 		let gate = Arc::new(Notify::new());
 		let source = Arc::new(FakeLibrary { gate: Some(Arc::clone(&gate)), ..fake() });
 		let cache = LibraryCache::default();
 		let now = Instant::now();
-		let fetch = cache.snapshot(now, None).1.expect("no fetch started");
+		let fetch = cache.snapshot(now).1.expect("no fetch started");
 		let task = tokio::spawn({
 			let source = Arc::clone(&source);
 			async move { fetch.read(&*source).await }
@@ -2460,36 +2484,30 @@ mod tests {
 		until(|| is_ready(&cache.held())).await;
 		let later = now + LIBRARY_REFRESH + Duration::from_secs(1);
 		let started = Arc::new(Mutex::new(Vec::new()));
-		let listener = {
+		cache.subscribe(Box::new({
 			let (cache, started) = (cache.clone(), Arc::clone(&started));
-			Box::new(move || {
-				if let Some(fetch) = cache.snapshot(later, None).1 {
+			move || {
+				if let Some(fetch) = cache.snapshot(later).1 {
 					started.lock().unwrap().push(fetch);
 				}
-			})
-		};
-		assert!(cache.snapshot(later, Some(listener)).1.is_none());
+			}
+		}));
+		assert!(cache.snapshot(later).1.is_none());
 		gate.notify_one();
 		task.await.unwrap();
 		assert_eq!(started.lock().unwrap().len(), 1);
 		let much_later = later + LIBRARY_REFRESH + Duration::from_secs(1);
-		assert!(cache.snapshot(much_later, None).1.is_none());
+		assert!(cache.snapshot(much_later).1.is_none());
 	}
 
 	#[tokio::test(start_paused = true)]
-	async fn a_fetch_that_runs_out_of_time_fails_and_runs_the_listeners() {
+	async fn a_fetch_that_runs_out_of_time_fails_and_says_so() {
 		let source = fake();
 		source.hang_rootlist.store(true, Ordering::SeqCst);
 		let cache = LibraryCache::default();
 		let now = Instant::now();
-		let calls = Arc::new(AtomicUsize::new(0));
-		let listener = {
-			let calls = Arc::clone(&calls);
-			Box::new(move || {
-				calls.fetch_add(1, Ordering::SeqCst);
-			})
-		};
-		let fetch = cache.snapshot(now, Some(listener)).1.expect("no fetch started");
+		let (_, calls) = counting(&cache);
+		let fetch = cache.snapshot(now).1.expect("no fetch started");
 		fetch.run(async { Ok::<_, CoreError>(source) }).await;
 		assert!(
 			matches!(cache.held(), LibraryState::Failed(reason) if reason == SLOW_REASON),
@@ -2497,7 +2515,7 @@ mod tests {
 			cache.held()
 		);
 		assert_eq!(calls.load(Ordering::SeqCst), 1);
-		assert!(cache.snapshot(now, None).1.is_some());
+		assert!(cache.snapshot(now).1.is_some());
 	}
 
 	#[tokio::test(start_paused = true)]
@@ -2587,14 +2605,14 @@ mod tests {
 		let cache = LibraryCache::default();
 		let start = Instant::now();
 		cache.fetch(&source, start).await;
-		let (state, fetch) = cache.snapshot(start, None);
+		let (state, fetch) = cache.snapshot(start);
 		let library = ready(state);
 		assert!(library.is_complete());
 		assert_eq!(library.holds(Target::Playlist(id(1)), &[t1()]), None);
 		assert!(fetch.is_none());
 		source.failing.lock().unwrap().clear();
 		let later = start + LIBRARY_REFRESH + Duration::from_secs(1);
-		assert!(cache.snapshot(later, None).1.is_some());
+		assert!(cache.snapshot(later).1.is_some());
 		cache.fetch(&source, later).await;
 		assert_eq!(ready(cache.held()).holds(Target::Playlist(id(1)), &[t1()]), Some(true));
 	}
@@ -2647,7 +2665,7 @@ mod tests {
 		slow.held.lock().unwrap().insert(id(3));
 		let cache = LibraryCache::default();
 		let now = Instant::now();
-		let fetch = cache.snapshot(now, None).1.expect("no fetch started");
+		let fetch = cache.snapshot(now).1.expect("no fetch started");
 		fetch.run(async { Ok::<_, CoreError>(slow) }).await;
 		let library = ready(cache.held());
 		assert!(library.is_complete());
@@ -2657,7 +2675,7 @@ mod tests {
 		let source = fake();
 		add_c(&source);
 		let next_menu = now + LIBRARY_FETCH_TIMEOUT;
-		let fetch = cache.snapshot(next_menu, None).1.expect("no fetch started");
+		let fetch = cache.snapshot(next_menu).1.expect("no fetch started");
 		fetch.read(&source).await;
 		assert_eq!(*source.contents_ids.lock().unwrap(), [id(3)]);
 		assert_eq!(ready(cache.held()).holds(Target::Playlist(id(3)), &[t3()]), Some(true));
@@ -2671,7 +2689,7 @@ mod tests {
 		let cache = LibraryCache::default();
 		let now = Instant::now();
 		cache.fetch(&source, now).await;
-		let (state, fetch) = cache.snapshot(now, None);
+		let (state, fetch) = cache.snapshot(now);
 		assert!(
 			matches!(&state, LibraryState::Failed(reason) if reason == "Liked Songs failed"),
 			"{state:?}"

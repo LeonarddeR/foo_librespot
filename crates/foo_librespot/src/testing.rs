@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use foo_librespot_core::audio::decoder::PcmDecoder;
 use foo_librespot_core::audio::format::FileFormat;
 use foo_librespot_core::library::{
-	Change, Edit, Library, LibraryPlaylist, LibraryState, OnLibraryChange, PlaylistContents, Target,
+	Change, Edit, Library, LibraryPlaylist, LibraryState, PlaylistContents, Subscribers, Target,
 };
 use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
@@ -133,7 +133,7 @@ struct State {
 	/// Runs once, during the next read of the stored login, after the value was read.
 	during_username_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 	library: Mutex<Option<LibraryState>>,
-	library_listeners: Mutex<Vec<OnLibraryChange>>,
+	library_subscribers: Subscribers,
 	library_calls: AtomicUsize,
 	changes: Mutex<Vec<RecordedChange>>,
 	change_result: Mutex<Option<ChangeResult>>,
@@ -236,15 +236,15 @@ impl FakeBackend {
 		*self.0.library.lock().unwrap_or_else(PoisonError::into_inner) = Some(state);
 	}
 
-	/// [`Self::set_library`], then runs the listeners kept so far.
+	/// [`Self::set_library`], then tells the library's subscribers.
 	pub fn publish_library(&self, state: LibraryState) {
 		self.set_library(state);
-		let listeners = std::mem::take(
-			&mut *self.0.library_listeners.lock().unwrap_or_else(PoisonError::into_inner),
-		);
-		for listener in listeners {
-			listener();
-		}
+		self.0.library_subscribers.notify();
+	}
+
+	/// How many subscribe to the library.
+	pub fn library_subscribers(&self) -> usize {
+		self.0.library_subscribers.count()
 	}
 
 	/// How many times `library` was called; `held_library` isn't counted.
@@ -427,16 +427,21 @@ impl Backend for FakeBackend {
 		Ok(username)
 	}
 
-	fn library(&self, on_change: Option<OnLibraryChange>) -> LibraryState {
+	fn library(&self) -> LibraryState {
 		self.0.library_calls.fetch_add(1, Ordering::SeqCst);
-		if let Some(on_change) = on_change {
-			self.0.library_listeners.lock().unwrap_or_else(PoisonError::into_inner).push(on_change);
-		}
 		self.library_state()
 	}
 
 	fn held_library(&self) -> LibraryState {
 		self.library_state()
+	}
+
+	fn subscribe_library(&self, notify: Box<dyn Fn() + Send + Sync>) -> u64 {
+		self.0.library_subscribers.subscribe(notify)
+	}
+
+	fn unsubscribe_library(&self, id: u64) {
+		self.0.library_subscribers.unsubscribe(id);
 	}
 
 	fn change(

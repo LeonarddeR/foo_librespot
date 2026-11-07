@@ -54,7 +54,7 @@ impl ContextMenuItem for AddToSpotifyPlaylist {
 		if items.is_empty() {
 			return None;
 		}
-		let children = match backend().library(None) {
+		let children = match backend().library() {
 			LibraryState::Ready(library) if library.is_complete() => {
 				targets(&library, &items.into())
 			}

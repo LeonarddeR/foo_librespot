@@ -11,9 +11,7 @@ use crate::audio::keys::AudioKeys;
 use crate::audio::track::{
 	FetchedTrack, KeyOrigin, SpotifyTrack, fetch_track, wrong_remembered_key,
 };
-use crate::library::{
-	Change, Edit, LibraryCache, LibraryState, LibrespotLibrary, OnLibraryChange, Target,
-};
+use crate::library::{Change, Edit, LibraryCache, LibraryState, LibrespotLibrary, Target};
 use crate::link::{ItemId, Link};
 use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
 use crate::metadata::{TrackInfo, largest_cover};
@@ -126,15 +124,13 @@ impl Core {
 	}
 
 	/// The account's playlists and Liked Songs as last read, without waiting for Spotify. When
-	/// they are missing or old, a read starts in the background; `on_change` runs once when it
-	/// next publishes, on a runtime thread, and is dropped unrun when no read is running. A logout
-	/// runs it on the thread that calls `logout`, and a login on the runtime thread that
-	/// finishes it.
-	pub fn library(&self, on_change: Option<OnLibraryChange>) -> LibraryState {
+	/// they are missing or old, a read starts in the background, and the
+	/// [subscribers](Self::subscribe_library) hear when it publishes.
+	pub fn library(&self) -> LibraryState {
 		if !self.is_logged_in() {
 			return LibraryState::LoggedOut;
 		}
-		let (state, fetch) = self.library.snapshot(Instant::now(), on_change);
+		let (state, fetch) = self.library.snapshot(Instant::now());
 		if let Some(fetch) = fetch {
 			let sessions = Arc::clone(&self.sessions);
 			self.runtime.spawn(
@@ -147,6 +143,17 @@ impl Core {
 	/// What [`Core::library`] would answer, without starting a read.
 	pub fn held_library(&self) -> LibraryState {
 		if self.is_logged_in() { self.library.held() } else { LibraryState::LoggedOut }
+	}
+
+	/// Calls `notify` after each publish and failure of a library read, on a runtime thread, and
+	/// after each logout and login, on the thread that makes it. Returns the id to
+	/// [`unsubscribe_library`](Self::unsubscribe_library) with.
+	pub fn subscribe_library(&self, notify: Box<dyn Fn() + Send + Sync>) -> u64 {
+		self.library.subscribe(notify)
+	}
+
+	pub fn unsubscribe_library(&self, id: u64) {
+		self.library.unsubscribe(id);
 	}
 
 	pub fn resolve(
@@ -422,7 +429,7 @@ mod tests {
 	fn library_without_login_is_logged_out() {
 		let dir = tempfile::tempdir().unwrap();
 		let core = Core::new(dir.path()).unwrap();
-		assert!(matches!(core.library(None), LibraryState::LoggedOut));
+		assert!(matches!(core.library(), LibraryState::LoggedOut));
 		assert!(matches!(core.held_library(), LibraryState::LoggedOut));
 		core.shutdown();
 	}

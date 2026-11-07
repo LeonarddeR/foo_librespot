@@ -87,12 +87,18 @@ fn login(core: &Core) -> Result<(), CoreError> {
 
 /// Waits for the library to be read in full, then prints it.
 fn library(core: &Core) -> Result<(), CoreError> {
+	let (changed, wait) = mpsc::channel();
+	let subscription = core.subscribe_library(Box::new(move || {
+		let _ = changed.send(());
+	}));
+	let result = print_library(core, &wait);
+	core.unsubscribe_library(subscription);
+	result
+}
+
+fn print_library(core: &Core, wait: &mpsc::Receiver<()>) -> Result<(), CoreError> {
 	loop {
-		let (changed, wait) = mpsc::channel();
-		let state = core.library(Some(Box::new(move || {
-			let _ = changed.send(());
-		})));
-		match state {
+		match core.library() {
 			LibraryState::LoggedOut => return Err(CoreError::NotLoggedIn),
 			LibraryState::Failed(reason) => return Err(CoreError::Unavailable(reason)),
 			LibraryState::Ready(library) if library.is_complete() => {
