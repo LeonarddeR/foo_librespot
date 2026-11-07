@@ -7,6 +7,9 @@
 //! selection again when it runs; when that isn't one Spotify item of its kind, a popup says to
 //! select one, and nothing is looked up. The menu reads only what foobar2000 stores and never
 //! waits for Spotify.
+//!
+//! These rules take a list of Spotify items and where it came from, so File > Spotify > Playing
+//! track ([`crate::playing_menu`]) follows them for the playing track.
 
 use std::sync::Arc;
 
@@ -50,7 +53,7 @@ impl ContextMenuCommand for OpenAlbum {
 	}
 
 	fn execute(selection: &HandleList<'_>) -> Result<()> {
-		open(selection, Self::NAME, Kind::Track, Related::Album);
+		open(spotify_items(selection), Source::Selection, Self::NAME, Kind::Track, Related::Album);
 		Ok(())
 	}
 }
@@ -73,7 +76,7 @@ impl ContextMenuItem for OpenArtist {
 		match shown_among(&items, Kind::Track) {
 			Shown::Hidden => None,
 			Shown::Greyed => Some(command(Self::NAME.into(), false, || {
-				tell(Self::NAME, Kind::Track.select_one());
+				tell(Self::NAME, Source::Selection.wants(Kind::Track));
 			})),
 			Shown::Enabled => {
 				let (item, track) = &items[0];
@@ -100,9 +103,7 @@ impl ContextMenuCommand for OpenArtistShortcut {
 	}
 
 	fn execute(selection: &HandleList<'_>) -> Result<()> {
-		if let Some((item, track)) = the_one(selection, Kind::Track, Self::NAME) {
-			open_every_artist(item, stored_artists(&track).len(), title(item, &track));
-		}
+		open_artists(spotify_items(selection), Source::Selection, Self::NAME);
 		Ok(())
 	}
 }
@@ -123,7 +124,7 @@ impl ContextMenuCommand for TrackRadio {
 	}
 
 	fn execute(selection: &HandleList<'_>) -> Result<()> {
-		open(selection, Self::NAME, Kind::Track, Related::Radio);
+		open(spotify_items(selection), Source::Selection, Self::NAME, Kind::Track, Related::Radio);
 		Ok(())
 	}
 }
@@ -144,14 +145,14 @@ impl ContextMenuCommand for OpenShow {
 	}
 
 	fn execute(selection: &HandleList<'_>) -> Result<()> {
-		open(selection, Self::NAME, Kind::Episode, Related::Show);
+		open(spotify_items(selection), Source::Selection, Self::NAME, Kind::Episode, Related::Show);
 		Ok(())
 	}
 }
 
 /// What an open command opens from.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
+pub enum Kind {
 	Track,
 	Episode,
 }
@@ -163,25 +164,41 @@ impl Kind {
 			ItemId::Episode(_) => Self::Episode,
 		}
 	}
+}
 
-	/// What a command says when the selection isn't one item of this kind.
-	const fn select_one(self) -> &'static str {
-		match self {
-			Self::Track => "Select one Spotify track first.",
-			Self::Episode => "Select one Spotify episode first.",
+/// Where an open command finds the item it opens from.
+#[derive(Clone, Copy)]
+pub enum Source {
+	/// The tracks a right-click menu, or a key bound to one of its commands, passes.
+	Selection,
+	/// The playing track.
+	Playing,
+}
+
+impl Source {
+	/// What a command says when this holds no one Spotify item of `kind`.
+	const fn wants(self, kind: Kind) -> &'static str {
+		match (self, kind) {
+			(Self::Selection, Kind::Track) => "Select one Spotify track first.",
+			(Self::Selection, Kind::Episode) => "Select one Spotify episode first.",
+			(Self::Playing, Kind::Track) => "Play a Spotify track first.",
+			(Self::Playing, Kind::Episode) => "Play a Spotify episode first.",
 		}
 	}
 }
 
+/// A Spotify track or episode, and the foobar2000 track that holds what is stored for it.
+pub type SpotifyItem = (ItemId, Track);
+
+/// `track` with its Spotify item, when it is a Spotify track or episode whose path can be read.
+pub fn spotify_item(track: Track) -> Option<SpotifyItem> {
+	Some((parse_item(&track.path().ok()?)?, track))
+}
+
 /// The Spotify tracks and episodes in `selection`, in order. Local files, and items whose path
 /// can't be read, are left out.
-fn spotify_items(selection: &HandleList<'_>) -> Vec<(ItemId, Track)> {
-	selection
-		.tracks()
-		.unwrap_or_default()
-		.into_iter()
-		.filter_map(|track| Some((parse_item(&track.path().ok()?)?, track)))
-		.collect()
+fn spotify_items(selection: &HandleList<'_>) -> Vec<SpotifyItem> {
+	selection.tracks().unwrap_or_default().into_iter().filter_map(spotify_item).collect()
 }
 
 /// How a command that opens from `kind` shows for `selection`.
@@ -191,7 +208,7 @@ fn shown_for(selection: &HandleList<'_>, kind: Kind) -> Shown {
 
 /// Hidden when none of the Spotify `items` is of `kind`, enabled when the only one is, and
 /// greyed out among several.
-fn shown_among(items: &[(ItemId, Track)], kind: Kind) -> Shown {
+pub fn shown_among(items: &[SpotifyItem], kind: Kind) -> Shown {
 	if !items.iter().any(|(item, _)| Kind::of(*item) == kind) {
 		Shown::Hidden
 	} else if items.len() == 1 {
@@ -201,45 +218,80 @@ fn shown_among(items: &[(ItemId, Track)], kind: Kind) -> Shown {
 	}
 }
 
-/// The one Spotify item in `selection`, when it is of `kind`. Otherwise a popup titled
-/// `command` says to select one.
-fn the_one(selection: &HandleList<'_>, kind: Kind, command: &str) -> Option<(ItemId, Track)> {
-	let mut items = spotify_items(selection);
+/// The one Spotify item in `items`, when it is of `kind`. Otherwise a popup titled `command` says
+/// what `source` should hold.
+fn the_one(
+	mut items: Vec<SpotifyItem>,
+	kind: Kind,
+	source: Source,
+	command: &str,
+) -> Option<SpotifyItem> {
 	if items.len() == 1 && Kind::of(items[0].0) == kind {
 		return items.pop();
 	}
-	tell(command, kind.select_one());
+	tell(command, source.wants(kind));
 	None
 }
 
-/// Opens `what` for the one Spotify item in `selection`, when it is of `kind`.
-fn open(selection: &HandleList<'_>, command: &str, kind: Kind, what: Related) {
-	if let Some((item, track)) = the_one(selection, kind, command) {
-		open_related(item, what, title(item, &track));
+/// Opens `what` for the one Spotify item in `items`, taken from `source`, when it is of `kind`.
+pub fn open(items: Vec<SpotifyItem>, source: Source, command: &str, kind: Kind, what: Related) {
+	if let Some((item, track)) = the_one(items, kind, source, command) {
+		open_related(item, what, title_of(item, &track));
 	}
+}
+
+/// Asks Spotify for every artist of the one Spotify track in `items`, taken from `source`, as
+/// [`OpenArtistShortcut`] does.
+pub fn open_artists(items: Vec<SpotifyItem>, source: Source, command: &str) {
+	if let Some((item, track)) = the_one(items, Kind::Track, source, command) {
+		open_every_artist(item, stored_artists(&track).len(), title_of(item, &track));
+	}
+}
+
+/// What picking an entry of an artist submenu does.
+pub type Pick = Box<dyn Fn() + Send + Sync>;
+
+/// What the artist submenu of a track offers.
+pub enum ArtistPicks {
+	/// One entry, for a track that stores fewer than two artists, that does what
+	/// [`OpenArtistShortcut`] does.
+	Every(Pick),
+	/// An entry per stored artist, in Spotify's order, named after it and opening it.
+	Each(Vec<(Arc<str>, Pick)>),
+}
+
+/// What the artist submenu of `track`, the Spotify track `item`, offers.
+pub fn artist_picks(item: ItemId, track: &Track) -> ArtistPicks {
+	let title = title_of(item, track);
+	let artists = stored_artists(track);
+	if artists.len() < 2 {
+		let stored = artists.len();
+		return ArtistPicks::Every(Box::new(move || {
+			open_every_artist(item, stored, title.clone());
+		}));
+	}
+	let picks = artists
+		.into_iter()
+		.map(|artist| {
+			let (name, title) = (Arc::<str>::from(artist), title.clone());
+			let artist = Related::Artist(Some(name.to_string()));
+			let pick: Pick = Box::new(move || open_related(item, artist.clone(), title.clone()));
+			(name, pick)
+		})
+		.collect();
+	ArtistPicks::Each(picks)
 }
 
 /// The submenu of `track`'s stored artists when it has several, each opening that artist; or
 /// else the command that does what [`OpenArtistShortcut`] does.
 fn artist_node(item: ItemId, track: &Track) -> MenuNode {
-	let title = title(item, track);
-	let artists = stored_artists(track);
-	if artists.len() < 2 {
-		let stored = artists.len();
-		return command(OpenArtist::NAME.into(), true, move || {
-			open_every_artist(item, stored, title.clone());
-		});
+	match artist_picks(item, track) {
+		ArtistPicks::Every(pick) => command(OpenArtist::NAME.into(), true, pick),
+		ArtistPicks::Each(picks) => MenuNode::Popup {
+			name: OpenArtist::NAME.into(),
+			children: picks.into_iter().map(|(name, pick)| command(name, true, pick)).collect(),
+		},
 	}
-	let children = artists
-		.into_iter()
-		.map(|artist| {
-			let (name, title) = (Arc::<str>::from(artist), title.clone());
-			command(Arc::clone(&name), true, move || {
-				open_related(item, Related::Artist(Some(name.to_string())), title.clone());
-			})
-		})
-		.collect();
-	MenuNode::Popup { name: OpenArtist::NAME.into(), children }
 }
 
 /// Asks Spotify for every artist of `item`: one opens in its tab, several fill the artist
@@ -252,7 +304,7 @@ fn open_every_artist(item: ItemId, stored: usize, title: String) {
 }
 
 /// What a failure calls the track: its stored title, or its Spotify URI when it has none.
-fn title(item: ItemId, track: &Track) -> String {
+fn title_of(item: ItemId, track: &Track) -> String {
 	track
 		.meta("TITLE")
 		.ok()
