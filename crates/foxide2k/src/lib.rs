@@ -37,6 +37,7 @@ pub mod main_thread;
 pub mod mainmenu;
 pub mod metadb;
 pub mod playback;
+pub mod playlist;
 pub mod playlist_loader;
 pub mod popup;
 pub mod preferences;

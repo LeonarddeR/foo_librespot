@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::FakeApi;
+use super::playlists::{FakeIncoming, FakeManager};
 use crate::abi::config_store::{self, ConfigStoreVtbl};
 use crate::abi::input::ByValueServicePtr;
 use crate::abi::main_thread::{
@@ -14,6 +15,7 @@ use crate::abi::main_thread::{
 	ModelessDialogManagerVtbl,
 };
 use crate::abi::playback_control::{self, PlaybackControlVtbl};
+use crate::abi::playlist;
 use crate::abi::popup::{self, PopupMessageVtbl};
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 use crate::cxx::try_host;
@@ -29,6 +31,7 @@ pub(super) struct FakeState {
 	config: Mutex<HashMap<String, i64>>,
 	main_thread: Mutex<Vec<ServicePtr>>,
 	modeless: Mutex<Vec<isize>>,
+	pub(super) playlists: super::playlists::PlaylistsState,
 	playback_stops: AtomicUsize,
 }
 
@@ -38,6 +41,8 @@ pub(super) fn register(api: &FakeApi, state: &Arc<FakeState>) {
 	api.add_service(MANAGER_IID, new_service(FakeMainThread(Arc::clone(state))));
 	api.add_service(MODELESS_IID, new_service(FakeModeless(Arc::clone(state))));
 	api.add_service(playback_control::IID, new_service(FakePlayback(Arc::clone(state))));
+	api.add_service(playlist::MANAGER_IID, new_service(FakeManager(Arc::clone(state))));
+	api.add_service(playlist::INCOMING_IID, new_service(FakeIncoming(Arc::clone(state))));
 }
 
 impl FakeApi {

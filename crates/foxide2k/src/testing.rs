@@ -44,6 +44,7 @@ mod advconfig;
 mod contextmenu;
 mod live_info;
 mod mainmenu;
+mod playlists;
 mod preferences;
 mod services;
 mod windows;
@@ -52,6 +53,7 @@ pub use advconfig::AdvconfigHandle;
 pub use contextmenu::{ContextMenuHandle, FakeHandleList, NodeHandle, NodeRef};
 pub use live_info::FakeLiveInfoList;
 pub use mainmenu::MainMenuHandle;
+pub use playlists::FakeTab;
 pub use preferences::{FakePageCallback, PageInstanceHandle, PreferencesHandle};
 pub use windows::{hidden_window, pump_messages, send_close, send_command, wants_all_keys};
 

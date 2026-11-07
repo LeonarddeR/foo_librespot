@@ -35,6 +35,7 @@
     CoCreateInstance
     CoInitializeEx
     CreateDialogIndirectParamW
+    CreateEventW
     CreateWindowExW
     DestroyWindow
     DispatchMessageW

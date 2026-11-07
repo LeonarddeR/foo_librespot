@@ -18,7 +18,8 @@
 // 3. This notice may not be removed or altered from any source distribution.
 
 //! `pfc::list_base_const_t` and `pfc::list_base_t` (`pfc\list.h:59-285`): the list interfaces
-//! foobar2000 passes for a component to read or fill. Neither has a virtual destructor.
+//! foobar2000 passes for a component to read or fill, and `pfc::bit_array` (`pfc\bit_array.h:8-13`),
+//! which says which items of one are meant. None has a virtual destructor.
 
 use std::ffi::c_void;
 
@@ -72,11 +73,30 @@ pub struct ListBaseVtbl<T> {
 		unsafe extern "C-unwind" fn(this: *mut ListBase<T>, first: usize, second: usize),
 }
 
+/// A `pfc::bit_array`.
+#[repr(C)]
+pub struct BitArray {
+	pub vtbl: *const BitArrayVtbl,
+}
+
+#[repr(C)]
+pub struct BitArrayVtbl {
+	pub get: unsafe extern "C-unwind" fn(this: *const BitArray, n: usize) -> bool,
+	/// The first `value` between `start` and `start + count`, excluding the end, or
+	/// `start + count` when there is none. A negative `count` searches backwards.
+	pub find: unsafe extern "C-unwind" fn(
+		this: *const BitArray,
+		value: bool,
+		start: usize,
+		count: isize,
+	) -> usize,
+}
+
 #[cfg(test)]
 mod tests {
 	use std::mem::offset_of;
 
-	use super::{ListBaseConstVtbl, ListBaseVtbl};
+	use super::{BitArrayVtbl, ListBaseConstVtbl, ListBaseVtbl};
 
 	#[test]
 	fn list_vtbls_have_the_pfc_slot_counts() {
@@ -84,5 +104,6 @@ mod tests {
 		assert_eq!(size_of::<ListBaseVtbl<u64>>(), 10 * 8);
 		assert_eq!(offset_of!(ListBaseVtbl<u64>, insert_items), 3 * 8);
 		assert_eq!(offset_of!(ListBaseVtbl<u64>, swap_items), 9 * 8);
+		assert_eq!(size_of::<BitArrayVtbl>(), 2 * 8);
 	}
 }

@@ -21,6 +21,7 @@ pub mod mainmenu;
 pub mod metadb_handle;
 pub mod pfc_list;
 pub mod playback_control;
+pub mod playlist;
 pub mod playlist_loader;
 pub mod popup;
 pub mod preferences;

@@ -51,6 +51,26 @@ pub mod Windows {
 			}
 		}
 		#[inline]
+		pub unsafe fn CreateEventW<P3>(
+			lpeventattributes: Option<*const SECURITY_ATTRIBUTES>,
+			bmanualreset: bool,
+			binitialstate: bool,
+			lpname: P3,
+		) -> HANDLE
+		where
+			P3: windows_core::Param<windows_core::PCWSTR>,
+		{
+			windows_core::link!("kernel32.dll" "system" fn CreateEventW(lpeventattributes : *const SECURITY_ATTRIBUTES, bmanualreset : windows_core::BOOL, binitialstate : windows_core::BOOL, lpname : windows_core::PCWSTR) -> HANDLE);
+			unsafe {
+				CreateEventW(
+					lpeventattributes.unwrap_or(core::mem::zeroed()) as _,
+					bmanualreset.into(),
+					binitialstate.into(),
+					lpname.param().abi(),
+				)
+			}
+		}
+		#[inline]
 		pub unsafe fn CreateWindowExW<P1, P2>(
 			dwexstyle: u32,
 			lpclassname: P1,
@@ -920,6 +940,9 @@ pub mod Windows {
 			}
 		}
 		pub const GWL_STYLE: i32 = -16;
+		#[repr(transparent)]
+		#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+		pub struct HANDLE(pub *mut core::ffi::c_void);
 		#[repr(transparent)]
 		#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 		pub struct HINSTANCE(pub *mut core::ffi::c_void);
@@ -2040,6 +2063,13 @@ pub mod Windows {
 		#[repr(transparent)]
 		#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 		pub struct SCODE(pub i32);
+		#[repr(C)]
+		#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+		pub struct SECURITY_ATTRIBUTES {
+			pub nLength: u32,
+			pub lpSecurityDescriptor: *mut core::ffi::c_void,
+			pub bInheritHandle: windows_core::BOOL,
+		}
 		pub const SEM_FAILCRITICALERRORS: i32 = 1;
 		pub const SEM_NOGPFAULTERRORBOX: i32 = 2;
 		pub const SS_NOPREFIX: i32 = 128;
