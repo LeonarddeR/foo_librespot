@@ -1,12 +1,13 @@
 //! File > Spotify > "Open playlist…": a window that lists Liked Songs and the playlists of the
 //! Spotify library, and opens the one picked as a playlist tab named after it.
 //!
-//! The tab is filled as pasting the playlist's link would fill it. It carries its Spotify URI as
-//! a tab property, so choosing the same playlist again brings that tab to the front.
+//! The tab is filled as pasting the playlist's link would fill it, and appears once the tracks
+//! have arrived. It carries its Spotify URI as a tab property, so choosing the same playlist
+//! again brings that tab to the front; choosing it while its tracks load starts nothing.
 
 use std::cell::Cell;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use foo_librespot_core::library::{LIKED_SONGS, Library, LibraryState};
 use foo_librespot_core::link::Link;
@@ -27,6 +28,7 @@ use foxide2k::guid::Guid;
 use foxide2k::host::host;
 use foxide2k::main_thread::{add_modeless, remove_modeless};
 use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
+use foxide2k::metadb::HandleList;
 use foxide2k::playlist;
 use foxide2k::popup::PopupIcon;
 
@@ -301,22 +303,56 @@ impl Drop for OpenPlaylistWindow {
 	}
 }
 
-/// Brings the tab of `entry` to the front, or makes it and fills it as pasting the link would.
+/// The URIs of the playlists whose tracks are on their way to a tab.
+static LOADING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn loading() -> MutexGuard<'static, Vec<String>> {
+	LOADING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn done_loading(uri: &str) {
+	loading().retain(|loading| loading != uri);
+}
+
+/// Brings the tab of `entry` to the front. Without one, loads its link as pasting it would,
+/// unless that load runs already; the tab appears once the tracks have arrived.
 fn open_entry(entry: &Entry) -> Result<()> {
 	let uri = entry.link.uri();
 	if let Some(index) = playlist::find_by_property(&TAB_PROPERTY, uri.as_bytes())? {
 		return playlist::activate(index);
 	}
-	let index = playlist::create(&entry.name)?;
-	playlist::set_property(index, &TAB_PROPERTY, uri.as_bytes())?;
-	playlist::activate(index)?;
-	playlist::load_locations(
+	{
+		let mut loading = loading();
+		if loading.contains(&uri) {
+			return Ok(());
+		}
+		loading.push(uri.clone());
+	}
+	let (name, done_uri, aborted_uri) = (entry.name.clone(), uri.clone(), uri.clone());
+	let loaded = playlist::load_locations(
 		&[canonical(&entry.link)],
-		Box::new(move |items| match playlist::find_by_property(&TAB_PROPERTY, uri.as_bytes())? {
-			Some(index) => playlist::append(index, items),
-			None => Ok(()),
+		Box::new(move |items| {
+			done_loading(&done_uri);
+			fill(&name, &done_uri, items)
 		}),
-	)
+		Box::new(move || done_loading(&aborted_uri)),
+	);
+	if loaded.is_err() {
+		done_loading(&uri);
+	}
+	loaded
+}
+
+/// Appends `items` to the tab holding `uri`. Without one, makes a tab named `name` that holds
+/// it, with `items`, and brings it to the front.
+fn fill(name: &str, uri: &str, items: &HandleList<'_>) -> Result<()> {
+	if let Some(index) = playlist::find_by_property(&TAB_PROPERTY, uri.as_bytes())? {
+		return playlist::append(index, items);
+	}
+	let index = playlist::create(name)?;
+	playlist::set_property(index, &TAB_PROPERTY, uri.as_bytes())?;
+	playlist::append(index, items)?;
+	playlist::activate(index)
 }
 
 #[cfg(test)]
@@ -561,91 +597,132 @@ mod tests {
 		destroy(dialog);
 	}
 
-	#[test]
-	fn opening_a_playlist_makes_a_tab_named_after_it_and_loads_its_link() {
-		let api = FakeApi::new();
-		api.install();
-		let fake = installed_backend();
-		fake.set_library(ready());
+	/// Opens the window with the library ready, picks row `row` and presses Open.
+	fn pick_row(row: usize) {
 		let dialog = open(hidden_window()).unwrap();
-		dialog.list_select(LIST, 1);
+		dialog.list_select(LIST, row);
 		send_command(&dialog, IDOK, BN_CLICKED);
-		let tabs = api.tabs();
-		let tab = tabs.last().unwrap();
-		assert_eq!(tab.name, "Sunday set");
-		assert_eq!(tab.properties, [(TAB_PROPERTY, sunday_uri().into_bytes())]);
-		assert_eq!(api.active_tab(), Some(tabs.len() - 1));
-		assert_eq!(api.location_requests(), [[format!("sptf://{}", sunday_uri())]]);
 		assert!(!dialog.is_alive());
 		assert!(current().is_none());
+	}
+
+	fn ready_api() -> &'static FakeApi {
+		let api = FakeApi::new();
+		api.install();
+		installed_backend().set_library(ready());
+		api
+	}
+
+	#[test]
+	fn opening_a_playlist_loads_its_link_and_makes_no_tab_yet() {
+		let api = ready_api();
+		pick_row(1);
+		assert_eq!(api.location_requests(), [[format!("sptf://{}", sunday_uri())]]);
+		assert!(api.tabs().is_empty());
+	}
+
+	#[test]
+	fn the_tracks_arrive_in_a_new_active_tab_named_and_tagged_after_the_playlist() {
+		let api = ready_api();
+		api.add_tab("Default");
+		pick_row(1);
 		api.finish_locations(0, &[GETTY_TRACK]).unwrap();
-		assert_eq!(api.tabs().last().unwrap().paths, [GETTY_TRACK]);
+		let tabs = api.tabs();
+		assert_eq!(tabs.len(), 2);
+		assert_eq!(tabs[1].name, "Sunday set");
+		assert_eq!(tabs[1].properties, [(TAB_PROPERTY, sunday_uri().into_bytes())]);
+		assert_eq!(tabs[1].paths, [GETTY_TRACK]);
+		assert_eq!(api.active_tab(), Some(1));
 	}
 
 	#[test]
 	fn opening_liked_songs_makes_a_liked_songs_tab() {
-		let api = FakeApi::new();
-		api.install();
-		let fake = installed_backend();
-		fake.set_library(ready());
-		let dialog = open(hidden_window()).unwrap();
-		send_command(&dialog, IDOK, BN_CLICKED);
+		let api = ready_api();
+		pick_row(0);
+		assert_eq!(api.location_requests(), [["sptf://spotify:collection:tracks"]]);
+		api.finish_locations(0, &[]).unwrap();
 		let tabs = api.tabs();
 		assert_eq!(tabs.last().unwrap().name, "Liked Songs");
 		assert_eq!(
 			tabs.last().unwrap().properties,
 			[(TAB_PROPERTY, b"spotify:collection:tracks".to_vec())]
 		);
-		assert_eq!(api.location_requests(), [["sptf://spotify:collection:tracks"]]);
+	}
+
+	#[test]
+	fn a_cancelled_load_leaves_no_tab_and_can_be_tried_again() {
+		let api = ready_api();
+		pick_row(1);
+		api.cancel_locations(0);
+		assert!(api.tabs().is_empty());
+		pick_row(1);
+		assert_eq!(api.location_requests().len(), 2);
+	}
+
+	#[test]
+	fn a_second_pick_during_the_load_starts_no_second_import() {
+		let api = ready_api();
+		pick_row(1);
+		pick_row(1);
+		assert_eq!(api.location_requests().len(), 1);
+		api.finish_locations(0, &[GETTY_TRACK]).unwrap();
+		assert_eq!(api.tabs().len(), 1);
 	}
 
 	#[test]
 	fn opening_a_playlist_that_has_a_tab_switches_to_it() {
-		let api = FakeApi::new();
-		api.install();
-		let fake = installed_backend();
-		fake.set_library(ready());
-		let dialog = open(hidden_window()).unwrap();
-		dialog.list_select(LIST, 1);
-		send_command(&dialog, IDOK, BN_CLICKED);
+		let api = ready_api();
+		pick_row(1);
 		api.finish_locations(0, &[]).unwrap();
 		let opened = api.tabs().len() - 1;
 		api.add_tab("Other");
 		foxide2k::playlist::activate(opened + 1).unwrap();
 		let tabs_before = api.tabs().len();
-		let dialog = open(hidden_window()).unwrap();
-		dialog.list_select(LIST, 1);
-		send_command(&dialog, IDOK, BN_CLICKED);
+		pick_row(1);
 		assert_eq!(api.tabs().len(), tabs_before);
 		assert_eq!(api.location_requests().len(), 1);
 		assert_eq!(api.active_tab(), Some(opened));
 	}
 
+	/// Adds a tab that holds the Sunday set's URI, as one made while its tracks load would.
+	fn add_sunday_tab(api: &FakeApi) -> usize {
+		let index = api.add_tab("Sunday set");
+		foxide2k::playlist::set_property(index, &TAB_PROPERTY, sunday_uri().as_bytes()).unwrap();
+		index
+	}
+
 	#[test]
-	fn a_tab_closed_during_the_import_gets_nothing() {
-		let api = FakeApi::new();
-		api.install();
-		let fake = installed_backend();
-		fake.set_library(ready());
-		let dialog = open(hidden_window()).unwrap();
-		dialog.list_select(LIST, 1);
-		send_command(&dialog, IDOK, BN_CLICKED);
-		api.remove_tab(api.tabs().len() - 1);
+	fn a_tab_made_during_the_load_gets_the_tracks() {
+		let api = ready_api();
+		pick_row(1);
+		let index = add_sunday_tab(api);
 		api.finish_locations(0, &[GETTY_TRACK]).unwrap();
-		assert!(api.tabs().iter().all(|tab| tab.paths.is_empty()));
+		assert_eq!(api.tabs().len(), 1);
+		assert_eq!(api.tabs()[index].paths, [GETTY_TRACK]);
+	}
+
+	#[test]
+	fn a_tab_closed_during_the_load_is_made_anew() {
+		let api = ready_api();
+		pick_row(1);
+		let index = add_sunday_tab(api);
+		api.remove_tab(index);
+		api.finish_locations(0, &[GETTY_TRACK]).unwrap();
+		let tabs = api.tabs();
+		assert_eq!(tabs.len(), 1);
+		assert_eq!(tabs[0].name, "Sunday set");
+		assert_eq!(tabs[0].paths, [GETTY_TRACK]);
 	}
 
 	#[test]
 	fn double_clicking_a_playlist_opens_it() {
-		let api = FakeApi::new();
-		api.install();
-		let fake = installed_backend();
-		fake.set_library(ready());
+		let api = ready_api();
 		let dialog = open(hidden_window()).unwrap();
 		dialog.list_select(LIST, 2);
 		send_command(&dialog, LIST, LBN_DBLCLK);
-		assert_eq!(api.tabs().last().unwrap().name, "Getty favourites");
 		assert!(!dialog.is_alive());
+		api.finish_locations(0, &[]).unwrap();
+		assert_eq!(api.tabs().last().unwrap().name, "Getty favourites");
 	}
 
 	#[test]

@@ -27,6 +27,9 @@ use crate::strings::c_string;
 /// What runs with the tracks of a finished load, on the main thread.
 type Done = Box<dyn FnOnce(&HandleList<'_>) -> Result<()> + Send>;
 
+/// What runs when a load is cancelled, on the main thread.
+type Aborted = Box<dyn FnOnce() + Send>;
+
 fn manager() -> Result<ServicePtr> {
 	host()
 		.core_service(&MANAGER_IID)
@@ -156,11 +159,11 @@ pub fn append(index: usize, items: &HandleList<'_>) -> Result<()> {
 	Ok(())
 }
 
-/// The `process_locations_notify` that carries the work for a finished load.
-struct Notify(Mutex<Option<Done>>);
+/// The `process_locations_notify` that carries the work for a finished or cancelled load.
+struct Notify(Mutex<Option<(Done, Aborted)>>);
 
 impl Notify {
-	fn take(this: *mut ServiceBase) -> Option<Done> {
+	fn take(this: *mut ServiceBase) -> Option<(Done, Aborted)> {
 		unsafe { ServiceObject::<Self>::value(this) }
 			.0
 			.lock()
@@ -182,7 +185,7 @@ unsafe impl ServiceImpl for Notify {
 unsafe extern "C-unwind" fn on_completion(this: *mut ServiceBase, items: *const HandleListRaw) {
 	unsafe {
 		guard(|| match Notify::take(this) {
-			Some(done) => done(&HandleList::from_raw(items)),
+			Some((done, _)) => done(&HandleList::from_raw(items)),
 			None => Ok(()),
 		});
 	}
@@ -191,7 +194,10 @@ unsafe extern "C-unwind" fn on_completion(this: *mut ServiceBase, items: *const 
 unsafe extern "C-unwind" fn on_aborted(this: *mut ServiceBase) {
 	unsafe {
 		guard(|| {
-			drop(Notify::take(this));
+			if let Some((done, aborted)) = Notify::take(this) {
+				drop(done);
+				aborted();
+			}
 			Ok(())
 		});
 	}
@@ -228,8 +234,9 @@ unsafe extern "C-unwind" fn url_item(
 }
 
 /// Turns `locations` into tracks as pasting them does: foobar2000 runs the playlist loaders with
-/// its progress window, then calls `done` on the main thread. A cancelled load calls nothing.
-pub fn load_locations(locations: &[String], done: Done) -> Result<()> {
+/// its progress window, then calls `done` on the main thread. A cancelled load calls `aborted`
+/// instead, once `done` is dropped.
+pub fn load_locations(locations: &[String], done: Done, aborted: Aborted) -> Result<()> {
 	let filter = host()
 		.core_service(&INCOMING_IID)
 		.and_then(|filter| filter.query(&INCOMING_V2_IID))
@@ -250,7 +257,7 @@ pub fn load_locations(locations: &[String], done: Done) -> Result<()> {
 	let raw = filter.as_raw();
 	let parent = host().main_window() as *mut c_void;
 	// The by-value argument: a temporary holding one reference, which the callee releases.
-	let mut temporary = new_service(Notify(Mutex::new(Some(done)))).into_raw();
+	let mut temporary = new_service(Notify(Mutex::new(Some((done, aborted))))).into_raw();
 	try_host(|| unsafe {
 		let vtbl = &*(*raw).vtbl.cast::<IncomingItemFilterV2Vtbl>();
 		(vtbl.process_locations_async)(
@@ -469,28 +476,50 @@ mod tests {
 		assert_eq!(find_by_property(&P, b"spotify:playlist:y").unwrap(), None);
 	}
 
+	/// An `aborted` that sets its flag.
+	fn flagging(flag: &Arc<AtomicBool>) -> Box<dyn FnOnce() + Send> {
+		let flag = Arc::clone(flag);
+		Box::new(move || flag.store(true, Ordering::SeqCst))
+	}
+
 	#[test]
 	fn loaded_locations_reach_done_on_completion() {
 		let api = FakeApi::new();
 		api.install();
 		api.add_tab("Default");
 		api.add_tab("Sunday set");
-		load_locations(&["sptf://spotify:playlist:x".into()], Box::new(|items| append(1, items)))
-			.unwrap();
+		let aborted = Arc::new(AtomicBool::new(false));
+		load_locations(
+			&["sptf://spotify:playlist:x".into()],
+			Box::new(|items| append(1, items)),
+			flagging(&aborted),
+		)
+		.unwrap();
 		assert_eq!(api.location_requests(), [["sptf://spotify:playlist:x"]]);
 		api.finish_locations(0, &["sptf://spotify:track:a", "sptf://spotify:track:b"]).unwrap();
 		let tab = &api.tabs()[1];
 		assert_eq!(tab.paths, ["sptf://spotify:track:a", "sptf://spotify:track:b"]);
 		assert_eq!(tab.selected, 0);
+		assert!(!aborted.load(Ordering::SeqCst));
 	}
 
 	#[test]
-	fn a_cancelled_load_calls_nothing() {
+	fn a_cancelled_load_calls_aborted_and_drops_done() {
 		let api = FakeApi::new();
 		api.install();
 		let called = Arc::new(AtomicBool::new(false));
 		let dropped = Arc::new(AtomicBool::new(false));
+		let aborted = Arc::new(AtomicBool::new(false));
 		let (seen, flag) = (Arc::clone(&called), DropFlag(Arc::clone(&dropped)));
+		let dropped_at_abort = Arc::new(AtomicBool::new(false));
+		let on_aborted = {
+			let (aborted, dropped, at_abort) =
+				(Arc::clone(&aborted), Arc::clone(&dropped), Arc::clone(&dropped_at_abort));
+			Box::new(move || {
+				at_abort.store(dropped.load(Ordering::SeqCst), Ordering::SeqCst);
+				aborted.store(true, Ordering::SeqCst);
+			})
+		};
 		load_locations(
 			&["sptf://spotify:playlist:x".into()],
 			Box::new(move |_| {
@@ -498,12 +527,15 @@ mod tests {
 				seen.store(true, Ordering::SeqCst);
 				Ok(())
 			}),
+			on_aborted,
 		)
 		.unwrap();
 		assert!(!dropped.load(Ordering::SeqCst));
 		api.cancel_locations(0);
+		assert!(aborted.load(Ordering::SeqCst));
 		assert!(!called.load(Ordering::SeqCst));
 		assert!(dropped.load(Ordering::SeqCst));
+		assert!(dropped_at_abort.load(Ordering::SeqCst));
 	}
 
 	#[test]
@@ -513,6 +545,7 @@ mod tests {
 		load_locations(
 			&["sptf://spotify:playlist:x".into()],
 			Box::new(|_| Err(Error::new(ExceptionKind::Io, "no tab"))),
+			Box::new(|| {}),
 		)
 		.unwrap();
 		let error = api.finish_locations(0, &[]).unwrap_err();
