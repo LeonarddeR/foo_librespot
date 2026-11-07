@@ -23,6 +23,7 @@ use librespot_protocol::metadata::{
 use protobuf::{EnumOrUnknown, Message};
 
 use crate::genre::parse_genres;
+use crate::library::LIKED_SONGS;
 use crate::link::{ItemId, Link, LinkError, LinkKind};
 use crate::metadata::{
 	AlbumDetails, TrackInfo, availability, episode_availability, episode_info, explicit_allowed,
@@ -218,7 +219,7 @@ pub async fn resolve<S: MetadataSource>(
 				return Err(LinkError::AnotherAccount.into());
 			}
 			let uris = source.liked_songs().await?;
-			(Some("Liked Songs".to_owned()), uris.iter().map(playlist_entry).collect())
+			(Some(LIKED_SONGS.to_owned()), uris.iter().map(playlist_entry).collect())
 		}
 		Link::Search(words) => {
 			let uris = source.search(words).await?;

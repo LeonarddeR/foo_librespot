@@ -5,12 +5,11 @@
 //! The menu is built from the library as last read and never waits for Spotify. Each change runs
 //! on its own thread and reports in the console; a failure also shows a popup.
 
-use foo_librespot_core::CoreError;
+use std::collections::HashSet;
 use std::sync::{Mutex, PoisonError};
 
-use foo_librespot_core::library::{
-	Change, LIKED_SONGS, Library, LibraryState, Target, distinct_uris,
-};
+use foo_librespot_core::CoreError;
+use foo_librespot_core::library::{Change, LIKED_SONGS, Library, LibraryState, Target, tracks_of};
 use foo_librespot_core::link::{ItemId, parse_item};
 use foxide2k::abi::contextmenu::GROUP_ROOT;
 use foxide2k::console;
@@ -39,7 +38,12 @@ impl ContextMenuItem for AddToSpotifyPlaylist {
 	const SORT_PRIORITY: f64 = 1000.0;
 
 	fn build(paths: &[String]) -> Option<MenuNode> {
-		let items: Vec<ItemId> = paths.iter().filter_map(|path| parse_item(path)).collect();
+		let mut seen = HashSet::new();
+		let items: Vec<ItemId> = paths
+			.iter()
+			.filter_map(|path| parse_item(path))
+			.filter(|item| seen.insert(*item))
+			.collect();
 		if items.is_empty() {
 			return None;
 		}
@@ -82,27 +86,25 @@ fn login_entry() -> MenuNode {
 	}
 }
 
-/// Liked Songs, then each playlist the account can change.
+/// Liked Songs, then each playlist the account can change. `items` holds each item once.
 fn targets(library: &Library, items: &[ItemId]) -> Vec<MenuNode> {
-	let uris = distinct_uris(items);
-	let tracks: Vec<ItemId> =
-		items.iter().copied().filter(|item| matches!(item, ItemId::Track(_))).collect();
-	let track_uris = distinct_uris(&tracks);
+	let tracks = tracks_of(items).len();
 	let liked = Pick {
 		target: Target::LikedSongs,
 		name: LIKED_SONGS.to_owned(),
-		checked: !tracks.is_empty() && library.liked_holds_all(&track_uris) == Some(true),
+		checked: library.holds(Target::LikedSongs, items) == Some(true),
 		items: items.to_vec(),
-		count: track_uris.len(),
+		count: tracks,
 	};
-	let mut nodes = vec![liked.node(!tracks.is_empty())];
+	let mut nodes = vec![liked.node(tracks > 0)];
 	nodes.extend(library.editable().map(|playlist| {
+		let target = Target::Playlist(playlist.id);
 		Pick {
-			target: Target::Playlist(playlist.id),
+			target,
 			name: playlist.display_name(),
-			checked: library.holds_all(playlist.id, &uris) == Some(true),
+			checked: library.holds(target, items) == Some(true),
 			items: items.to_vec(),
-			count: uris.len(),
+			count: items.len(),
 		}
 		.node(true)
 	}));
@@ -297,7 +299,7 @@ mod tests {
 		let playlists = vec![sunday_set(), getty_favourites(), shared_playlist()];
 		let parts =
 			vec![(sunday_set_id(), contents(sunday)), (shared_playlist().id, contents(shared))];
-		let liked: HashSet<String> = liked.iter().map(|item| item.uri().to_uri()).collect();
+		let liked: HashSet<ItemId> = liked.iter().copied().collect();
 		LibraryState::Ready(std::sync::Arc::new(Library::from_parts(playlists, parts, Some(liked))))
 	}
 

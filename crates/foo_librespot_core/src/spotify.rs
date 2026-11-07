@@ -136,7 +136,7 @@ impl Core {
 			return LibraryState::LoggedOut;
 		}
 		let now = Instant::now();
-		let (state, ticket) = self.library.snapshot_ticket(now, on_change);
+		let (state, ticket) = self.library.snapshot(now, on_change);
 		if let Some(ticket) = ticket {
 			let sessions = Arc::clone(&self.sessions);
 			let library = self.library.clone();
