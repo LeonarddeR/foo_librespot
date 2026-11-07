@@ -136,8 +136,7 @@ pub struct OpenPlaylistWindow {
 	login_subscription: Option<u64>,
 	library_subscription: Option<u64>,
 	/// Set while the window hasn't learnt whether the account is logged in and the login hasn't
-	/// changed since it opened: a logged-out answer then asks for a login, as opening logged out
-	/// does.
+	/// changed since it opened: a logged-out answer then asks for a login.
 	ask_when_logged_out: Arc<AtomicBool>,
 }
 

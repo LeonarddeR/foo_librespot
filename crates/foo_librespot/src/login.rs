@@ -162,7 +162,7 @@ impl LoginController {
 			}
 			inner.changes
 		};
-		// Read without the lock: a login may end meanwhile, and then the read is stale.
+		// Read without the lock; a change of `changes` meanwhile marks the read stale.
 		let username = backend().username();
 		let inner = self.0.lock();
 		if inner.changes != changes {

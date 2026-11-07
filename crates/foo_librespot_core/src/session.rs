@@ -96,8 +96,7 @@ pub struct SessionManager<C: Connector> {
 	// Bumped by every logout; a connect that finishes after one is thrown away.
 	logouts: AtomicU64,
 	// Held while the logout count is read or bumped together with reading, saving or deleting the
-	// stored login, so a connect checks the count and saves its login in one step that a logout
-	// can't fall between. Holds what the stored login was last read or written as: `None` until a
+	// stored login; a connect checks the count and saves its login under it. Holds what the stored login was last read or written as: `None` until a
 	// read succeeds, and after a write that failed.
 	stored: std::sync::Mutex<Option<Login>>,
 	// Only used while `current` is held.

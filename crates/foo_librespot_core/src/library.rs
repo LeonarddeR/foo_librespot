@@ -625,8 +625,8 @@ impl Inner {
 	}
 
 	/// The stamp for a read or write that is part of the fetch or change stamped `begun`: the
-	/// next one, or `begun` itself once `clear` has raised the floor past it, so that nothing it
-	/// stores lands.
+	/// next one, or `begun` itself once `clear` has raised the floor past it; a store with that
+	/// stamp doesn't land.
 	fn stamp_within(&mut self, begun: Stamp) -> Stamp {
 		if self.admits(begun) { self.stamp() } else { begun }
 	}
@@ -918,8 +918,8 @@ impl Fetch {
 	/// ones arrive; if they can't be read, the old ones stay. A playlist without old rows whose
 	/// read fails counts as unreadable once the fetch ends, until a later fetch reads it.
 	/// Subscribers hear when the list is published and when the fetch ends. Each read takes its
-	/// stamp as it starts, so what a change stored since stays. Nothing it read lands once
-	/// `clear` has run.
+	/// stamp as it starts, and a store lands only over an older stamp. Nothing it read lands
+	/// once `clear` has run.
 	async fn read<S: LibrarySource>(&self, source: &S) {
 		let liked_stamp = {
 			let mut inner = self.cache.lock();

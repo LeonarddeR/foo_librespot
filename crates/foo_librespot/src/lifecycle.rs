@@ -108,7 +108,7 @@ impl<T> Lifecycle<T> {
 	}
 
 	/// Stops for good. A start that runs gets up to `wait` to end, and calls still using the
-	/// value get what is left of it to finish (foobar2000 aborts them as it quits); then `finish`
+	/// value get what is left of it to finish; then `finish`
 	/// gets the value. If some are still running after that, the value is leaked, not dropped by
 	/// whichever thread finishes last, and so is the value of a start that ends later.
 	pub fn shutdown(&self, wait: Duration, finish: impl FnOnce(T)) {
