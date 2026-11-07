@@ -301,10 +301,13 @@ fn open_entry(entry: &Entry) -> Result<()> {
 }
 
 /// Appends `items` to the tab holding `uri`. Without one, makes a tab named `name` that holds
-/// it, with `items`, and brings it to the front.
+/// it, with `items`, and brings it to the front; no `items` make no tab.
 fn fill(name: &str, uri: &str, items: &HandleList<'_>) -> Result<()> {
 	if let Some(index) = playlist::find_by_property(&TAB_PROPERTY, uri.as_bytes())? {
 		return playlist::append(index, items);
+	}
+	if items.is_empty()? {
+		return Ok(());
 	}
 	let index = playlist::create(name)?;
 	playlist::set_property(index, &TAB_PROPERTY, uri.as_bytes())?;
@@ -597,13 +600,23 @@ mod tests {
 		let api = ready_api();
 		pick_row(0);
 		assert_eq!(api.location_requests(), [["sptf://spotify:collection:tracks"]]);
-		api.finish_locations(0, &[]).unwrap();
+		api.finish_locations(0, &[GETTY_TRACK]).unwrap();
 		let tabs = api.tabs();
 		assert_eq!(tabs.last().unwrap().name, "Liked Songs");
 		assert_eq!(
 			tabs.last().unwrap().properties,
 			[(TAB_PROPERTY, b"spotify:collection:tracks".to_vec())]
 		);
+	}
+
+	#[test]
+	fn a_load_with_no_tracks_makes_no_tab_and_can_be_tried_again() {
+		let api = ready_api();
+		pick_row(1);
+		api.finish_locations(0, &[]).unwrap();
+		assert!(api.tabs().is_empty());
+		pick_row(1);
+		assert_eq!(api.location_requests().len(), 2);
 	}
 
 	#[test]
@@ -630,7 +643,7 @@ mod tests {
 	fn opening_a_playlist_that_has_a_tab_switches_to_it() {
 		let api = ready_api();
 		pick_row(1);
-		api.finish_locations(0, &[]).unwrap();
+		api.finish_locations(0, &[GETTY_TRACK]).unwrap();
 		let opened = api.tabs().len() - 1;
 		api.add_tab("Other");
 		foxide2k::playlist::activate(opened + 1).unwrap();
@@ -678,7 +691,7 @@ mod tests {
 		dialog.list_select(LIST, 2);
 		send_command(&dialog, LIST, LBN_DBLCLK);
 		assert!(!dialog.is_alive());
-		api.finish_locations(0, &[]).unwrap();
+		api.finish_locations(0, &[GETTY_TRACK]).unwrap();
 		assert_eq!(api.tabs().last().unwrap().name, "Getty favourites");
 	}
 

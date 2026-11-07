@@ -52,7 +52,7 @@ Such an episode is added as the podcast's own audio link, which foobar2000 plays
 
 ## Your Spotify library
 
-File > Spotify > Open playlist… lists your Liked Songs and the playlists in your Spotify library, including ones you follow. A playlist in a folder shows the folder's name in front. Choose one with the arrow keys and press Enter: once its tracks have arrived, it opens in a new tab named after it, filled as pasting its link would. If it already has a tab, that tab comes to the front. Tabs don't change by themselves when the Spotify playlist changes; to see the changes, close the tab and open the playlist again.
+File > Spotify > Open playlist… lists your Liked Songs and the playlists in your Spotify library, including ones you follow. A playlist in a folder shows the folder's name in front. Choose one with the arrow keys and press Enter: once its tracks have arrived, it opens in a new tab named after it, filled as pasting its link would. When nothing could be added, no tab is made. If it already has a tab, that tab comes to the front. Tabs don't change by themselves when the Spotify playlist changes; to see the changes, close the tab and open the playlist again.
 
 Right-click Spotify tracks and choose Add to Spotify playlist to add them to Liked Songs or to one of the playlists you can change. Tracks already in it aren't added again, and the console says what was added. A checkmark shows where all of them already are; choosing a checked playlist asks whether to remove them from it. Liked Songs holds songs only, so podcast episodes are left out of it.
 

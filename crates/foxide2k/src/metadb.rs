@@ -27,9 +27,13 @@ impl HandleList<'_> {
 		self.raw.as_ptr()
 	}
 
-	fn len(&self) -> Result<usize> {
+	pub fn len(&self) -> Result<usize> {
 		let raw = self.as_raw();
 		Ok(try_host(|| unsafe { ((*(*raw).vtbl).get_count)(raw) })?)
+	}
+
+	pub fn is_empty(&self) -> Result<bool> {
+		Ok(self.len()? == 0)
 	}
 
 	/// Calls `f` with each item's path, in order, borrowed from the item. Invalid UTF-8 in a path
@@ -83,6 +87,7 @@ mod tests {
 			["sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO", "file://C:\\a.mp3"]
 		);
 		assert_eq!(handles.len().unwrap(), 2);
+		assert!(!handles.is_empty().unwrap());
 	}
 
 	#[test]
@@ -100,5 +105,6 @@ mod tests {
 		let handles = unsafe { HandleList::from_raw(list.as_raw()) };
 		assert!(handles.paths().unwrap().is_empty());
 		assert_eq!(handles.len().unwrap(), 0);
+		assert!(handles.is_empty().unwrap());
 	}
 }
