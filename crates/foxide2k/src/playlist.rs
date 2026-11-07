@@ -321,6 +321,9 @@ unsafe extern "C-unwind" fn reader_read(
 ) -> usize {
 	unsafe {
 		guard(|| {
+			if bytes == 0 {
+				return Ok(0);
+			}
 			let taken = reader(this).take(bytes);
 			std::ptr::copy_nonoverlapping(taken.as_ptr(), buffer.cast::<u8>(), taken.len());
 			Ok(taken.len())
@@ -383,6 +386,9 @@ unsafe extern "C-unwind" fn writer_write(
 ) {
 	unsafe {
 		guard(|| {
+			if bytes == 0 {
+				return Ok(());
+			}
 			let written = std::slice::from_raw_parts(buffer.cast::<u8>(), bytes);
 			(*this.cast::<MemoryWriter>()).data.extend_from_slice(written);
 			Ok(())
@@ -530,6 +536,33 @@ mod tests {
 		})
 		.unwrap_err();
 		assert_eq!(error.kind, ExceptionKind::IoDataTruncation);
+	}
+
+	#[test]
+	fn empty_reads_and_writes_accept_a_null_buffer() {
+		let abort = FakeAbort::new(false);
+		let mut writer =
+			super::MemoryWriter { vtbl: &raw const super::WRITER_VTBL, data: Vec::new() };
+		let this = (&raw mut writer).cast::<c_void>();
+		try_host(|| unsafe {
+			((*writer.vtbl).write)(this, std::ptr::null(), 0, abort.as_raw());
+		})
+		.unwrap();
+		assert!(writer.data.is_empty());
+
+		let mut reader = MemoryReader::new(b"abc");
+		let this = reader.as_raw();
+		let read = try_host(|| unsafe {
+			((*(*this.cast::<*const crate::abi::file::StreamReaderVtbl>())).read)(
+				this,
+				std::ptr::null_mut(),
+				0,
+				abort.as_raw(),
+			)
+		})
+		.unwrap();
+		assert_eq!(read, 0);
+		assert_eq!(reader.data, b"abc");
 	}
 
 	#[test]
