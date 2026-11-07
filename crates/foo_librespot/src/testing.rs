@@ -458,15 +458,12 @@ pub fn fixture_samples() -> Vec<f64> {
 	all
 }
 
-const SUNDAY_SET_ID: &str = "37i9dQZF1DXcBWIGoYBM5M";
-const GETTY_FAVOURITES_ID: &str = "0vvXsWCC9xrXsKd4FyS8kM";
-
 pub fn sunday_set_id() -> SpotifyId {
-	SpotifyId::from_base62(SUNDAY_SET_ID).unwrap()
+	SpotifyId::from_raw(&[0x51; 16]).unwrap()
 }
 
 pub fn getty_favourites_id() -> SpotifyId {
-	SpotifyId::from_base62(GETTY_FAVOURITES_ID).unwrap()
+	SpotifyId::from_raw(&[0x47; 16]).unwrap()
 }
 
 /// "Sunday set", in the folder "Church", which the account can change.

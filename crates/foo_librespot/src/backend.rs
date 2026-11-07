@@ -58,8 +58,8 @@ pub trait Backend: Send + Sync {
 	/// stored login can't be read, for example because Spotify's core couldn't start.
 	fn username(&self) -> Result<Option<String>, CoreError>;
 	/// The account's playlists as last read, without waiting for Spotify. Starts a read when none
-	/// runs and the held one is missing or old; `on_change` runs once when a running read next
-	/// publishes. It may run on any thread.
+	/// runs and the held one is missing, incomplete or old, or the last read failed; `on_change`
+	/// runs once when a running read next publishes. It may run on any thread.
 	fn library(&self, on_change: Option<OnLibraryChange>) -> LibraryState;
 	/// What [`Backend::library`] would answer, without starting a read.
 	fn held_library(&self) -> LibraryState;

@@ -6,7 +6,7 @@
 
 use std::cell::Cell;
 
-use foo_librespot_core::library::{LIKED_SONGS, LibraryState};
+use foo_librespot_core::library::{LIKED_SONGS, Library, LibraryState};
 use foo_librespot_core::link::{LIKED_SONGS_URI, PATH_SCHEME};
 use foxide2k::abi::mainmenu::{GROUP_FILE, SORT_PRIORITY_BASE};
 use foxide2k::console;
@@ -125,7 +125,9 @@ pub fn show(owner: isize) -> Result<()> {
 }
 
 /// One line of the list: what the tab is called and where its tracks come from.
+#[derive(PartialEq, Eq)]
 struct Entry {
+	text: String,
 	name: String,
 	uri: String,
 	location: String,
@@ -134,11 +136,27 @@ struct Entry {
 impl Entry {
 	fn liked_songs() -> Self {
 		Self {
+			text: LIKED_SONGS.to_owned(),
 			name: LIKED_SONGS.to_owned(),
 			uri: LIKED_SONGS_URI.to_owned(),
 			location: format!("{PATH_SCHEME}{LIKED_SONGS_URI}"),
 		}
 	}
+}
+
+/// Liked Songs, then every playlist of `library`.
+fn entries_of(library: &Library) -> Vec<Entry> {
+	std::iter::once(Entry::liked_songs())
+		.chain(library.playlists.iter().map(|playlist| {
+			let uri = playlist.link().uri();
+			Entry {
+				text: playlist.display_name(),
+				name: playlist.name.clone(),
+				location: format!("{PATH_SCHEME}{uri}"),
+				uri,
+			}
+		}))
+		.collect()
 }
 
 #[derive(Default)]
@@ -154,37 +172,19 @@ impl OpenPlaylistWindow {
 	fn render(&mut self, dialog: Dialog, state: LibraryState) {
 		let status = match state {
 			LibraryState::Ready(library) => {
-				let previous = dialog.list_selection(LIST);
-				self.entries = std::iter::once(Entry::liked_songs())
-					.chain(library.playlists.iter().map(|playlist| {
-						let uri = playlist.link().uri();
-						Entry {
-							name: playlist.name.clone(),
-							location: format!("{PATH_SCHEME}{uri}"),
-							uri,
-						}
-					}))
-					.collect();
-				dialog.list_clear(LIST);
-				dialog.list_add(LIST, LIKED_SONGS);
-				for playlist in &library.playlists {
-					dialog.list_add(LIST, &playlist.display_name());
-				}
-				let row = previous.filter(|row| *row < self.entries.len()).unwrap_or(0);
-				dialog.list_select(LIST, row);
+				self.fill(dialog, entries_of(&library));
 				String::new()
 			}
 			LibraryState::Loading => {
-				self.empty(dialog);
+				self.fill(dialog, Vec::new());
 				"Loading…".to_owned()
 			}
 			LibraryState::Failed(reason) => {
-				self.empty(dialog);
+				self.fill(dialog, Vec::new());
 				format!("Couldn't load your playlists: {reason}.")
 			}
 			LibraryState::LoggedOut => {
-				self.empty(dialog);
-				self.wait_for_login(dialog);
+				self.fill(dialog, Vec::new());
 				"Log in to Spotify to see your playlists.".to_owned()
 			}
 		};
@@ -195,19 +195,25 @@ impl OpenPlaylistWindow {
 		self.status = status;
 	}
 
-	fn empty(&mut self, dialog: Dialog) {
-		self.entries.clear();
-		dialog.list_clear(LIST);
-	}
-
-	/// Asks for a login the first time it is called, and refreshes whenever the login changes.
-	fn wait_for_login(&mut self, dialog: Dialog) {
-		if self.subscription.is_some() {
+	/// Shows `entries` in the list. An unchanged list is left alone; a changed one is refilled
+	/// with the entry of the same URI selected, or the first.
+	fn fill(&mut self, dialog: Dialog, entries: Vec<Entry>) {
+		if entries == self.entries {
 			return;
 		}
-		let poster = refresh_poster(&dialog);
-		self.subscription = Some(controller().subscribe(Box::new(move || poster.post())));
-		ask_for_login();
+		let picked = dialog
+			.list_selection(LIST)
+			.and_then(|row| self.entries.get(row))
+			.map(|entry| entry.uri.clone());
+		dialog.list_clear(LIST);
+		for entry in &entries {
+			dialog.list_add(LIST, &entry.text);
+		}
+		let row = entries.iter().position(|entry| Some(&entry.uri) == picked.as_ref());
+		self.entries = entries;
+		if !self.entries.is_empty() {
+			dialog.list_select(LIST, row.unwrap_or(0));
+		}
 	}
 
 	/// Opens the selected entry and closes the window; does nothing when none is selected.
@@ -231,7 +237,12 @@ impl DialogHandler for OpenPlaylistWindow {
 			console::print(&format!("foo_librespot: {}", error.message));
 		}
 		let poster = refresh_poster(dialog);
+		self.subscription = Some(controller().subscribe(Box::new(move || poster.post())));
+		let poster = refresh_poster(dialog);
 		let state = backend().library(Some(Box::new(move || poster.post())));
+		if matches!(state, LibraryState::LoggedOut) {
+			ask_for_login();
+		}
 		self.render(*dialog, state);
 		Some(LIST)
 	}
@@ -408,10 +419,62 @@ mod tests {
 		assert_eq!(dialog.text(STATUS), "Log in to Spotify to see your playlists.");
 		assert_eq!(prompt.shown(), 1);
 		confirm_login_when_started(&fake, 1).join().unwrap();
-		fake.set_library(ready());
+		let calls = fake.library_calls();
+		fake.set_library(LibraryState::Loading);
+		pump_messages();
+		assert_eq!(dialog.text(STATUS), "Loading…");
+		assert!(fake.library_calls() > calls);
+		fake.publish_library(ready());
 		pump_messages();
 		assert_eq!(dialog.list_count(LIST), 3);
 		assert_eq!(prompt.shown(), 1);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_logout_empties_the_list_without_asking_for_a_login() {
+		FakeApi::new().install();
+		let fake = installed_backend();
+		let prompt = installed_prompt();
+		fake.set_library(ready());
+		let dialog = open(hidden_window()).unwrap();
+		assert_eq!(dialog.list_count(LIST), 3);
+		fake.set_library(LibraryState::LoggedOut);
+		refresh_poster(&dialog).post();
+		pump_messages();
+		assert_eq!(dialog.list_count(LIST), 0);
+		assert_eq!(dialog.text(STATUS), "Log in to Spotify to see your playlists.");
+		assert_eq!(fake.logins_started(), 0);
+		assert_eq!(prompt.shown(), 0);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_refresh_with_the_same_playlists_keeps_the_selection() {
+		FakeApi::new().install();
+		let fake = installed_backend();
+		fake.set_library(ready());
+		let dialog = open(hidden_window()).unwrap();
+		dialog.list_select(LIST, 2);
+		fake.publish_library(ready());
+		refresh_poster(&dialog).post();
+		pump_messages();
+		assert_eq!(dialog.list_selection(LIST), Some(2));
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_refresh_that_moves_the_picked_playlist_selects_it_again() {
+		FakeApi::new().install();
+		let fake = installed_backend();
+		fake.set_library(ready());
+		let dialog = open(hidden_window()).unwrap();
+		dialog.list_select(LIST, 2);
+		fake.set_library(LibraryState::Ready(library_with(vec![getty_favourites(), sunday_set()])));
+		refresh_poster(&dialog).post();
+		pump_messages();
+		assert_eq!(dialog.list_text(LIST, 1), "Getty favourites");
+		assert_eq!(dialog.list_selection(LIST), Some(1));
 		destroy(dialog);
 	}
 

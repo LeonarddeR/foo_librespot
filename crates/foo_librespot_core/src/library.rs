@@ -121,7 +121,7 @@ impl Library {
 		Self { playlists, items, liked: previous.and_then(|previous| previous.liked.clone()) }
 	}
 
-	/// A library made of the given parts, such as a plugin's tests need.
+	/// A library holding exactly `playlists`, the `contents` of some of them, and `liked`.
 	pub fn from_parts(
 		playlists: Vec<LibraryPlaylist>,
 		contents: Vec<(SpotifyId, PlaylistContents)>,
