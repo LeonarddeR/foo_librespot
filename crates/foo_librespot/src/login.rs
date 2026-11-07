@@ -170,7 +170,7 @@ impl LoginController {
 		}
 		let state = match (&inner.state, username) {
 			(_, Ok(Some(name))) => LoginState::LoggedIn(name),
-			// Shown at once, rather than "Not logged in" until the user presses Log in.
+			// Shown at once, before the user presses Log in.
 			(_, Err(error)) => LoginState::Failed(error.to_string()),
 			(LoginState::Failed(_) | LoginState::Cancelled, Ok(None)) => return,
 			(_, Ok(None)) => LoginState::LoggedOut,

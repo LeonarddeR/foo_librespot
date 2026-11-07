@@ -43,7 +43,7 @@ impl DialogHandler for LoginWindow {
 	fn init(&mut self, dialog: &Dialog) -> Option<u16> {
 		self.panel = Some(AccountPanel::init(*dialog, LoginControls::Always));
 		if logged_in() {
-			// Closed from the refresh: a window can't be destroyed while it is being created.
+			// The refresh this posts closes the window once it exists.
 			refresh_poster(dialog).post();
 		}
 		Some(CODE)

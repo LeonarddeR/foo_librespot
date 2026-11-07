@@ -30,8 +30,7 @@ pub const PAGE: u16 = 110;
 /// "Open browser".
 const LOGIN_CONTROLS: [u16; 5] = [CODE_LABEL, CODE, PAGE_LABEL, PAGE, BROWSER];
 
-/// A read-only field on one line: a multi-line edit would keep Escape and Enter from the
-/// dialog it is in.
+/// A read-only field on one line, which leaves Escape and Enter to the dialog it is in.
 const FIELD: u32 = ES_READONLY | ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP;
 
 /// When the code and the page are shown. "Open browser" shows only while a code waits.
@@ -119,7 +118,7 @@ impl AccountPanel {
 			BROWSER => shown.confirming,
 			_ => true,
 		};
-		// A hidden control can't keep focus; the account button replaced what was pressed.
+		// Focus on a control that hides moves to the account button, which replaced it.
 		if dialog.focused().is_some_and(|id| !visible(id)) {
 			dialog.focus(ACCOUNT);
 		}

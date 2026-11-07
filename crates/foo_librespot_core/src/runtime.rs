@@ -11,8 +11,8 @@ pub const ABORT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The tokio runtime librespot runs on.
 ///
-/// foobar2000 calls components on its own threads and expects them to block, so every call into
-/// Spotify goes through [`CoreRuntime::block_on`], which also stops when foobar2000 aborts.
+/// Every call into Spotify from foobar2000's threads goes through [`CoreRuntime::block_on`],
+/// which blocks the caller and stops when foobar2000 aborts.
 #[derive(Debug)]
 pub struct CoreRuntime {
 	runtime: tokio::runtime::Runtime,
@@ -57,7 +57,7 @@ impl CoreRuntime {
 		work: impl FnOnce() -> T + Send + 'static,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<T, CoreError> {
-		// Once spawned, the work can't be stopped, so work that is already aborted never starts.
+		// Work that is already aborted is never spawned.
 		if is_aborting() {
 			return Err(CoreError::Aborted);
 		}
@@ -84,7 +84,7 @@ impl CoreRuntime {
 	}
 }
 
-// Not Send on purpose: it only runs inside `block_on`, on the thread that called it.
+// It only runs inside `block_on`, on the thread that called it.
 #[allow(clippy::future_not_send)]
 async fn wait_for_abort(is_aborting: &dyn Fn() -> bool) {
 	loop {
@@ -206,7 +206,7 @@ mod tests {
 		assert!(matches!(result, Err(CoreError::Aborted)), "{result:?}");
 		assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
 		setter.join().unwrap();
-		// Dropping a runtime would wait for the sleeping task; shutting it down doesn't.
+		// Shutting the runtime down returns without waiting for the sleeping task.
 		runtime.shutdown(Duration::from_millis(10));
 	}
 

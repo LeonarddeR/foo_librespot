@@ -59,9 +59,8 @@ pub trait Connector: Send + Sync + 'static {
 /// on some of the steps, and the session lock is held meanwhile.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long a failed connect answers for the callers after it. They are usually waiting for the
-/// same connect (foobar2000 reads the info of many tracks at once), and without this each would
-/// connect again in turn, up to [`CONNECT_TIMEOUT`] each.
+/// How long the callers after a failed connect get its error without connecting again, such as
+/// the other reads of the many tracks whose info foobar2000 reads at once.
 const FAILED_CONNECT_HOLD: Duration = Duration::from_secs(5);
 
 /// What the profile's stored login is.
@@ -90,15 +89,15 @@ pub struct SessionManager<C: Connector> {
 	connector: C,
 	profile: Arc<Profile>,
 	connect_timeout: Duration,
-	// Held for the whole connect, so callers that arrive together share one connection. The
-	// session is kept with the logout count it was made under: a logout that can't take this lock
+	// Held for the whole connect: callers that arrive together wait and share its connection. The
+	// session is kept with the logout count it was made under; a logout that can't take this lock
 	// leaves it here, and the next call ends it.
 	current: tokio::sync::Mutex<Option<(C::Session, u64)>>,
-	// Bumped by every logout, so a connect that finishes afterwards is thrown away.
+	// Bumped by every logout; a connect that finishes after one is thrown away.
 	logouts: AtomicU64,
 	// Held while the logout count is read or bumped together with reading, saving or deleting the
-	// stored login, so a logout can't fall between a connect's check and its save and have the
-	// login written back. Holds what the stored login was last read or written as: `None` until a
+	// stored login, so a connect checks the count and saves its login in one step that a logout
+	// can't fall between. Holds what the stored login was last read or written as: `None` until a
 	// read succeeds, and after a write that failed.
 	stored: std::sync::Mutex<Option<Login>>,
 	// Only used while `current` is held.
@@ -169,7 +168,7 @@ impl<C: Connector> SessionManager<C> {
 			Ok(Some(credentials)) => credentials,
 			Ok(None) => return Err(CoreError::NotLoggedIn),
 			Err(ProfileError::Unreadable(reason)) => {
-				// It will never become readable; remove it so this is reported only once.
+				// Deleted: the next call finds no login and logs nothing.
 				log::warn!("the stored Spotify login can't be read ({reason}); log in again");
 				self.forget_stored()?;
 				return Err(CoreError::NotLoggedIn);
@@ -231,10 +230,10 @@ impl<C: Connector> SessionManager<C> {
 		Ok(connected.username)
 	}
 
-	/// Forgets the stored login and ends the session. Never waits for a connect in progress,
-	/// because it runs on foobar2000's UI thread; that connect is thrown away when it finishes,
-	/// and a session another call is handing out ends at the next call. When the stored login
-	/// can't be deleted, the session still ends and the error is returned.
+	/// Forgets the stored login and ends the session. Never waits for a connect in progress;
+	/// that connect is thrown away when it finishes, and a session another call is handing out
+	/// ends at the next call. When the stored login can't be deleted, the session still ends and
+	/// the error is returned.
 	pub fn logout(&self) -> Result<(), CoreError> {
 		let cleared = {
 			let mut stored = self.lock_stored();
@@ -300,7 +299,7 @@ impl<C: Connector> SessionManager<C> {
 
 	/// Stores `credentials`, and keeps in `stored` what was written.
 	fn save(&self, stored: &mut Option<Login>, credentials: &Credentials) {
-		// Playing matters more than refreshing the stored login, which still works next time.
+		// A failed save only logs: the session is used all the same, and the stored login stays.
 		match self.profile.save_credentials(credentials) {
 			Ok(()) => *stored = Some(Login::of(credentials)),
 			Err(error) => {
@@ -321,7 +320,7 @@ fn found_login(loaded: &Result<Option<Credentials>, ProfileError>) -> Option<Log
 }
 
 /// The same error again, for a caller that shares a failed connect. Errors from librespot and
-/// std can't be cloned, so they keep their kind and message.
+/// std are made anew with their kind and message.
 fn repeat(error: &CoreError) -> CoreError {
 	match error {
 		CoreError::NotPremium { account_type } => {
@@ -339,10 +338,10 @@ fn repeat(error: &CoreError) -> CoreError {
 /// What librespot says when Spotify refuses the login itself.
 const BAD_CREDENTIALS: &str = "Login failed with reason: Bad credentials";
 
-/// True when Spotify refused the stored login, so it will never work again. librespot reports
-/// every access-point login failure as `PermissionDenied`, including temporary ones such as "try
-/// another access point" after six tries, and keeps the error type that names the reason
-/// private, so its message is the only way to tell them apart.
+/// True when Spotify refused the stored login itself: a `PermissionDenied` with librespot's
+/// "Bad credentials" message. librespot reports every access-point login failure as
+/// `PermissionDenied`, temporary ones such as "try another access point" after six tries
+/// included, and only the message names the reason.
 fn rejects_credentials(error: &librespot_core::Error) -> bool {
 	error.kind == ErrorKind::PermissionDenied && error.error.to_string() == BAD_CREDENTIALS
 }
@@ -692,7 +691,7 @@ mod tests {
 		let result = setup.manager.session().await;
 		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
 		assert_eq!(setup.connector.calls(), 0);
-		// Removed, so it is reported once instead of on every call.
+		// Removed: the next call finds no login.
 		assert!(!setup.profile.has_credentials());
 	}
 

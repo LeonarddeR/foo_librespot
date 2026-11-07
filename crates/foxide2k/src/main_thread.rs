@@ -37,8 +37,7 @@ unsafe extern "C-unwind" fn callback_run(this: *mut ServiceBase) {
 				.lock()
 				.unwrap_or_else(PoisonError::into_inner)
 				.take();
-			// A panic would reach foobar2000's message loop as a C++ exception. The work is the
-			// component's own, so it is reported instead.
+			// A panic is told in the console instead of reaching foobar2000's message loop.
 			if let Some(work) = work
 				&& catch_unwind(AssertUnwindSafe(work)).is_err()
 			{

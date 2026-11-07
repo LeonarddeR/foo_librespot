@@ -63,8 +63,8 @@ impl Filesystem for SpotifyFilesystem {
 		if let Ok(link) = parse_link(path) {
 			return Some(canonical(&link));
 		}
-		// A spotify: link we can't play goes into our own scheme too, so no other component, such
-		// as foo_youtube, takes it before our loader says why it can't be played.
+		// A spotify: link we can't play goes into our own scheme too; our loader then says why,
+		// and no other component, such as foo_youtube, takes it first.
 		let link = as_pasted(path);
 		starts_with_ignore_case(link, "spotify:").then(|| format!("{PATH_SCHEME}{link}"))
 	}
@@ -76,7 +76,7 @@ impl Filesystem for SpotifyFilesystem {
 	/// Every path we claim goes through the loader. It asks for a login when the user is logged
 	/// out, which the input never does while adding, and it adds the entry with its info filled
 	/// in. An episode Spotify doesn't host becomes the podcast's own audio link, which only the
-	/// loader can add. A Spotify link that can't be played goes there too, so the user hears why.
+	/// loader can add. A Spotify link that can't be played goes there too, and the loader says why.
 	fn content_type(_path: &str) -> Option<String> {
 		Some(CONTENT_TYPE.to_owned())
 	}
@@ -117,15 +117,15 @@ impl PlaylistLoader for SpotifyLoader {
 	}
 
 	fn open(path: &str, callback: &mut LoaderCallback<'_>, abort: &Abort) -> Result<()> {
-		// Decided from the path alone, so other web pages cost nothing.
+		// Parsed from the path alone, without reading the page.
 		let link = match parse_link(path) {
 			Ok(link) => link,
-			// Another web page, which another loader may take; nothing to tell the user.
+			// Another web page: refused without a word, for another loader to take.
 			Err(LinkError::NotSpotify) => {
 				return Err(Error::unsupported_format(format!("not a Spotify link: {path}")));
 			}
-			// A Spotify link that can't be played. The user is told here, and the link counts as
-			// handled with nothing added: refused, foobar2000 would add it as an empty entry.
+			// A Spotify link that can't be played: the console and a popup say why, and the link
+			// counts as handled with nothing added.
 			Err(error) => {
 				let link = as_pasted(path);
 				console::print(&format!("foo_librespot: {link}: {error}"));
@@ -326,7 +326,7 @@ mod tests {
 		let album =
 			filesystem.open(&format!("sptf://spotify:album:{ALBUM}"), OPEN_MODE_READ).unwrap();
 		assert_eq!(album.content_type().as_deref(), Some(CONTENT_TYPE));
-		// Through the loader, so adding a track link asks for a login like any other link.
+		// Through the loader, which asks for a login, as for any other link.
 		let track =
 			filesystem.open(&format!("sptf://spotify:track:{TRACK_ID}"), OPEN_MODE_READ).unwrap();
 		assert_eq!(track.content_type().as_deref(), Some(CONTENT_TYPE));

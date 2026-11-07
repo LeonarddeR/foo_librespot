@@ -67,8 +67,7 @@ impl<T> Lifecycle<T> {
 	/// The running value, started by `start` when none runs. A start running on another thread is
 	/// waited for, and tried again when it failed. `start` runs without the lock held, so
 	/// [`now`](Self::now) answers meanwhile. After [`shutdown`](Self::shutdown) every call fails
-	/// with [`CoreError::Aborted`]: foobar2000 is quitting, and starting Spotify again then would
-	/// leave it running.
+	/// with [`CoreError::Aborted`] and nothing starts again.
 	pub fn get_or_start(
 		&self,
 		start: impl FnOnce() -> Result<T, CoreError>,
@@ -110,9 +109,8 @@ impl<T> Lifecycle<T> {
 
 	/// Stops for good. A start that runs gets up to `wait` to end, and calls still using the
 	/// value get what is left of it to finish (foobar2000 aborts them as it quits); then `finish`
-	/// gets the value. If some are still running after that, the value is deliberately leaked
-	/// rather than dropped by whichever thread finishes last, because dropping a tokio runtime
-	/// waits for all of its blocking work. A start that ends later leaks its value too.
+	/// gets the value. If some are still running after that, the value is leaked, not dropped by
+	/// whichever thread finishes last, and so is the value of a start that ends later.
 	pub fn shutdown(&self, wait: Duration, finish: impl FnOnce(T)) {
 		let deadline = Instant::now() + wait;
 		let phase = {

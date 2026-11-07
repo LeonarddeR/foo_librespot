@@ -47,7 +47,7 @@ impl Core {
 		let profile = Arc::new(Profile::new(profile_dir));
 		let device_id = profile.device_id()?;
 		let keys = profile.load_audio_keys().unwrap_or_else(|error| {
-			// They are only a shortcut: every key can be asked for again.
+			// Without them, Spotify is asked for every key again.
 			log::warn!("{error}; Spotify will be asked for every key again");
 			AudioKeys::default()
 		});
@@ -94,7 +94,7 @@ impl Core {
 				let authorizer = LibrespotAuthorizer::new()?;
 				let token = device_login(&authorizer, on_code).await?;
 				let username = sessions.login_with_token(token).await?;
-				// Which tracks are available depends on the account's country.
+				// Forgets what was read for the account logged in before.
 				cache.clear();
 				library.clear();
 				Ok(username)
@@ -103,7 +103,7 @@ impl Core {
 			if finishing.finish() {
 				on_done(result);
 			} else if result.is_ok() {
-				// Cancelled as the login was being stored: what the user sees is the cancel.
+				// Cancelled as the login was being stored: the stored login is undone.
 				if let Err(error) = sessions.logout() {
 					log::warn!("couldn't undo a cancelled Spotify login: {error}");
 				}
@@ -207,7 +207,7 @@ impl Core {
 	) -> Result<SpotifyTrack, CoreError> {
 		let fetched = self.fetch_track(id, bitrate, is_aborting)?;
 		let (file_id, key_origin) = (fetched.file_id(), fetched.key_origin());
-		// The first reads block until data arrives; do them where Stop can still interrupt.
+		// The first reads, which block until data arrives, run where Stop can interrupt them.
 		match self.runtime.block_on_blocking(move || fetched.open(), is_aborting)? {
 			Err(error) if wrong_remembered_key(key_origin, &error) => {
 				log::warn!("the remembered key didn't decrypt the track ({error}); asking Spotify");
@@ -238,8 +238,7 @@ impl Core {
 		Ok(fetched)
 	}
 
-	/// Saves the remembered keys on the runtime's blocking pool, so playback doesn't wait for the
-	/// disk.
+	/// Saves the remembered keys on the runtime's blocking pool, without waiting for the disk.
 	fn save_keys_in_background(&self) {
 		let (profile, keys) = (Arc::clone(&self.profile), self.keys.clone());
 		self.runtime.handle().spawn_blocking(move || {
@@ -318,9 +317,9 @@ impl LoginHandle {
 	}
 }
 
-/// Decides whether a login that is finishing or a cancel came first. Without it, a cancel
-/// during the last moments of a login, while the login is stored, would be ignored: tokio stops
-/// a task only at its next await, and there is none left.
+/// Decides whether a login that is finishing or a cancel came first, also for a cancel in the
+/// last moments of a login, while the login is stored and the task has no await left to stop
+/// at.
 #[derive(Clone, Default)]
 struct LoginGate(Arc<std::sync::Mutex<Option<Outcome>>>);
 

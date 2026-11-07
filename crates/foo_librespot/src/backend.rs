@@ -1,5 +1,5 @@
-//! The Spotify side of the component: `foo_librespot_core::Core` behind a small trait, so the
-//! services can be tested with a fake.
+//! The Spotify side of the component: `foo_librespot_core::Core` behind a small trait, which the
+//! services' tests replace with a fake.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

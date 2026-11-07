@@ -59,8 +59,7 @@ pub fn ask_for_login() {
 }
 
 /// Starts a login and waits until the user confirms it, cancels it, or foobar2000 aborts.
-/// On the main thread it only shows the window: waiting there would freeze the window it waits
-/// for.
+/// On the main thread it only shows the window and fails with [`CoreError::NotLoggedIn`].
 pub fn login_on_first_use(is_aborting: &dyn Fn() -> bool) -> Result<(), CoreError> {
 	let login = controller().start();
 	prompt().show();
@@ -71,8 +70,8 @@ pub fn login_on_first_use(is_aborting: &dyn Fn() -> bool) -> Result<(), CoreErro
 }
 
 /// [`login_on_first_use`] for a play that found the user logged out. Once a login was
-/// cancelled or failed, playing fails without asking again, so a playlist doesn't reopen the
-/// window for each of its tracks; adding a link or pressing Log in asks again.
+/// cancelled or failed, playing fails without asking again, for every track, until adding a
+/// link or pressing Log in asks again.
 pub fn login_to_play(is_aborting: &dyn Fn() -> bool) -> Result<(), CoreError> {
 	if matches!(controller().state(), LoginState::Cancelled | LoginState::Failed(_)) {
 		return Err(CoreError::NotLoggedIn);

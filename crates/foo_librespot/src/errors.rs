@@ -14,7 +14,7 @@ use foxide2k::popup::{self, PopupIcon};
 const NOT_LOGGED_IN: &str =
 	"Not logged in to Spotify. Log in from File > Preferences > Tools > Spotify.";
 
-/// Whether the console was told about the missing login yet; once per session is enough.
+/// Whether the console was told about the missing login this session; it is told once.
 static TOLD_NOT_LOGGED_IN: AtomicBool = AtomicBool::new(false);
 
 /// The foobar2000 exception for `error`, with a message the user can act on.
