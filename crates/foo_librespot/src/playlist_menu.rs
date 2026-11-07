@@ -6,6 +6,8 @@
 //! on its own thread and reports in the console; a failure also shows a popup.
 
 use foo_librespot_core::CoreError;
+use std::sync::{Mutex, PoisonError};
+
 use foo_librespot_core::library::{
 	Change, LIKED_SONGS, Library, LibraryState, Target, distinct_uris,
 };
@@ -19,6 +21,9 @@ use foxide2k::popup::{self, PopupIcon};
 
 use crate::backend::backend;
 use crate::first_use::ask_for_login;
+
+/// Held by the change thread while it talks to Spotify, so changes run one after another.
+static CHANGING: Mutex<()> = Mutex::new(());
 
 const NAME: &str = "Add to Spotify playlist";
 
@@ -158,6 +163,7 @@ impl Pick {
 	}
 
 	fn run(&self, kind: Kind) {
+		let _one_at_a_time = CHANGING.lock().unwrap_or_else(PoisonError::into_inner);
 		let result = match kind {
 			Kind::Add => backend().add_to(self.target, &self.items, &|| false),
 			Kind::Remove => backend().remove_from(self.target, &self.items, &|| false),
@@ -502,6 +508,20 @@ mod tests {
 			)]
 		);
 		assert!(printed(api, "foo_librespot: can't change Church / Sunday set: Spotify said no"));
+	}
+
+	#[test]
+	fn a_second_pick_waits_for_the_first_change_to_end() {
+		let (_, fake) = setup(library(&[], &[], &[]));
+		fake.hold_changes(true);
+		let (root, data) = open(&[t1()]);
+		pick(&root, &data, "Shared");
+		wait_until(|| fake.changes().len() == 1);
+		pick(&root, &data, "Shared");
+		std::thread::sleep(std::time::Duration::from_millis(200));
+		assert_eq!(fake.changes().len(), 1);
+		fake.hold_changes(false);
+		wait_until(|| fake.changes().len() == 2);
 	}
 
 	#[test]
