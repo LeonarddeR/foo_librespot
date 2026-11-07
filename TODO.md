@@ -59,21 +59,21 @@ The cheapest wins come first.
 
 ### Checks by hand
 
-Nobody has checked these yet. Any new work they show waits for a later round.
+Checked by hand on 7 November 2026. The new work they showed is under "Later rounds".
 
-- [ ] Find out what happens when the account plays on another device
+- [x] Find out what happens when the account plays on another device
   - When Spotify took the stream away because the account played elsewhere, foo_spotify paused playback and showed "Playback has been paused because your Spotify account is being used somewhere else."
   - foo_librespot has nothing for this, and librespot has no event for it.
-  - Nobody has checked yet whether Spotify ever stops a foo_librespot stream this way. Test that first; build something only if it does.
-- [ ] Check for silence between tracks
+  - The check: while Spotify played on a phone with the same account, foobar2000 kept playing and opened three more tracks without an error, and the phone kept playing too. Spotify doesn't stop a foo_librespot stream this way, so nothing needs building.
+- [x] Check for silence between tracks
   - librespot's own player starts loading the next track 30 seconds before the current one ends. foo_librespot starts fetching a track only when foobar2000 opens it.
-  - Check whether an album that should play without breaks gets a short silence between Spotify tracks. If it does, foo_librespot could start fetching the next track early.
-- [ ] Check Spotify's made-for-you playlists
+  - The check: on a live album, the track changes play without a gap. foobar2000 opens the next track before the current one ends, which is early enough.
+- [x] Check Spotify's made-for-you playlists
   - Discover Weekly and the Daily Mixes are playlists owned by Spotify.
-  - Check that their links add their tracks.
-- [ ] Check audiobooks
+  - The check: a Daily Mix link added its 50 tracks, and a Discover Weekly link its 30.
+- [x] Check audiobooks
   - Spotify marks an audiobook as a show (`Show::is_audiobook`) and its chapters as episodes (`Episode::is_audiobook_chapter`).
-  - Check what happens when you add an audiobook link.
+  - The check: an audiobook's link is a show link, and adding one adds every chapter as an episode. It showed two problems, entered under "Later rounds": the chapters come in reverse order, and when the account doesn't have the book, every chapter fails when played.
 
 ## Later rounds
 
@@ -100,6 +100,12 @@ Nobody has checked these yet. Any new work they show waits for a later round.
 - [ ] Open the current track's artist or album (needs menus)
   - Commands under File > Spotify, such as "Open current artist" and "Open current album", would open the current Spotify track's artist or album as a foobar2000 playlist, the way an artist or album link does. Music you like would then be one command away, without copying a link from Spotify.
   - Still to decide: whether "current" means the playing track or the selected one.
+- [ ] Put an audiobook's chapters in book order
+  - An audiobook link adds its chapters newest first, like a podcast's episodes. "Mere Christianity" (C.S. Lewis) starts with a 5-minute sample and the ending credits, and ends with the opening credits.
+  - Spotify marks an audiobook as one (`Show::is_audiobook`), so foo_librespot could add its chapters from the first, as it does for a show meant to be heard from the start.
+- [ ] Say when the account can't play an audiobook
+  - When the account doesn't have an audiobook, the Spotify app says "This content is unavailable", but its link still adds every chapter. Each chapter then fails when played: Spotify refuses the key that decrypts it (code 1). Only the 5-minute sample plays.
+  - foo_librespot could find this out while adding, and skip the chapters with a plain reason. How to tell beforehand is still to find out, perhaps from a field in the episode's or the show's metadata.
 - [ ] Play from the Spotify app on foobar2000 (Spotify Connect)
   - The `librespot-connect` crate makes a program show up as a Spotify Connect speaker, so the Spotify app on a phone can play on it.
   - In foobar2000 this would mean letting the Spotify app drive foobar2000's playback. That is a big feature and a different way of using foobar2000; consider it last.
