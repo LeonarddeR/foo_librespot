@@ -1507,10 +1507,7 @@ mod tests {
 		contents_calls: AtomicUsize,
 		liked_calls: AtomicUsize,
 		fail_rootlist: AtomicBool,
-		fail_contents: AtomicBool,
 		hang_rootlist: AtomicBool,
-		/// When set, `contents` waits for it before answering.
-		gate: Option<Arc<Notify>>,
 		/// The call number of `contents` whose answer, what the playlist was when the call began,
 		/// is held back until `contents_gate` opens; 0 for none.
 		hold_contents_call: AtomicUsize,
@@ -1558,15 +1555,11 @@ mod tests {
 		async fn contents(&self, id: SpotifyId) -> Result<PlaylistContents, CoreError> {
 			let call = self.contents_calls.fetch_add(1, Ordering::SeqCst) + 1;
 			self.contents_ids.lock().unwrap().push(id);
-			if let Some(gate) = &self.gate {
-				gate.notified().await;
-			}
 			let held = self.held.lock().unwrap().contains(&id);
 			if held {
 				self.held_gate.notified().await;
 			}
-			if self.fail_contents.load(Ordering::SeqCst)
-				|| self.fail_contents_call.load(Ordering::SeqCst) == call
+			if self.fail_contents_call.load(Ordering::SeqCst) == call
 				|| self.failing.lock().unwrap().contains(&id)
 			{
 				return Err(CoreError::Unavailable("playlist failed".to_owned()));
@@ -2171,8 +2164,8 @@ mod tests {
 
 	#[tokio::test]
 	async fn the_list_is_published_before_the_items() {
-		let gate = Arc::new(Notify::new());
-		let source = Arc::new(FakeLibrary { gate: Some(Arc::clone(&gate)), ..fake() });
+		let source = Arc::new(fake());
+		source.held.lock().unwrap().insert(id(1));
 		let cache = LibraryCache::default();
 		let now = Instant::now();
 		let task = tokio::spawn({
@@ -2184,7 +2177,7 @@ mod tests {
 		assert!(!library.is_complete());
 		assert_eq!(library.playlists.len(), 2);
 		assert_eq!(library.holds(Target::Playlist(id(1)), &[t1()]), None);
-		gate.notify_one();
+		source.held_gate.notify_one();
 		task.await.unwrap();
 		let library = ready(cache.held());
 		assert!(library.is_complete());
@@ -2302,8 +2295,8 @@ mod tests {
 
 	#[tokio::test]
 	async fn a_subscriber_hears_the_list_and_the_end_of_each_fetch() {
-		let gate = Arc::new(Notify::new());
-		let source = Arc::new(FakeLibrary { gate: Some(Arc::clone(&gate)), ..fake() });
+		let source = Arc::new(fake());
+		source.held.lock().unwrap().insert(id(1));
 		let cache = LibraryCache::default();
 		let (_, calls) = counting(&cache);
 		let now = Instant::now();
@@ -2313,7 +2306,7 @@ mod tests {
 		});
 		until(|| calls.load(Ordering::SeqCst) == 1).await;
 		assert!(is_ready(&cache.held()));
-		gate.notify_one();
+		source.held_gate.notify_one();
 		task.await.unwrap();
 		assert_eq!(calls.load(Ordering::SeqCst), 2);
 		cache.fetch(&*source, now).await;
@@ -2348,8 +2341,8 @@ mod tests {
 
 	#[tokio::test]
 	async fn a_fetch_that_ends_after_a_logout_publishes_nothing() {
-		let gate = Arc::new(Notify::new());
-		let source = Arc::new(FakeLibrary { gate: Some(Arc::clone(&gate)), ..fake() });
+		let source = Arc::new(fake());
+		source.held.lock().unwrap().insert(id(1));
 		let cache = LibraryCache::default();
 		let now = Instant::now();
 		let task = tokio::spawn({
@@ -2358,7 +2351,7 @@ mod tests {
 		});
 		until(|| is_ready(&cache.held())).await;
 		cache.clear();
-		gate.notify_one();
+		source.held_gate.notify_one();
 		task.await.unwrap();
 		assert!(matches!(cache.held(), LibraryState::Loading));
 	}
@@ -2376,26 +2369,25 @@ mod tests {
 		let start = Instant::now();
 		cache.fetch(&source, start).await;
 		change_a(&source);
-		source.fail_contents.store(true, Ordering::SeqCst);
+		source.failing.lock().unwrap().insert(id(1));
 		cache.fetch(&source, start).await;
 		let library = ready(cache.held());
 		assert!(library.is_complete());
 		assert_eq!(library.holds(Target::Playlist(id(1)), &[t1()]), Some(true));
 		assert_eq!(library.holds(Target::Playlist(id(1)), &[t3()]), Some(false));
 		// The next refresh reads it again.
-		source.fail_contents.store(false, Ordering::SeqCst);
+		source.failing.lock().unwrap().clear();
 		cache.fetch(&source, start).await;
 		assert_eq!(ready(cache.held()).holds(Target::Playlist(id(1)), &[t3()]), Some(true));
 	}
 
 	#[tokio::test]
 	async fn a_library_stays_complete_while_a_changed_playlist_is_read_again() {
-		let gate = Arc::new(Notify::new());
-		let source = Arc::new(FakeLibrary { gate: Some(Arc::clone(&gate)), ..fake() });
+		let source = Arc::new(fake());
 		let cache = LibraryCache::default();
 		let start = Instant::now();
-		gate.notify_one();
 		cache.fetch(&*source, start).await;
+		source.held.lock().unwrap().insert(id(1));
 		change_a(&source);
 		let task = tokio::spawn({
 			let (cache, source) = (cache.clone(), Arc::clone(&source));
@@ -2403,7 +2395,7 @@ mod tests {
 		});
 		until(|| ready_revision(&cache) == Some(b"r3".to_vec())).await;
 		assert!(ready(cache.held()).is_complete());
-		gate.notify_one();
+		source.held_gate.notify_one();
 		task.await.unwrap();
 		assert_eq!(ready(cache.held()).holds(Target::Playlist(id(1)), &[t3()]), Some(true));
 	}
@@ -2430,8 +2422,8 @@ mod tests {
 
 	#[tokio::test]
 	async fn a_clear_during_a_fetch_lets_the_next_snapshot_start_one() {
-		let gate = Arc::new(Notify::new());
-		let source = Arc::new(FakeLibrary { gate: Some(Arc::clone(&gate)), ..fake() });
+		let source = Arc::new(fake());
+		source.held.lock().unwrap().insert(id(1));
 		let cache = LibraryCache::default();
 		let now = Instant::now();
 		let old = cache.snapshot(now).1.expect("no fetch started");
@@ -2443,7 +2435,7 @@ mod tests {
 		cache.clear();
 		let new = cache.snapshot(now).1;
 		assert!(new.is_some());
-		gate.notify_one();
+		source.held_gate.notify_one();
 		task.await.unwrap();
 		assert!(matches!(cache.held(), LibraryState::Loading));
 		// The new fetch still runs: the old one's end must not mark it finished.
@@ -2475,8 +2467,8 @@ mod tests {
 
 	#[tokio::test]
 	async fn a_finished_fetch_leaves_the_mark_of_a_fetch_its_subscriber_started() {
-		let gate = Arc::new(Notify::new());
-		let source = Arc::new(FakeLibrary { gate: Some(Arc::clone(&gate)), ..fake() });
+		let source = Arc::new(fake());
+		source.held.lock().unwrap().insert(id(1));
 		let cache = LibraryCache::default();
 		let now = Instant::now();
 		let fetch = cache.snapshot(now).1.expect("no fetch started");
@@ -2496,7 +2488,7 @@ mod tests {
 			}
 		}));
 		assert!(cache.snapshot(later).1.is_none());
-		gate.notify_one();
+		source.held_gate.notify_one();
 		task.await.unwrap();
 		assert_eq!(started.lock().unwrap().len(), 1);
 		let much_later = later + LIBRARY_REFRESH + Duration::from_secs(1);

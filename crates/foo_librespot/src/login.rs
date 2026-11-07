@@ -364,7 +364,7 @@ mod tests {
 
 	use super::{LoginController, LoginState, view};
 
-	use crate::testing::{device_code, installed_backend};
+	use crate::testing::{device_code, installed_backend, wait_until};
 
 	/// A controller whose browser only records the pages it was asked to open.
 	fn controller() -> (Arc<LoginController>, Arc<Mutex<Vec<String>>>) {
@@ -378,15 +378,6 @@ mod tests {
 
 	fn opened(record: &Mutex<Vec<String>>) -> Vec<String> {
 		record.lock().unwrap_or_else(PoisonError::into_inner).clone()
-	}
-
-	/// Waits up to a second for `condition`, for tests that start a login on another thread.
-	fn eventually(condition: impl Fn() -> bool) {
-		let deadline = Instant::now() + Duration::from_secs(1);
-		while !condition() {
-			assert!(Instant::now() < deadline, "timed out");
-			std::thread::sleep(Duration::from_millis(5));
-		}
 	}
 
 	#[test]
@@ -615,7 +606,7 @@ mod tests {
 			let controller = Arc::clone(&controller);
 			std::thread::spawn(move || controller.wait(controller.start(), &|| false))
 		};
-		eventually(|| fake.logins_started() == 1);
+		wait_until(|| fake.logins_started() == 1);
 		fake.send_code(device_code());
 		fake.finish_login(Ok("Keith Getty".to_owned()));
 		assert_eq!(waiter.join().unwrap().unwrap(), "Keith Getty");
@@ -632,7 +623,7 @@ mod tests {
 				std::thread::spawn(move || controller.wait(controller.start(), &|| false))
 			})
 			.collect();
-		eventually(|| fake.logins_started() == 1);
+		wait_until(|| fake.logins_started() == 1);
 		std::thread::sleep(Duration::from_millis(50));
 		fake.finish_login(Ok("Keith Getty".to_owned()));
 		for waiter in waiters {
@@ -653,7 +644,7 @@ mod tests {
 				controller.wait(controller.start(), &|| aborting.load(Ordering::SeqCst))
 			})
 		};
-		eventually(|| fake.logins_started() == 1);
+		wait_until(|| fake.logins_started() == 1);
 		let started = Instant::now();
 		aborting.store(true, Ordering::SeqCst);
 		let result = waiter.join().unwrap();
@@ -672,7 +663,7 @@ mod tests {
 			std::thread::spawn(move || controller.wait(controller.start(), &|| false))
 		};
 		let waiter = wait();
-		eventually(|| fake.logins_started() == 1);
+		wait_until(|| fake.logins_started() == 1);
 		fake.finish_login(Err(CoreError::Login(LoginError::Denied)));
 		let result = waiter.join().unwrap();
 		assert!(
@@ -680,7 +671,7 @@ mod tests {
 			"{result:?}"
 		);
 		let waiter = wait();
-		eventually(|| fake.logins_started() == 2);
+		wait_until(|| fake.logins_started() == 2);
 		controller.cancel();
 		let result = waiter.join().unwrap();
 		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");

@@ -158,6 +158,7 @@ mod tests {
 	use foo_librespot_core::CoreError;
 
 	use super::{Lifecycle, Phase};
+	use crate::testing::wait_until;
 
 	#[test]
 	fn starts_once_and_shares_the_value() {
@@ -187,11 +188,7 @@ mod tests {
 
 	/// Waits until `lifecycle` is starting.
 	fn until_starting<T>(lifecycle: &Lifecycle<T>) {
-		let deadline = Instant::now() + Duration::from_secs(5);
-		while !matches!(lifecycle.now(), Phase::Starting) {
-			assert!(Instant::now() < deadline, "it never started");
-			std::thread::sleep(Duration::from_millis(5));
-		}
+		wait_until(|| matches!(lifecycle.now(), Phase::Starting));
 	}
 
 	#[test]

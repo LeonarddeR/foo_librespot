@@ -625,11 +625,7 @@ fn once_logins_started(
 ) -> std::thread::JoinHandle<()> {
 	let fake = fake.clone();
 	std::thread::spawn(move || {
-		let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-		while fake.logins_started() < logins {
-			assert!(std::time::Instant::now() < deadline, "no login started");
-			std::thread::sleep(std::time::Duration::from_millis(5));
-		}
+		wait_until(|| fake.logins_started() >= logins);
 		action(&fake);
 	})
 }
