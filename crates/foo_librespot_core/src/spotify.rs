@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use librespot_core::Session;
+
 use crate::art::{CoverCache, fetch_cover};
 use crate::audio::format::Bitrate;
 use crate::audio::keys::AudioKeys;
@@ -15,7 +17,7 @@ use crate::link::{ItemId, Link, LinkKind};
 use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
 use crate::metadata::{TrackInfo, largest_cover};
 use crate::profile::Profile;
-use crate::related::{Found, Opened, Related, radio_playlist, radio_seed, related_in};
+use crate::related::{Found, NOT_A_TRACK, Opened, Related, radio_playlist, related_in};
 use crate::resolve::{
 	AlbumDetailsCache, ArtistTracks, CachedSource, LibrespotMetadata, MetadataSource, Resolved,
 	TrackCache, item, resolve, retry_rate_limited,
@@ -166,10 +168,7 @@ impl Core {
 		self.runtime.block_on(
 			async {
 				let session = self.sessions.session().await?;
-				let source = CachedSource::new(
-					LibrespotMetadata::new(session, self.albums.clone()),
-					self.cache.clone(),
-				);
+				let source = CachedSource::new(self.metadata(session), self.cache.clone());
 				resolve(&source, link, artist_tracks).await
 			},
 			is_aborting,
@@ -187,10 +186,7 @@ impl Core {
 		self.runtime.block_on(
 			async {
 				let session = self.sessions.session().await?;
-				let source = CachedSource::new(
-					LibrespotMetadata::new(session, self.albums.clone()),
-					self.cache.clone(),
-				);
+				let source = CachedSource::new(self.metadata(session), self.cache.clone());
 				item(&source, id).await
 			},
 			is_aborting,
@@ -208,19 +204,26 @@ impl Core {
 		if *what != Related::Radio {
 			return related_in(&*self.track_info(item, is_aborting)?, what);
 		}
-		let seed = SpotifyUri::Track { id: radio_seed(item)? };
+		let ItemId::Track(id) = item else {
+			return Err(CoreError::Unavailable(NOT_A_TRACK.to_owned()));
+		};
+		let seed = SpotifyUri::Track { id };
 		self.runtime.block_on(
 			async {
 				let session = self.sessions.session().await?;
 				let answer =
 					retry_rate_limited(|| session.spclient().get_radio_for_track(&seed)).await?;
 				let id = radio_playlist(&answer)?;
-				let (name, _) =
-					LibrespotMetadata::new(session, self.albums.clone()).playlist(id).await?;
-				Ok(Found::One(Opened { name, link: Link::Id { kind: LinkKind::Playlist, id } }))
+				let (name, _) = self.metadata(session).playlist(id).await?;
+				Ok(Found::One(Opened::new(name, LinkKind::Playlist, id)))
 			},
 			is_aborting,
 		)?
+	}
+
+	/// Spotify's metadata, read through `session`, with the album details this core keeps.
+	fn metadata(&self, session: Session) -> LibrespotMetadata {
+		LibrespotMetadata::new(session, self.albums.clone())
 	}
 
 	/// Opens a track or episode for decoding. The download starts in the background; reading

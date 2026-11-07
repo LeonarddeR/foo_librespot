@@ -29,6 +29,8 @@ pub mod resolve;
 pub mod runtime;
 pub mod session;
 pub mod spotify;
+#[cfg(test)]
+mod testing;
 
 pub use error::{CoreError, Result};
 pub use librespot_core::authentication::Credentials;

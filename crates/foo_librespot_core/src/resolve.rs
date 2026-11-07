@@ -1146,7 +1146,8 @@ mod tests {
 		context_tracks, extension_values, listening_order, releases, resolve, retry_rate_limited,
 	};
 	use crate::link::{ItemId, Link, LinkError, LinkKind};
-	use crate::metadata::{AlbumDetails, EXPLICIT_FILTERED, ItemLinks, TrackInfo};
+	use crate::metadata::{AlbumDetails, EXPLICIT_FILTERED, TrackInfo};
+	use crate::testing::plain_info;
 	use crate::{CoreError, SpotifyId, SpotifyUri};
 
 	fn id(byte: u8) -> SpotifyId {
@@ -1155,71 +1156,22 @@ mod tests {
 
 	fn info(byte: u8) -> TrackInfo {
 		TrackInfo {
-			id: ItemId::Track(id(byte)),
 			title: format!("Track {byte}"),
-			artists: vec!["Artist".to_owned()],
-			album: "Album".to_owned(),
-			album_artists: vec!["Artist".to_owned()],
 			track_number: u32::from(byte),
-			disc_number: 1,
-			total_tracks: 0,
-			total_discs: 0,
-			date: None,
-			duration_ms: 1000,
-			covers: Vec::new(),
-			has_audio: true,
-			unavailable: None,
-			replay_gain: None,
-			genres: Vec::new(),
-			description: None,
-			external_url: None,
-			isrc: None,
-			explicit: false,
-			composers: Vec::new(),
-			conductors: Vec::new(),
-			orchestras: Vec::new(),
-			remixers: Vec::new(),
-			label: None,
-			copyrights: Vec::new(),
-			barcode: None,
-			release_type: None,
-			missing_album_details: false,
-			links: ItemLinks::default(),
+			..plain_info(ItemId::Track(id(byte)))
 		}
 	}
 
 	fn episode(byte: u8) -> TrackInfo {
 		TrackInfo {
-			id: ItemId::Episode(id(byte)),
 			title: format!("Episode {byte}"),
 			artists: vec!["The Show".to_owned()],
 			album: "The Show".to_owned(),
 			album_artists: vec!["The Show".to_owned()],
-			track_number: 0,
 			disc_number: 0,
-			total_tracks: 0,
-			total_discs: 0,
 			date: Some("2026-10-01".to_owned()),
-			duration_ms: 1000,
-			covers: Vec::new(),
-			has_audio: true,
-			unavailable: None,
-			replay_gain: None,
-			genres: Vec::new(),
 			description: Some("What this episode is about.".to_owned()),
-			external_url: None,
-			isrc: None,
-			explicit: false,
-			composers: Vec::new(),
-			conductors: Vec::new(),
-			orchestras: Vec::new(),
-			remixers: Vec::new(),
-			label: None,
-			copyrights: Vec::new(),
-			barcode: None,
-			release_type: None,
-			missing_album_details: false,
-			links: ItemLinks::default(),
+			..plain_info(ItemId::Episode(id(byte)))
 		}
 	}
 
