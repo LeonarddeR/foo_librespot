@@ -18,6 +18,7 @@ librespot-core = { version = "0.8.0", default-features = false, features = ["nat
 librespot-metadata = { version = "0.8.0", default-features = false, features = ["native-tls"] }
 librespot-oauth = { version = "0.8.0", default-features = false, features = ["native-tls"] }
 librespot-protocol = "0.8.0"
+http = "1.3"
 log = "0.4.35"
 # Only to build librespot-protocol messages in tests; keep it at the version librespot-protocol uses.
 protobuf = "3.7.2"

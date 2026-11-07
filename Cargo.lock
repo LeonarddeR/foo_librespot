@@ -427,6 +427,7 @@ name = "foo_librespot_core"
 version = "0.2.1"
 dependencies = [
  "futures-util",
+ "http",
  "librespot-audio",
  "librespot-core",
  "librespot-metadata",

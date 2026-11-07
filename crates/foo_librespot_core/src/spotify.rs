@@ -12,7 +12,8 @@ use crate::audio::track::{
 	FetchedTrack, KeyOrigin, SpotifyTrack, fetch_track, wrong_remembered_key,
 };
 use crate::library::{
-	LIBRARY_FETCH_TIMEOUT, LibraryCache, LibraryState, LibrespotLibrary, OnLibraryChange,
+	Change, LIBRARY_FETCH_TIMEOUT, LibraryCache, LibraryState, LibrespotLibrary, OnLibraryChange,
+	Target,
 };
 use crate::link::{ItemId, Link};
 use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
@@ -274,6 +275,39 @@ impl Core {
 		Ok(Some(jpeg.to_vec()))
 	}
 
+	/// Adds `items` to a playlist or Liked Songs. Playlists are read first, so only what they
+	/// lack is sent.
+	pub fn add_to(
+		&self,
+		target: Target,
+		items: &[ItemId],
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<Change, CoreError> {
+		self.runtime.block_on(
+			async {
+				let session = self.sessions.session().await?;
+				self.library.add(&LibrespotLibrary::new(session), target, items).await
+			},
+			is_aborting,
+		)?
+	}
+
+	/// Removes `items` from a playlist, every copy of each, or from Liked Songs.
+	pub fn remove_from(
+		&self,
+		target: Target,
+		items: &[ItemId],
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<Change, CoreError> {
+		self.runtime.block_on(
+			async {
+				let session = self.sessions.session().await?;
+				self.library.remove(&LibrespotLibrary::new(session), target, items).await
+			},
+			is_aborting,
+		)?
+	}
+
 	/// Stops the runtime; foobar2000 calls this when it quits.
 	pub fn shutdown(self) {
 		self.runtime.shutdown(SHUTDOWN_TIMEOUT);
@@ -343,8 +377,8 @@ mod tests {
 	use super::{Core, LoginGate, LoginHandle};
 	use crate::audio::keys::AudioKeys;
 	use crate::audio::track::SpotifyTrack;
-	use crate::library::LibraryState;
-	use crate::link::{Link, LinkKind};
+	use crate::library::{LibraryState, Target};
+	use crate::link::{ItemId, Link, LinkKind};
 	use crate::profile::Profile;
 	use crate::resolve::ArtistTracks;
 	use crate::{CoreError, FileId, SpotifyId};
@@ -415,6 +449,18 @@ mod tests {
 		let core = Core::new(dir.path()).unwrap();
 		assert!(matches!(core.library(None), LibraryState::LoggedOut));
 		assert!(matches!(core.held_library(), LibraryState::LoggedOut));
+		core.shutdown();
+	}
+
+	#[test]
+	fn add_to_without_login_is_not_logged_in() {
+		let dir = tempfile::tempdir().unwrap();
+		let core = Core::new(dir.path()).unwrap();
+		let track = ItemId::Track(SpotifyId::from_base62("4LH4d3cOWNNsVw41Gqt2kv").unwrap());
+		let result = core.add_to(Target::LikedSongs, &[track], &|| false);
+		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
+		let result = core.remove_from(Target::LikedSongs, &[track], &|| false);
+		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
 		core.shutdown();
 	}
 

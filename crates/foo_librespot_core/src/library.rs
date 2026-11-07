@@ -7,11 +7,17 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use futures_util::stream::{self, StreamExt};
+use http::{HeaderMap, HeaderValue, Method, header::CONTENT_TYPE};
 use librespot_core::Session;
-use librespot_protocol::playlist4_external::SelectedListContent;
-use protobuf::Message;
+use librespot_protocol::playlist4_external::op::Kind as OpKind;
+use librespot_protocol::playlist4_external::source_info::Client as SourceClient;
+use librespot_protocol::playlist4_external::{
+	Add, ChangeInfo, Delta, Item, ItemAttributes, ListChanges, Op, Rem, SelectedListContent,
+	SourceInfo,
+};
+use protobuf::{CodedOutputStream, EnumOrUnknown, Message, MessageField};
 
-use crate::link::{Link, LinkKind, decode_search};
+use crate::link::{ItemId, Link, LinkKind, decode_search};
 use crate::resolve::{liked_song_uris, retry_rate_limited};
 use crate::{CoreError, SpotifyId};
 
@@ -203,6 +209,174 @@ pub trait LibrarySource: Send + Sync {
 
 	/// The URIs in Liked Songs.
 	fn liked(&self) -> impl Future<Output = Result<HashSet<String>, CoreError>> + Send;
+
+	/// Appends `uris` to playlist `id`, as a change on top of `base_revision`.
+	fn add(
+		&self,
+		id: SpotifyId,
+		base_revision: &[u8],
+		uris: &[String],
+	) -> impl Future<Output = Result<(), CoreError>> + Send;
+
+	/// Removes `rows`, each with its index, from playlist `id`, as a change on top of
+	/// `base_revision`.
+	fn remove(
+		&self,
+		id: SpotifyId,
+		base_revision: &[u8],
+		rows: &[(usize, PlaylistRow)],
+	) -> impl Future<Output = Result<(), CoreError>> + Send;
+
+	/// Saves `uris` to Liked Songs, or takes them out when `liked` is false.
+	fn set_liked(
+		&self,
+		uris: &[String],
+		liked: bool,
+	) -> impl Future<Output = Result<(), CoreError>> + Send;
+}
+
+/// Where a change goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+	LikedSongs,
+	Playlist(SpotifyId),
+}
+
+/// What a change did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Change {
+	/// Items added, or rows removed.
+	pub changed: usize,
+	/// Items already there when adding.
+	pub unchanged: usize,
+	/// Episodes left out of a Liked Songs change: Liked Songs holds songs only.
+	pub episodes_left_out: usize,
+}
+
+/// `items` as URIs, each once, in order.
+pub fn distinct_uris(items: &[ItemId]) -> Vec<String> {
+	let mut seen = HashSet::new();
+	items.iter().map(|item| item.uri().to_uri()).filter(|uri| seen.insert(uri.clone())).collect()
+}
+
+/// Which of `uris` `contents` lacks, in order, and how many of them it already holds.
+pub fn missing(uris: &[String], contents: &PlaylistContents) -> (Vec<String>, usize) {
+	let held: HashSet<&str> = contents.rows.iter().map(|row| row.uri.as_str()).collect();
+	let lacking: Vec<String> =
+		uris.iter().filter(|uri| !held.contains(uri.as_str())).cloned().collect();
+	let already = uris.len() - lacking.len();
+	(lacking, already)
+}
+
+/// Every row of `contents` holding one of `uris`, with its index.
+pub fn rows_holding(uris: &[String], contents: &PlaylistContents) -> Vec<(usize, PlaylistRow)> {
+	let wanted: HashSet<&str> = uris.iter().map(String::as_str).collect();
+	contents
+		.rows
+		.iter()
+		.enumerate()
+		.filter(|(_, row)| wanted.contains(row.uri.as_str()))
+		.map(|(index, row)| (index, row.clone()))
+		.collect()
+}
+
+/// A change made by this client.
+fn delta(op: Op) -> Delta {
+	Delta {
+		ops: vec![op],
+		info: MessageField::some(ChangeInfo {
+			source: MessageField::some(SourceInfo {
+				client: Some(EnumOrUnknown::new(SourceClient::CLIENT)),
+				..Default::default()
+			}),
+			..Default::default()
+		}),
+		..Default::default()
+	}
+}
+
+/// The request that appends `uris` to the end of a playlist at `base_revision`.
+pub(crate) fn add_changes(base_revision: &[u8], uris: &[String]) -> ListChanges {
+	let items = uris.iter().map(|uri| Item { uri: Some(uri.clone()), ..Default::default() });
+	let op = Op {
+		kind: Some(EnumOrUnknown::new(OpKind::ADD)),
+		add: MessageField::some(Add {
+			items: items.collect(),
+			add_last: Some(true),
+			..Default::default()
+		}),
+		..Default::default()
+	};
+	ListChanges {
+		base_revision: Some(base_revision.to_vec()),
+		deltas: vec![delta(op)],
+		want_resulting_revisions: Some(true),
+		..Default::default()
+	}
+}
+
+/// The request that removes `rows`, each named by its URI and item id, from a playlist at
+/// `base_revision`.
+pub(crate) fn remove_changes(base_revision: &[u8], rows: &[(usize, PlaylistRow)]) -> ListChanges {
+	let items = rows.iter().map(|(_, row)| Item {
+		uri: Some(row.uri.clone()),
+		attributes: MessageField::some(ItemAttributes {
+			item_id: Some(row.item_id.clone()),
+			..Default::default()
+		}),
+		..Default::default()
+	});
+	let op = Op {
+		kind: Some(EnumOrUnknown::new(OpKind::REM)),
+		rem: MessageField::some(Rem {
+			items: items.collect(),
+			items_as_key: Some(true),
+			..Default::default()
+		}),
+		..Default::default()
+	};
+	ListChanges {
+		base_revision: Some(base_revision.to_vec()),
+		deltas: vec![delta(op)],
+		want_resulting_revisions: Some(true),
+		..Default::default()
+	}
+}
+
+/// The body of a write to the "collection" set of `username`: one item per URI, saved at
+/// `now_secs`, or removed when `liked` is false. librespot has no type for it, so the fields are
+/// written one by one: 1 username, 2 set, 3 items; in an item, 1 URI, 2 time added, 3 removed.
+pub(crate) fn liked_write(username: &str, uris: &[String], liked: bool, now_secs: i32) -> Vec<u8> {
+	let mut body = Vec::new();
+	{
+		let mut out = CodedOutputStream::vec(&mut body);
+		write_liked(&mut out, username, uris, liked, now_secs)
+			.expect("writing to a vector can't fail");
+	}
+	body
+}
+
+fn write_liked(
+	out: &mut CodedOutputStream<'_>,
+	username: &str,
+	uris: &[String],
+	liked: bool,
+	now_secs: i32,
+) -> protobuf::Result<()> {
+	out.write_string(1, username)?;
+	out.write_string(2, "collection")?;
+	for uri in uris {
+		let mut item = Vec::new();
+		{
+			let mut inner = CodedOutputStream::vec(&mut item);
+			inner.write_string(1, uri)?;
+			inner.write_int32(2, now_secs)?;
+			inner.write_bool(3, !liked)?;
+			inner.flush()?;
+		}
+		out.write_bytes(3, &item)?;
+	}
+	out.flush()
 }
 
 #[derive(Default)]
@@ -450,6 +624,112 @@ impl LibraryCache {
 		run(listeners);
 	}
 
+	/// Adds `items` to `target`. A playlist is read first, so only what it lacks is sent; Liked
+	/// Songs takes the tracks among `items` only.
+	pub async fn add<S: LibrarySource>(
+		&self,
+		source: &S,
+		target: Target,
+		items: &[ItemId],
+	) -> Result<Change, CoreError> {
+		match target {
+			Target::Playlist(id) => {
+				let uris = distinct_uris(items);
+				let fresh = source.contents(id).await?;
+				let (lacking, already) = missing(&uris, &fresh);
+				if !lacking.is_empty() {
+					source.add(id, &fresh.revision, &lacking).await?;
+					self.read_again(source, id).await;
+				}
+				Ok(Change { changed: lacking.len(), unchanged: already, episodes_left_out: 0 })
+			}
+			Target::LikedSongs => {
+				let (tracks, episodes_left_out) = split_items(items);
+				let held = self.lock().library.as_ref().and_then(|library| library.liked.clone());
+				let lacking: Vec<String> = tracks
+					.iter()
+					.filter(|uri| held.as_ref().is_none_or(|held| !held.contains(*uri)))
+					.cloned()
+					.collect();
+				if !lacking.is_empty() {
+					source.set_liked(&lacking, true).await?;
+					self.update_liked(|liked| liked.extend(lacking.iter().cloned()));
+				}
+				Ok(Change {
+					changed: lacking.len(),
+					unchanged: tracks.len() - lacking.len(),
+					episodes_left_out,
+				})
+			}
+		}
+	}
+
+	/// Removes `items` from `target`: every copy of each in a playlist, the tracks among them
+	/// from Liked Songs.
+	pub async fn remove<S: LibrarySource>(
+		&self,
+		source: &S,
+		target: Target,
+		items: &[ItemId],
+	) -> Result<Change, CoreError> {
+		match target {
+			Target::Playlist(id) => {
+				let fresh = source.contents(id).await?;
+				let rows = rows_holding(&distinct_uris(items), &fresh);
+				if !rows.is_empty() {
+					source.remove(id, &fresh.revision, &rows).await?;
+					self.read_again(source, id).await;
+				}
+				Ok(Change { changed: rows.len(), ..Change::default() })
+			}
+			Target::LikedSongs => {
+				let (tracks, episodes_left_out) = split_items(items);
+				if !tracks.is_empty() {
+					source.set_liked(&tracks, false).await?;
+					self.update_liked(|liked| {
+						for uri in &tracks {
+							liked.remove(uri);
+						}
+					});
+				}
+				Ok(Change { changed: tracks.len(), unchanged: 0, episodes_left_out })
+			}
+		}
+	}
+
+	/// Reads playlist `id` after a change and publishes its rows and revision. When the read
+	/// fails, the held copy stays and the next fetch finds its revision old.
+	async fn read_again<S: LibrarySource>(&self, source: &S, id: SpotifyId) {
+		let contents = match source.contents(id).await {
+			Ok(contents) => contents,
+			Err(error) => {
+				log::warn!("couldn't read a Spotify playlist after changing it: {error}");
+				return;
+			}
+		};
+		let mut inner = self.lock();
+		let Some(mut library) = inner.library.as_deref().cloned() else {
+			return;
+		};
+		if let Some(playlist) = library.playlists.iter_mut().find(|playlist| playlist.id == id) {
+			playlist.revision.clone_from(&contents.revision);
+			library.items.insert(id, Held::new(contents));
+			inner.library = Some(Arc::new(library));
+		}
+	}
+
+	/// Changes the held Liked Songs, when it is known.
+	fn update_liked(&self, change: impl FnOnce(&mut HashSet<String>)) {
+		let mut inner = self.lock();
+		let Some(mut library) = inner.library.as_deref().cloned() else {
+			return;
+		};
+		if let Some(liked) = library.liked.as_mut() {
+			change(liked);
+			inner.library = Some(Arc::new(library));
+		}
+	}
+
 	/// Ends the fetch of `ticket` with `error`: a complete library stays as it is.
 	fn fetch_failed(&self, ticket: FetchTicket, error: &CoreError) {
 		let listeners = {
@@ -479,6 +759,15 @@ impl LibraryCache {
 		};
 		run(listeners);
 	}
+}
+
+/// The distinct tracks among `items` as URIs, and how many distinct episodes there are.
+fn split_items(items: &[ItemId]) -> (Vec<String>, usize) {
+	let tracks: Vec<ItemId> =
+		items.iter().copied().filter(|item| matches!(item, ItemId::Track(_))).collect();
+	let episodes: Vec<ItemId> =
+		items.iter().copied().filter(|item| matches!(item, ItemId::Episode(_))).collect();
+	(distinct_uris(&tracks), distinct_uris(&episodes).len())
 }
 
 fn run(listeners: Vec<OnLibraryChange>) {
@@ -590,6 +879,54 @@ impl LibrarySource for LibrespotLibrary {
 		let uris = liked_song_uris(&self.session).await?;
 		Ok(uris.iter().map(librespot_core::SpotifyUri::to_uri).collect())
 	}
+
+	async fn add(
+		&self,
+		id: SpotifyId,
+		base_revision: &[u8],
+		uris: &[String],
+	) -> Result<(), CoreError> {
+		self.send_changes(id, &add_changes(base_revision, uris)).await
+	}
+
+	async fn remove(
+		&self,
+		id: SpotifyId,
+		base_revision: &[u8],
+		rows: &[(usize, PlaylistRow)],
+	) -> Result<(), CoreError> {
+		self.send_changes(id, &remove_changes(base_revision, rows)).await
+	}
+
+	async fn set_liked(&self, uris: &[String], liked: bool) -> Result<(), CoreError> {
+		let now = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.map_or(0, |since| i32::try_from(since.as_secs()).unwrap_or(i32::MAX));
+		let body = liked_write(&self.session.username(), uris, liked, now);
+		let mut headers = HeaderMap::new();
+		headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/x-protobuf"));
+		retry_rate_limited(|| {
+			self.session.spclient().request(
+				&Method::POST,
+				"/collection/v2/write",
+				Some(headers.clone()),
+				Some(&body),
+			)
+		})
+		.await?;
+		Ok(())
+	}
+}
+
+impl LibrespotLibrary {
+	async fn send_changes(&self, id: SpotifyId, changes: &ListChanges) -> Result<(), CoreError> {
+		let endpoint = format!("/playlist/v2/playlist/{}/changes", id.to_base62());
+		retry_rate_limited(|| {
+			self.session.spclient().request_with_protobuf(&Method::POST, &endpoint, None, changes)
+		})
+		.await?;
+		Ok(())
+	}
 }
 
 #[cfg(test)]
@@ -608,11 +945,12 @@ mod tests {
 	use tokio::sync::Notify;
 
 	use super::{
-		LIBRARY_FETCH_TIMEOUT, LIBRARY_REFRESH, LibraryCache, LibraryPlaylist, LibrarySource,
-		LibraryState, PlaylistContents, PlaylistRow, SLOW_REASON, playlist_contents,
-		rootlist_playlists,
+		Change, LIBRARY_FETCH_TIMEOUT, LIBRARY_REFRESH, LibraryCache, LibraryPlaylist,
+		LibrarySource, LibraryState, PlaylistContents, PlaylistRow, SLOW_REASON, SourceClient,
+		Target, add_changes, distinct_uris, liked_write, missing, playlist_contents,
+		remove_changes, rootlist_playlists, rows_holding,
 	};
-	use crate::link::{Link, LinkKind};
+	use crate::link::{ItemId, Link, LinkKind};
 	use crate::{CoreError, SpotifyId};
 
 	fn id(byte: u8) -> SpotifyId {
@@ -795,6 +1133,8 @@ mod tests {
 		);
 	}
 
+	type IndexedRow = (usize, PlaylistRow);
+
 	#[derive(Default)]
 	struct FakeLibrary {
 		playlists: Mutex<Vec<LibraryPlaylist>>,
@@ -808,6 +1148,12 @@ mod tests {
 		hang_rootlist: AtomicBool,
 		/// When set, `contents` waits for it before answering.
 		gate: Option<Arc<Notify>>,
+		/// The calls to `add`: the base revision and the URIs.
+		adds: Mutex<Vec<(Vec<u8>, Vec<String>)>>,
+		/// The calls to `remove`: the base revision and the rows.
+		removes: Mutex<Vec<(Vec<u8>, Vec<IndexedRow>)>>,
+		/// The calls to `set_liked`.
+		likes: Mutex<Vec<(Vec<String>, bool)>>,
 	}
 
 	impl LibrarySource for FakeLibrary {
@@ -839,6 +1185,52 @@ mod tests {
 			tokio::task::yield_now().await;
 			Ok(self.liked.lock().unwrap().clone())
 		}
+
+		async fn add(
+			&self,
+			id: SpotifyId,
+			base_revision: &[u8],
+			uris: &[String],
+		) -> Result<(), CoreError> {
+			tokio::task::yield_now().await;
+			self.adds.lock().unwrap().push((base_revision.to_vec(), uris.to_vec()));
+			let mut all = self.contents.lock().unwrap();
+			let held = all.get_mut(&id).expect("unknown playlist");
+			held.revision = b"after".to_vec();
+			for uri in uris {
+				held.rows.push(PlaylistRow { uri: uri.clone(), item_id: vec![9] });
+			}
+			Ok(())
+		}
+
+		async fn remove(
+			&self,
+			id: SpotifyId,
+			base_revision: &[u8],
+			rows: &[(usize, PlaylistRow)],
+		) -> Result<(), CoreError> {
+			tokio::task::yield_now().await;
+			self.removes.lock().unwrap().push((base_revision.to_vec(), rows.to_vec()));
+			let mut all = self.contents.lock().unwrap();
+			let held = all.get_mut(&id).expect("unknown playlist");
+			held.revision = b"after".to_vec();
+			held.rows.retain(|row| !rows.iter().any(|(_, gone)| gone == row));
+			Ok(())
+		}
+
+		async fn set_liked(&self, uris: &[String], liked: bool) -> Result<(), CoreError> {
+			tokio::task::yield_now().await;
+			self.likes.lock().unwrap().push((uris.to_vec(), liked));
+			let mut set = self.liked.lock().unwrap();
+			for uri in uris {
+				if liked {
+					set.insert(uri.clone());
+				} else {
+					set.remove(uri);
+				}
+			}
+			Ok(())
+		}
 	}
 
 	/// A library of an editable playlist A holding `t1`, a followed playlist B, and one liked
@@ -850,6 +1242,270 @@ mod tests {
 		fake.contents.lock().unwrap().insert(id(1), contents("r1", &["t1"]));
 		fake.liked.lock().unwrap().insert("t2".to_owned());
 		fake
+	}
+
+	fn track(byte: u8) -> ItemId {
+		ItemId::Track(id(byte))
+	}
+
+	fn episode(byte: u8) -> ItemId {
+		ItemId::Episode(id(byte))
+	}
+
+	fn uri_of(item: ItemId) -> String {
+		item.uri().to_uri()
+	}
+
+	fn strings(uris: &[&str]) -> Vec<String> {
+		uris.iter().map(|uri| (*uri).to_owned()).collect()
+	}
+
+	#[test]
+	fn distinct_uris_keeps_the_first_of_each() {
+		let items = [track(1), episode(2), track(1), track(3), episode(2)];
+		assert_eq!(
+			distinct_uris(&items),
+			vec![uri_of(track(1)), uri_of(episode(2)), uri_of(track(3))]
+		);
+	}
+
+	#[test]
+	fn missing_lists_what_the_playlist_lacks_and_counts_the_rest() {
+		let held = contents("r", &["a", "c"]);
+		let (lacking, already) = missing(&strings(&["a", "b", "c", "d"]), &held);
+		assert_eq!(lacking, strings(&["b", "d"]));
+		assert_eq!(already, 2);
+	}
+
+	#[test]
+	fn rows_holding_finds_every_copy() {
+		let held = PlaylistContents {
+			revision: b"r".to_vec(),
+			rows: vec![
+				PlaylistRow { uri: "a".to_owned(), item_id: vec![0] },
+				PlaylistRow { uri: "b".to_owned(), item_id: vec![1] },
+				PlaylistRow { uri: "a".to_owned(), item_id: vec![2] },
+			],
+		};
+		let found = rows_holding(&strings(&["a"]), &held);
+		assert_eq!(found, vec![(0, held.rows[0].clone()), (2, held.rows[2].clone())]);
+	}
+
+	#[test]
+	fn the_add_message_appends_the_tracks_after_the_base_revision() {
+		use librespot_protocol::playlist4_external::op::Kind;
+		let message = add_changes(b"rev", &strings(&["spotify:track:a", "spotify:track:b"]));
+		assert_eq!(message.base_revision(), b"rev");
+		assert!(message.want_resulting_revisions());
+		assert_eq!(message.deltas.len(), 1);
+		let delta = &message.deltas[0];
+		assert_eq!(delta.info.source.client(), SourceClient::CLIENT);
+		assert_eq!(delta.ops.len(), 1);
+		let op = &delta.ops[0];
+		assert_eq!(op.kind(), Kind::ADD);
+		assert!(op.add.add_last());
+		let uris: Vec<&str> = op.add.items.iter().map(Item::uri).collect();
+		assert_eq!(uris, ["spotify:track:a", "spotify:track:b"]);
+	}
+
+	#[test]
+	fn the_remove_message_names_each_row() {
+		use librespot_protocol::playlist4_external::op::Kind;
+		let rows = vec![
+			(0, PlaylistRow { uri: "spotify:track:a".to_owned(), item_id: vec![1; 8] }),
+			(4, PlaylistRow { uri: "spotify:track:a".to_owned(), item_id: vec![2; 8] }),
+		];
+		let message = remove_changes(b"rev", &rows);
+		assert_eq!(message.base_revision(), b"rev");
+		assert!(message.want_resulting_revisions());
+		let delta = &message.deltas[0];
+		assert_eq!(delta.info.source.client(), SourceClient::CLIENT);
+		assert_eq!(delta.ops.len(), 1);
+		let op = &delta.ops[0];
+		assert_eq!(op.kind(), Kind::REM);
+		assert!(op.rem.items_as_key());
+		assert_eq!(op.rem.items.len(), 2);
+		assert_eq!(op.rem.items[1].uri(), "spotify:track:a");
+		assert_eq!(op.rem.items[0].attributes.item_id(), [1; 8]);
+		assert_eq!(op.rem.items[1].attributes.item_id(), [2; 8]);
+	}
+
+	/// The fields of a Liked Songs write: the username, the set, and each item's fields.
+	fn read_write(bytes: &[u8]) -> (String, String, Vec<(String, i32, bool)>) {
+		let mut input = protobuf::CodedInputStream::from_bytes(bytes);
+		let (mut username, mut set, mut items) = (String::new(), String::new(), Vec::new());
+		while let Some(tag) = input.read_raw_tag_or_eof().unwrap() {
+			match tag >> 3 {
+				1 => username = input.read_string().unwrap(),
+				2 => set = input.read_string().unwrap(),
+				3 => {
+					let item = input.read_bytes().unwrap();
+					let mut item = protobuf::CodedInputStream::from_bytes(&item);
+					let (mut uri, mut added_at, mut removed) = (String::new(), 0, false);
+					while let Some(tag) = item.read_raw_tag_or_eof().unwrap() {
+						match tag >> 3 {
+							1 => uri = item.read_string().unwrap(),
+							2 => added_at = item.read_int32().unwrap(),
+							3 => removed = item.read_bool().unwrap(),
+							other => panic!("unexpected field {other}"),
+						}
+					}
+					items.push((uri, added_at, removed));
+				}
+				other => panic!("unexpected field {other}"),
+			}
+		}
+		(username, set, items)
+	}
+
+	#[test]
+	fn the_liked_songs_write_names_each_track() {
+		let uris = strings(&["spotify:track:a", "spotify:track:b"]);
+		let (username, set, items) = read_write(&liked_write("leonard", &uris, true, 1234));
+		assert_eq!(username, "leonard");
+		assert_eq!(set, "collection");
+		assert_eq!(
+			items,
+			vec![
+				("spotify:track:a".to_owned(), 1234, false),
+				("spotify:track:b".to_owned(), 1234, false),
+			]
+		);
+		let (_, _, items) = read_write(&liked_write("leonard", &uris, false, 1234));
+		assert!(items.iter().all(|(_, _, removed)| *removed));
+	}
+
+	async fn loaded(source: &FakeLibrary) -> LibraryCache {
+		let cache = LibraryCache::default();
+		cache.fetch(source, Instant::now()).await;
+		cache
+	}
+
+	#[tokio::test]
+	async fn adding_reads_the_playlist_first_and_adds_only_what_it_lacks() {
+		let source = fake();
+		source.contents.lock().unwrap().insert(id(1), contents("r1", &[&uri_of(track(1))]));
+		let cache = loaded(&source).await;
+		// The playlist changed on Spotify after the cache read it.
+		source.contents.lock().unwrap().get_mut(&id(1)).unwrap().revision = b"r9".to_vec();
+		let change =
+			cache.add(&source, Target::Playlist(id(1)), &[track(1), track(2)]).await.unwrap();
+		assert_eq!(change, Change { changed: 1, unchanged: 1, episodes_left_out: 0 });
+		assert_eq!(*source.adds.lock().unwrap(), vec![(b"r9".to_vec(), vec![uri_of(track(2))])]);
+	}
+
+	#[tokio::test]
+	async fn a_track_selected_twice_is_added_once() {
+		let source = fake();
+		let cache = loaded(&source).await;
+		let change =
+			cache.add(&source, Target::Playlist(id(1)), &[track(5), track(5)]).await.unwrap();
+		assert_eq!(change.changed, 1);
+		assert_eq!(source.adds.lock().unwrap()[0].1, vec![uri_of(track(5))]);
+	}
+
+	#[tokio::test]
+	async fn adding_what_is_all_there_sends_nothing() {
+		let source = fake();
+		source.contents.lock().unwrap().insert(id(1), contents("r1", &[&uri_of(track(1))]));
+		let cache = loaded(&source).await;
+		let change = cache.add(&source, Target::Playlist(id(1)), &[track(1)]).await.unwrap();
+		assert_eq!(change, Change { changed: 0, unchanged: 1, episodes_left_out: 0 });
+		assert!(source.adds.lock().unwrap().is_empty());
+	}
+
+	#[tokio::test]
+	async fn removing_takes_every_copy_out() {
+		let source = fake();
+		source.contents.lock().unwrap().insert(
+			id(1),
+			contents("r1", &[&uri_of(track(1)), &uri_of(track(2)), &uri_of(track(1))]),
+		);
+		let cache = loaded(&source).await;
+		let change = cache.remove(&source, Target::Playlist(id(1)), &[track(1)]).await.unwrap();
+		assert_eq!(change.changed, 2);
+		let removes = source.removes.lock().unwrap();
+		assert_eq!(removes[0].0, b"r1".to_vec());
+		assert_eq!(removes[0].1.iter().map(|(index, _)| *index).collect::<Vec<_>>(), vec![0, 2]);
+		drop(removes);
+		let library = ready(cache.held());
+		assert_eq!(library.holds_all(id(1), &[uri_of(track(1))]), Some(false));
+		assert_eq!(library.holds_all(id(1), &[uri_of(track(2))]), Some(true));
+	}
+
+	#[tokio::test]
+	async fn removing_what_is_not_there_sends_nothing() {
+		let source = fake();
+		let cache = loaded(&source).await;
+		let change = cache.remove(&source, Target::Playlist(id(1)), &[track(7)]).await.unwrap();
+		assert_eq!(change.changed, 0);
+		assert!(source.removes.lock().unwrap().is_empty());
+	}
+
+	#[tokio::test]
+	async fn after_a_change_the_held_copy_is_read_again() {
+		let source = fake();
+		let cache = loaded(&source).await;
+		let uris = [uri_of(track(4))];
+		assert_eq!(ready(cache.held()).holds_all(id(1), &uris), Some(false));
+		cache.add(&source, Target::Playlist(id(1)), &[track(4)]).await.unwrap();
+		let library = ready(cache.held());
+		assert_eq!(library.holds_all(id(1), &uris), Some(true));
+		assert_eq!(library.contents(id(1)).unwrap().revision, b"after".to_vec());
+		assert_eq!(library.playlists[0].revision, b"after".to_vec());
+	}
+
+	#[tokio::test]
+	async fn saving_to_liked_songs_leaves_episodes_out() {
+		let source = fake();
+		let cache = loaded(&source).await;
+		let change = cache
+			.add(&source, Target::LikedSongs, &[track(1), episode(2), episode(2)])
+			.await
+			.unwrap();
+		assert_eq!(change, Change { changed: 1, unchanged: 0, episodes_left_out: 1 });
+		assert_eq!(*source.likes.lock().unwrap(), vec![(vec![uri_of(track(1))], true)]);
+		assert_eq!(ready(cache.held()).liked_holds_all(&[uri_of(track(1))]), Some(true));
+	}
+
+	#[tokio::test]
+	async fn saving_counts_what_liked_songs_already_holds() {
+		let source = fake();
+		source.liked.lock().unwrap().insert(uri_of(track(1)));
+		let cache = loaded(&source).await;
+		let change = cache.add(&source, Target::LikedSongs, &[track(1), track(2)]).await.unwrap();
+		assert_eq!(change, Change { changed: 1, unchanged: 1, episodes_left_out: 0 });
+		assert_eq!(*source.likes.lock().unwrap(), vec![(vec![uri_of(track(2))], true)]);
+		let change = cache.add(&source, Target::LikedSongs, &[track(1), track(2)]).await.unwrap();
+		assert_eq!(change, Change { changed: 0, unchanged: 2, episodes_left_out: 0 });
+		assert_eq!(source.likes.lock().unwrap().len(), 1);
+	}
+
+	#[tokio::test]
+	async fn saving_without_a_held_liked_set_sends_every_track() {
+		let source = fake();
+		let cache = LibraryCache::default();
+		let change = cache.add(&source, Target::LikedSongs, &[track(1)]).await.unwrap();
+		assert_eq!(change, Change { changed: 1, unchanged: 0, episodes_left_out: 0 });
+	}
+
+	#[tokio::test]
+	async fn removing_from_liked_songs_unsaves_the_tracks() {
+		let source = fake();
+		source.liked.lock().unwrap().extend([uri_of(track(1)), uri_of(track(2))]);
+		let cache = loaded(&source).await;
+		let change = cache
+			.remove(&source, Target::LikedSongs, &[track(1), track(1), track(2)])
+			.await
+			.unwrap();
+		assert_eq!(change, Change { changed: 2, unchanged: 0, episodes_left_out: 0 });
+		assert_eq!(
+			*source.likes.lock().unwrap(),
+			vec![(vec![uri_of(track(1)), uri_of(track(2))], false)]
+		);
+		let library = ready(cache.held());
+		assert_eq!(library.liked_holds_all(&[uri_of(track(1))]), Some(false));
+		assert_eq!(library.liked_holds_all(&[uri_of(track(2))]), Some(false));
 	}
 
 	fn is_ready(state: &LibraryState) -> bool {
