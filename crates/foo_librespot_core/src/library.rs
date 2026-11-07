@@ -402,6 +402,16 @@ pub(crate) fn liked_write(username: &str, uris: &[String], liked: bool, now_secs
 	body
 }
 
+/// The content type of a write to the collection.
+pub(crate) const LIKED_CONTENT_TYPE: &str = "application/vnd.collection-v2.spotify.proto";
+
+/// The headers of a write to the collection.
+pub(crate) fn liked_headers() -> HeaderMap {
+	let mut headers = HeaderMap::new();
+	headers.insert(CONTENT_TYPE, HeaderValue::from_static(LIKED_CONTENT_TYPE));
+	headers
+}
+
 fn write_liked(
 	out: &mut CodedOutputStream<'_>,
 	username: &str,
@@ -739,7 +749,11 @@ impl LibraryCache {
 				let (lacking, already) = missing(&uris, &fresh);
 				if !lacking.is_empty() {
 					source.add(id, &fresh.revision, &lacking).await?;
-					self.read_again(source, id, epoch).await;
+					if let Some(after) = self.read_again(source, id, epoch).await
+						&& !missing(&lacking, &after).0.is_empty()
+					{
+						return Err(stale_change());
+					}
 				}
 				Ok(Change { changed: lacking.len(), unchanged: already, episodes_left_out: 0 })
 			}
@@ -780,7 +794,12 @@ impl LibraryCache {
 				let rows = rows_holding(&distinct_uris(items), &fresh);
 				if !rows.is_empty() {
 					source.remove(id, &fresh.revision, &rows).await?;
-					self.read_again(source, id, epoch).await;
+					if let Some(after) = self.read_again(source, id, epoch).await
+						&& rows.iter().any(|(_, gone)| {
+							after.rows.iter().any(|row| row.item_id == gone.item_id)
+						}) {
+						return Err(stale_change());
+					}
 				}
 				Ok(Change { changed: rows.len(), ..Change::default() })
 			}
@@ -800,33 +819,39 @@ impl LibraryCache {
 	}
 
 	/// Reads playlist `id` after a change and publishes its rows and revision, unless `clear`
-	/// has run since `epoch`. When the read fails, the held copy stays and the next snapshot
-	/// starts a fetch.
-	async fn read_again<S: LibrarySource>(&self, source: &S, id: SpotifyId, epoch: u64) {
+	/// has run since `epoch`, and answers what it read. When the read fails, the held copy stays,
+	/// the next snapshot starts a fetch and the answer is `None`.
+	async fn read_again<S: LibrarySource>(
+		&self,
+		source: &S,
+		id: SpotifyId,
+		epoch: u64,
+	) -> Option<PlaylistContents> {
 		let result = source.contents(id).await;
 		let mut inner = self.lock();
 		if inner.epoch != epoch {
-			return;
+			return None;
 		}
 		let contents = match result {
 			Ok(contents) => contents,
 			Err(error) => {
 				log::warn!("couldn't read a Spotify playlist after changing it: {error}");
 				inner.started = None;
-				return;
+				return None;
 			}
 		};
 		let Some(mut library) = inner.library.as_deref().cloned() else {
-			return;
+			return Some(contents);
 		};
 		if let Some(playlist) = library.playlists.iter_mut().find(|playlist| playlist.id == id) {
 			playlist.revision.clone_from(&contents.revision);
-			library.store(id, contents);
+			library.store(id, contents.clone());
 			inner.library = Some(Arc::new(library));
 			if inner.running.is_some() {
 				inner.changed_playlists.insert(id);
 			}
 		}
+		Some(contents)
 	}
 
 	/// Changes the held Liked Songs, when it is known and `clear` has not run since `epoch`.
@@ -888,6 +913,14 @@ impl LibraryCache {
 
 /// Why a change refuses a playlist Spotify sent only part of.
 const TRUNCATED_REASON: &str = "Spotify sent only part of this playlist, so foo_librespot can't tell which tracks it already holds";
+
+/// The error of a change Spotify answered but did not apply, because its base revision was old.
+fn stale_change() -> CoreError {
+	CoreError::Unavailable(
+		"Spotify didn't take the change because the playlist changed meanwhile; try again"
+			.to_owned(),
+	)
+}
 
 /// The rows of playlist `id`, read from `source`; fails when Spotify sent only some of them.
 async fn whole_contents<S: LibrarySource>(
@@ -1047,8 +1080,7 @@ impl LibrarySource for LibrespotLibrary {
 			.duration_since(std::time::UNIX_EPOCH)
 			.map_or(0, |since| i32::try_from(since.as_secs()).unwrap_or(i32::MAX));
 		let body = liked_write(&self.session.username(), uris, liked, now);
-		let mut headers = HeaderMap::new();
-		headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/x-protobuf"));
+		let headers = liked_headers();
 		retry_rate_limited(|| {
 			self.session.spclient().request(
 				&Method::POST,
@@ -1089,10 +1121,11 @@ mod tests {
 	use tokio::sync::Notify;
 
 	use super::{
-		Change, LIBRARY_CHANGE_TIMEOUT, LIBRARY_FETCH_TIMEOUT, LIBRARY_REFRESH, LibraryCache,
-		LibraryPlaylist, LibrarySource, LibraryState, PlaylistContents, PlaylistRow, SLOW_REASON,
-		SourceClient, Target, add_changes, distinct_uris, liked_write, missing, playlist_contents,
-		remove_changes, rootlist_playlists, rows_holding, within_change_limit,
+		Change, LIBRARY_CHANGE_TIMEOUT, LIBRARY_FETCH_TIMEOUT, LIBRARY_REFRESH, LIKED_CONTENT_TYPE,
+		LibraryCache, LibraryPlaylist, LibrarySource, LibraryState, PlaylistContents, PlaylistRow,
+		SLOW_REASON, SourceClient, Target, add_changes, distinct_uris, liked_headers, liked_write,
+		missing, playlist_contents, remove_changes, rootlist_playlists, rows_holding,
+		within_change_limit,
 	};
 	use crate::link::{ItemId, Link, LinkKind};
 	use crate::{CoreError, SpotifyId};
@@ -1325,6 +1358,8 @@ mod tests {
 		/// opens.
 		hold_liked: AtomicBool,
 		liked_gate: Arc<Notify>,
+		/// When set, `add` and `remove` change nothing, as Spotify does for a stale revision.
+		drop_changes: AtomicBool,
 		/// When set, `set_liked` waits for `set_liked_gate` after recording its call.
 		hold_set_liked: AtomicBool,
 		set_liked_gate: Arc<Notify>,
@@ -1401,6 +1436,9 @@ mod tests {
 		) -> Result<(), CoreError> {
 			tokio::task::yield_now().await;
 			self.adds.lock().unwrap().push((base_revision.to_vec(), uris.to_vec()));
+			if self.drop_changes.load(Ordering::SeqCst) {
+				return Ok(());
+			}
 			let mut all = self.contents.lock().unwrap();
 			let held = all.get_mut(&id).expect("unknown playlist");
 			held.revision = b"after".to_vec();
@@ -1418,6 +1456,9 @@ mod tests {
 		) -> Result<(), CoreError> {
 			tokio::task::yield_now().await;
 			self.removes.lock().unwrap().push((base_revision.to_vec(), rows.to_vec()));
+			if self.drop_changes.load(Ordering::SeqCst) {
+				return Ok(());
+			}
 			let mut all = self.contents.lock().unwrap();
 			let held = all.get_mut(&id).expect("unknown playlist");
 			held.revision = b"after".to_vec();
@@ -1830,6 +1871,54 @@ mod tests {
 		let (state, start) = cache.snapshot(Instant::now(), None);
 		assert!(start);
 		assert!(is_ready(&state));
+	}
+
+	#[test]
+	fn the_liked_songs_write_is_sent_as_the_collection_type() {
+		let headers = liked_headers();
+		assert_eq!(
+			headers.get(http::header::CONTENT_TYPE).unwrap(),
+			"application/vnd.collection-v2.spotify.proto"
+		);
+		assert_eq!(LIKED_CONTENT_TYPE, "application/vnd.collection-v2.spotify.proto");
+	}
+
+	const STALE: &str =
+		"Spotify didn't take the change because the playlist changed meanwhile; try again";
+
+	#[tokio::test]
+	async fn an_add_spotify_dropped_is_an_error() {
+		let source = fake();
+		let cache = loaded(&source).await;
+		source.drop_changes.store(true, Ordering::SeqCst);
+		let result = cache.add(&source, Target::Playlist(id(1)), &[track(4)]).await;
+		assert!(
+			matches!(&result, Err(CoreError::Unavailable(reason)) if reason == STALE),
+			"{result:?}"
+		);
+	}
+
+	#[tokio::test]
+	async fn a_remove_spotify_dropped_is_an_error() {
+		let source = fake();
+		source.contents.lock().unwrap().insert(id(1), contents("r1", &[&uri_of(track(1))]));
+		let cache = loaded(&source).await;
+		source.drop_changes.store(true, Ordering::SeqCst);
+		let result = cache.remove(&source, Target::Playlist(id(1)), &[track(1)]).await;
+		assert!(
+			matches!(&result, Err(CoreError::Unavailable(reason)) if reason == STALE),
+			"{result:?}"
+		);
+	}
+
+	#[tokio::test]
+	async fn a_change_whose_re_read_fails_still_reports_success() {
+		let source = fake();
+		let cache = loaded(&source).await;
+		let next = source.contents_calls.load(Ordering::SeqCst) + 2;
+		source.fail_contents_call.store(next, Ordering::SeqCst);
+		source.drop_changes.store(true, Ordering::SeqCst);
+		assert!(cache.add(&source, Target::Playlist(id(1)), &[track(4)]).await.is_ok());
 	}
 
 	fn is_ready(state: &LibraryState) -> bool {
