@@ -98,9 +98,8 @@ fn fail(noun: &str, title: &str, why: &dyn Display) {
 
 #[cfg(test)]
 mod tests {
-	use foo_librespot_core::link::{ItemId, Link, LinkKind};
-	use foo_librespot_core::related::{Found, Opened, Related};
-	use foo_librespot_core::{CoreError, SpotifyId};
+	use foo_librespot_core::CoreError;
+	use foo_librespot_core::related::{Found, Related};
 	use foxide2k::abi::{main_thread, playlist};
 	use foxide2k::dialog::host::{Dialog, destroy};
 	use foxide2k::popup::PopupIcon;
@@ -108,21 +107,11 @@ mod tests {
 
 	use super::open_related;
 	use crate::artist_window;
-	use crate::testing::{installed_backend, installed_prompt, track_id, wait_until};
+	use crate::testing::{
+		ALBUM_ID, GETTY_TRACK, KEITH_ID, getty_artists, getty_track, installed_api,
+		installed_backend, installed_prompt, wait_until,
+	};
 	use crate::window::brought_up;
-
-	const GETTY_TRACK: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
-	const KEITH: &str = "0I4Bk2s2BUJyykCwtxx8Xx";
-
-	fn installed_api() -> &'static FakeApi {
-		let api = FakeApi::new();
-		api.install();
-		api
-	}
-
-	fn getty_track() -> ItemId {
-		ItemId::Track(track_id())
-	}
 
 	/// Waits until the work the lookup queued for the main thread has run.
 	fn run_main_thread_work(api: &FakeApi) {
@@ -142,7 +131,7 @@ mod tests {
 		open_related(getty_track(), Related::Album, GETTY_TRACK.to_owned(), None);
 		run_main_thread_work(api);
 		assert_eq!(fake.related_calls(), [(getty_track(), Related::Album)]);
-		assert_eq!(api.location_requests(), [["sptf://spotify:album:4wPtS24asgBAG4VOmYYB9O"]]);
+		assert_eq!(api.location_requests(), [[format!("sptf://spotify:album:{ALBUM_ID}")]]);
 		api.finish_locations(0, &[GETTY_TRACK]).unwrap();
 		assert_eq!(api.tabs()[0].name, "In Christ Alone");
 	}
@@ -155,7 +144,7 @@ mod tests {
 		run_main_thread_work(api);
 		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist(None))]);
 		let dialog = artist_window::WINDOW.current().expect("the artist window is open");
-		assert_eq!(listed(dialog), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(dialog.list_texts(artist_window::LIST), ["Keith Getty", "Kristyn Getty"]);
 		assert_eq!(brought_up(), 1);
 		assert!(api.location_requests().is_empty());
 		assert!(!reported_a_failure(api), "{:?} {:?}", api.popups(), api.console_lines());
@@ -164,18 +153,7 @@ mod tests {
 
 	/// What a lookup finds when Spotify names Keith Getty alone.
 	fn keith_alone() -> Found {
-		let id = SpotifyId::from_base62(KEITH).unwrap();
-		Found::One(Opened {
-			name: "Keith Getty".to_owned(),
-			link: Link::Id { kind: LinkKind::Artist, id },
-		})
-	}
-
-	/// The names the artist window lists.
-	fn listed(dialog: Dialog) -> Vec<String> {
-		(0..dialog.list_count(artist_window::LIST))
-			.map(|row| dialog.list_text(artist_window::LIST, row))
-			.collect()
+		Found::One(getty_artists().remove(0))
 	}
 
 	/// Shows the artist window saying "Loading…" and starts looking up every artist of the
@@ -200,7 +178,7 @@ mod tests {
 		run_main_thread_work(api);
 		pump_messages();
 		assert_eq!(artist_window::WINDOW.current(), Some(dialog));
-		assert_eq!(listed(dialog), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(dialog.list_texts(artist_window::LIST), ["Keith Getty", "Kristyn Getty"]);
 		assert_eq!(dialog.text(artist_window::STATUS), "");
 		assert_eq!(brought_up(), 2);
 		destroy(dialog);
@@ -215,7 +193,7 @@ mod tests {
 		run_main_thread_work(api);
 		assert!(!dialog.is_alive());
 		assert!(artist_window::WINDOW.current().is_none());
-		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KEITH}")]]);
+		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KEITH_ID}")]]);
 		assert!(!reported_a_failure(api), "{:?} {:?}", api.popups(), api.console_lines());
 	}
 
@@ -278,7 +256,7 @@ mod tests {
 		let dialog = look_up_artists_while_loading();
 		run_main_thread_work(api);
 		pump_messages();
-		assert_eq!(listed(dialog), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(dialog.list_texts(artist_window::LIST), ["Keith Getty", "Kristyn Getty"]);
 		let look_up = |wait| {
 			open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned(), wait);
 		};
@@ -287,7 +265,7 @@ mod tests {
 		run_main_thread_work(api);
 		look_up(None);
 		run_main_thread_work(api);
-		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KEITH}")]]);
+		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KEITH_ID}")]]);
 		fake.related_with(|_, _| Err(CoreError::Unavailable("gone".to_owned())));
 		look_up(Some(earlier));
 		wait_until(|| !api.popups().is_empty());
@@ -295,7 +273,7 @@ mod tests {
 		look_up(None);
 		wait_until(|| api.popups().len() == 2);
 		assert_eq!(artist_window::WINDOW.current(), Some(dialog));
-		assert_eq!(listed(dialog), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(dialog.list_texts(artist_window::LIST), ["Keith Getty", "Kristyn Getty"]);
 		destroy(dialog);
 	}
 
@@ -307,7 +285,7 @@ mod tests {
 		let dialog = artist_window::WINDOW.current().unwrap();
 		open_related(getty_track(), Related::Album, "In Christ Alone".to_owned(), None);
 		run_main_thread_work(api);
-		assert_eq!(api.location_requests(), [["sptf://spotify:album:4wPtS24asgBAG4VOmYYB9O"]]);
+		assert_eq!(api.location_requests(), [[format!("sptf://spotify:album:{ALBUM_ID}")]]);
 		assert_eq!(artist_window::WINDOW.current(), Some(dialog));
 		assert_eq!(dialog.text(artist_window::STATUS), "Loading…");
 		destroy(dialog);
@@ -322,7 +300,7 @@ mod tests {
 		fake.related_with(|_, _| Ok(keith_alone()));
 		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned(), None);
 		run_main_thread_work(api);
-		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KEITH}")]]);
+		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KEITH_ID}")]]);
 		fake.related_with(|_, _| Err(CoreError::Unavailable("gone".to_owned())));
 		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned(), None);
 		wait_until(|| !api.popups().is_empty());

@@ -142,7 +142,7 @@ impl DialogHandler for ArtistWindow {
 #[cfg(test)]
 mod tests {
 	use foo_librespot_core::SpotifyId;
-	use foo_librespot_core::link::{Link, LinkKind};
+	use foo_librespot_core::link::LinkKind;
 	use foo_librespot_core::related::Opened;
 	use foxide2k::abi::playlist;
 	use foxide2k::dialog::host::{Dialog, destroy};
@@ -150,39 +150,15 @@ mod tests {
 	use foxide2k::dialog::style::BS_DEFPUSHBUTTON;
 	use foxide2k::dialog::template::ControlClass;
 	use foxide2k::popup::PopupIcon;
-	use foxide2k::testing::{FakeApi, hidden_window, pump_messages, send_close, send_command};
+	use foxide2k::testing::{hidden_window, pump_messages, send_close, send_command};
 
 	use super::{LABEL, LIST, STATUS, WINDOW, settle, show_loading, window_template};
+	use crate::testing::{GETTY_TRACK, KEITH_ID, KRISTYN_ID, getty_artists, installed_api};
 	use crate::window::brought_up;
-
-	const GETTY_TRACK: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
-	const KRISTYN: &str = "2kxP07DLgs4xlWz8YHlvfh";
-
-	fn artist(name: &str, id: SpotifyId) -> Opened {
-		Opened { name: name.to_owned(), link: Link::Id { kind: LinkKind::Artist, id } }
-	}
-
-	/// The artists of "In Christ Alone", in the track's order.
-	fn getty_artists() -> Vec<Opened> {
-		vec![
-			artist("Keith Getty", SpotifyId::from_base62("0I4Bk2s2BUJyykCwtxx8Xx").unwrap()),
-			artist("Kristyn Getty", SpotifyId::from_base62(KRISTYN).unwrap()),
-		]
-	}
 
 	/// Settles the window as a lookup that had no "Loading…" window and found the Getty artists.
 	fn list_getty_artists() {
 		settle(None, Some(getty_artists()));
-	}
-
-	fn installed() -> &'static FakeApi {
-		let api = FakeApi::new();
-		api.install();
-		api
-	}
-
-	fn texts(dialog: Dialog) -> Vec<String> {
-		(0..dialog.list_count(LIST)).map(|row| dialog.list_text(LIST, row)).collect()
 	}
 
 	#[test]
@@ -200,10 +176,10 @@ mod tests {
 
 	#[test]
 	fn the_window_lists_the_artists_in_order() {
-		installed();
+		installed_api();
 		list_getty_artists();
 		let dialog = WINDOW.current().unwrap();
-		assert_eq!(texts(dialog), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(dialog.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
 		assert_eq!(dialog.tab_order(), [LIST, IDOK, IDCANCEL]);
 		assert_eq!(dialog.focused(), Some(LIST));
 		assert_eq!(dialog.list_selection(LIST), Some(0));
@@ -214,7 +190,7 @@ mod tests {
 
 	#[test]
 	fn loading_says_so_until_the_artists_arrive() {
-		installed();
+		installed_api();
 		let wait = show_loading();
 		let dialog = WINDOW.current().unwrap();
 		assert_eq!(dialog.text(STATUS), "Loading…");
@@ -223,7 +199,7 @@ mod tests {
 		settle(Some(wait), Some(getty_artists()));
 		pump_messages();
 		assert_eq!(WINDOW.current(), Some(dialog));
-		assert_eq!(texts(dialog), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(dialog.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
 		assert_eq!(dialog.list_selection(LIST), Some(0));
 		assert_eq!(dialog.text(STATUS), "");
 		assert_eq!(brought_up(), 2);
@@ -232,7 +208,7 @@ mod tests {
 
 	#[test]
 	fn open_while_loading_does_nothing() {
-		let api = installed();
+		let api = installed_api();
 		show_loading();
 		let dialog = WINDOW.current().unwrap();
 		send_command(&dialog, IDOK, BN_CLICKED);
@@ -243,15 +219,16 @@ mod tests {
 
 	#[test]
 	fn showing_again_replaces_the_list() {
-		installed();
+		installed_api();
 		list_getty_artists();
 		let dialog = WINDOW.current().unwrap();
 		dialog.list_select(LIST, 1);
-		let townend = artist("Stuart Townend", SpotifyId::from_raw(&[0x53; 16]).unwrap());
+		let townend_id = SpotifyId::from_raw(&[0x53; 16]).unwrap();
+		let townend = Opened::new("Stuart Townend", LinkKind::Artist, townend_id);
 		settle(None, Some(vec![townend, getty_artists().remove(0)]));
 		pump_messages();
 		assert_eq!(WINDOW.current(), Some(dialog));
-		assert_eq!(texts(dialog), ["Stuart Townend", "Keith Getty"]);
+		assert_eq!(dialog.list_texts(LIST), ["Stuart Townend", "Keith Getty"]);
 		assert_eq!(dialog.list_selection(LIST), Some(0));
 		assert_eq!(brought_up(), 2);
 		destroy(dialog);
@@ -259,34 +236,31 @@ mod tests {
 
 	#[test]
 	fn picking_an_artist_opens_it_and_closes_the_window() {
-		let api = installed();
+		let api = installed_api();
 		list_getty_artists();
 		let dialog = WINDOW.current().unwrap();
 		dialog.list_select(LIST, 1);
 		send_command(&dialog, IDOK, BN_CLICKED);
 		assert!(!dialog.is_alive());
 		assert!(WINDOW.current().is_none());
-		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KRISTYN}")]]);
+		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KRISTYN_ID}")]]);
 		api.finish_locations(0, &[GETTY_TRACK]).unwrap();
 		assert_eq!(api.tabs().last().unwrap().name, "Kristyn Getty");
 	}
 
 	#[test]
 	fn double_clicking_an_artist_opens_it() {
-		let api = installed();
+		let api = installed_api();
 		list_getty_artists();
 		let dialog = WINDOW.current().unwrap();
 		send_command(&dialog, LIST, LBN_DBLCLK);
 		assert!(!dialog.is_alive());
-		assert_eq!(
-			api.location_requests(),
-			[["sptf://spotify:artist:0I4Bk2s2BUJyykCwtxx8Xx".to_owned()]]
-		);
+		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KEITH_ID}")]]);
 	}
 
 	#[test]
 	fn a_pick_that_cant_be_opened_shows_a_popup_saying_why() {
-		let api = installed();
+		let api = installed_api();
 		api.remove_services(playlist::MANAGER_IID);
 		list_getty_artists();
 		let dialog = WINDOW.current().unwrap();
@@ -311,7 +285,7 @@ mod tests {
 
 	#[test]
 	fn closing_the_window_destroys_it() {
-		let api = installed();
+		let api = installed_api();
 		list_getty_artists();
 		let dialog = WINDOW.current().unwrap();
 		send_command(&dialog, IDCANCEL, BN_CLICKED);
@@ -327,7 +301,7 @@ mod tests {
 
 	#[test]
 	fn closing_while_loading_keeps_that_lookups_artists_from_opening_it() {
-		installed();
+		installed_api();
 		let wait = show_loading();
 		send_command(&WINDOW.current().unwrap(), IDCANCEL, BN_CLICKED);
 		settle(Some(wait), Some(getty_artists()));
@@ -335,27 +309,27 @@ mod tests {
 		assert_eq!(brought_up(), 1);
 		list_getty_artists();
 		let dialog = WINDOW.current().expect("the next artists open the window");
-		assert_eq!(texts(dialog), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(dialog.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
 		assert_eq!(brought_up(), 2);
 		destroy(dialog);
 	}
 
 	#[test]
 	fn artists_open_the_window_when_no_loading_window_was_closed() {
-		installed();
+		installed_api();
 		list_getty_artists();
 		send_command(&WINDOW.current().unwrap(), IDCANCEL, BN_CLICKED);
 		assert_eq!(brought_up(), 1);
 		list_getty_artists();
 		let dialog = WINDOW.current().expect("closing a list doesn't stop the next one");
-		assert_eq!(texts(dialog), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(dialog.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
 		assert_eq!(brought_up(), 2);
 		destroy(dialog);
 	}
 
 	#[test]
 	fn loading_again_after_closing_waits_for_the_new_lookup() {
-		installed();
+		installed_api();
 		let closed = show_loading();
 		send_command(&WINDOW.current().unwrap(), IDCANCEL, BN_CLICKED);
 		let wait = show_loading();
@@ -365,14 +339,14 @@ mod tests {
 		settle(Some(wait), Some(getty_artists()));
 		pump_messages();
 		assert_eq!(WINDOW.current(), Some(dialog));
-		assert_eq!(texts(dialog), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(dialog.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
 		assert_eq!(brought_up(), 3);
 		destroy(dialog);
 	}
 
 	#[test]
 	fn a_later_loading_takes_the_window_over_from_the_earlier_lookup() {
-		installed();
+		installed_api();
 		let earlier = show_loading();
 		let dialog = WINDOW.current().unwrap();
 		let later = show_loading();
@@ -387,7 +361,7 @@ mod tests {
 
 	#[test]
 	fn another_result_closes_only_the_loading_window_it_waits_for() {
-		installed();
+		installed_api();
 		let wait = show_loading();
 		let loading = WINDOW.current().unwrap();
 		settle(Some(wait), None);
@@ -397,14 +371,14 @@ mod tests {
 		let listing = WINDOW.current().expect("a window closed by a result opens again");
 		settle(Some(wait), None);
 		assert!(listing.is_alive());
-		assert_eq!(texts(listing), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(listing.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
 		assert_eq!(brought_up(), 2);
 		destroy(listing);
 	}
 
 	#[test]
 	fn a_result_without_a_wait_leaves_a_loading_window_alone() {
-		installed();
+		installed_api();
 		let wait = show_loading();
 		let dialog = WINDOW.current().unwrap();
 		settle(None, None);
@@ -412,13 +386,13 @@ mod tests {
 		assert_eq!(dialog.text(STATUS), "Loading…");
 		settle(Some(wait), Some(getty_artists()));
 		pump_messages();
-		assert_eq!(texts(dialog), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(dialog.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
 		destroy(dialog);
 	}
 
 	#[test]
 	fn a_result_for_a_closed_loading_window_changes_nothing() {
-		installed();
+		installed_api();
 		let wait = show_loading();
 		send_command(&WINDOW.current().unwrap(), IDCANCEL, BN_CLICKED);
 		settle(Some(wait), None);
@@ -430,7 +404,7 @@ mod tests {
 
 	#[test]
 	fn a_window_that_cant_open_says_why() {
-		let api = installed();
+		let api = installed_api();
 		let gone = hidden_window();
 		destroy(Dialog::from_hwnd(gone));
 		api.set_main_window(gone);

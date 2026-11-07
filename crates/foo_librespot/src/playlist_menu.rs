@@ -235,7 +235,7 @@ mod tests {
 		OpenAlbum, OpenArtist, OpenArtistShortcut, OpenShow, SpotifyGroup, TrackRadio,
 	};
 	use crate::testing::{
-		FakeBackend, episode_id, getty_favourites, installed_backend, installed_prompt,
+		FakeBackend, episode_id, getty_favourites, installed_api_and_backend, installed_prompt,
 		shared_playlist, sunday_set, sunday_set_id, track_id, wait_until,
 	};
 
@@ -308,9 +308,7 @@ mod tests {
 	}
 
 	fn setup(state: LibraryState) -> (&'static FakeApi, FakeBackend) {
-		let api = FakeApi::new();
-		api.install();
-		let fake = installed_backend();
+		let (api, fake) = installed_api_and_backend();
 		fake.set_library(state);
 		(api, fake)
 	}

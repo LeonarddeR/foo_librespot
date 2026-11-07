@@ -191,35 +191,22 @@ mod tests {
 		mainmenu_popup_service,
 	};
 	use foxide2k::popup::PopupIcon;
-	use foxide2k::testing::{FakeApi, FakeFields, MainMenuHandle, MainMenuNodeHandle};
+	use foxide2k::testing::{MainMenuHandle, MainMenuNodeHandle};
 
 	use super::{PlayingAlbum, PlayingArtist, PlayingRadio, PlayingShow, PlayingTrack};
 	use crate::artist_window::{STATUS, WINDOW};
 	use crate::open_playlist::{OpenPlaylist, SpotifyMenu};
-	use crate::testing::{FakeBackend, episode_id, installed_backend, track_id, wait_until};
+	use crate::testing::{
+		BOTH_GETTYS, EPISODE, GETTY_TRACK, KRISTYN_ID, LOCAL, NO_FIELDS, ONE_ARTIST, entry,
+		episode_id, getty_track, installed_api, installed_api_and_backend, wait_until,
+	};
 	use crate::window::brought_up;
-
-	/// "In Christ Alone".
-	const GETTY_TRACK: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
-	const EPISODE: &str = "sptf://spotify:episode:4QomYTPgZ1mpVbUmxBsUpz";
-	const LOCAL: &str = "file://C:\\a.mp3";
-
-	/// What foobar2000 stores for "In Christ Alone".
-	const BOTH_GETTYS: FakeFields<'static> =
-		&[("ARTIST", &["Keith Getty", "Kristyn Getty"]), ("TITLE", &["In Christ Alone"])];
-	const ONE_ARTIST: FakeFields<'static> =
-		&[("ARTIST", &["Keith & Kristyn Getty"]), ("TITLE", &["In Christ Alone"])];
-	const NO_FIELDS: FakeFields<'static> = &[];
 
 	/// The GUID of the Open artist command that asks Spotify for every artist.
 	const EVERY_ARTIST: Guid = Guid::from_u128(0x5dcdad74_570f_4798_b8c1_55d891328120);
 	/// The GUIDs of the first and second stored artists in the Open artist submenu.
 	const FIRST_ARTIST: Guid = Guid::from_u128(0x6cebbc10_071b_4103_8289_c104cdff9e00);
 	const SECOND_ARTIST: Guid = Guid::from_u128(0x6cebbc10_071b_4103_8289_c104cdff9e01);
-
-	fn getty_track() -> ItemId {
-		ItemId::Track(track_id())
-	}
 
 	fn command<T: MainMenuCommand>() -> MainMenuHandle {
 		MainMenuHandle::new(mainmenu_command_service::<T>())
@@ -262,23 +249,9 @@ mod tests {
 		shown
 	}
 
-	fn entry(name: &str, flags: u32) -> (String, u32) {
-		(name.to_owned(), flags)
-	}
-
 	/// The popup a command shows when the playing track isn't a Spotify `what`.
 	fn play_one(command: &str, what: &str) -> (String, String, PopupIcon) {
 		(command.to_owned(), format!("Play a Spotify {what} first."), PopupIcon::Information)
-	}
-
-	fn installed_api() -> &'static FakeApi {
-		let api = FakeApi::new();
-		api.install();
-		api
-	}
-
-	fn setup() -> (&'static FakeApi, FakeBackend) {
-		(installed_api(), installed_backend())
 	}
 
 	fn every_command_greyed() -> [(String, u32); 4] {
@@ -399,7 +372,7 @@ mod tests {
 
 	#[test]
 	fn picking_one_looks_it_up() {
-		let (api, fake) = setup();
+		let (api, fake) = installed_api_and_backend();
 		api.set_now_playing(Some((GETTY_TRACK, BOTH_GETTYS)));
 		assert!(open_artist().dynamic_execute(0, &SECOND_ARTIST).unwrap());
 		assert_eq!(
@@ -407,7 +380,7 @@ mod tests {
 			[(getty_track(), Related::Artist(Some("Kristyn Getty".to_owned())))]
 		);
 		wait_until(|| api.run_main_thread() > 0);
-		assert_eq!(api.location_requests(), [["sptf://spotify:artist:2kxP07DLgs4xlWz8YHlvfh"]]);
+		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KRISTYN_ID}")]]);
 		open_artist().instantiate(0).child(0).unwrap().execute(None).unwrap();
 		assert_eq!(
 			fake.related_calls().last(),
@@ -418,7 +391,7 @@ mod tests {
 
 	#[test]
 	fn a_playing_track_with_one_stored_artist_gets_a_command_that_asks_spotify() {
-		let (api, fake) = setup();
+		let (api, fake) = installed_api_and_backend();
 		for fields in [ONE_ARTIST, NO_FIELDS] {
 			api.set_now_playing(Some((GETTY_TRACK, fields)));
 			let root = open_artist().instantiate(0);
@@ -434,7 +407,7 @@ mod tests {
 
 	#[test]
 	fn each_command_looks_up_what_it_opens() {
-		let (api, fake) = setup();
+		let (api, fake) = installed_api_and_backend();
 		api.set_now_playing(Some((GETTY_TRACK, BOTH_GETTYS)));
 		press::<PlayingAlbum>();
 		press::<PlayingRadio>();
@@ -452,7 +425,7 @@ mod tests {
 
 	#[test]
 	fn open_artist_by_its_shortcut_shows_loading_for_two_stored_artists() {
-		let (api, fake) = setup();
+		let (api, fake) = installed_api_and_backend();
 		api.set_now_playing(Some((GETTY_TRACK, BOTH_GETTYS)));
 		press_open_artist();
 		let dialog = WINDOW.current().expect("the artist window is open");
@@ -464,7 +437,7 @@ mod tests {
 
 	#[test]
 	fn open_artist_by_its_shortcut_for_one_stored_artist_asks_spotify_without_a_window() {
-		let (api, fake) = setup();
+		let (api, fake) = installed_api_and_backend();
 		api.set_now_playing(Some((GETTY_TRACK, ONE_ARTIST)));
 		press_open_artist();
 		assert!(WINDOW.current().is_none());
@@ -473,7 +446,7 @@ mod tests {
 
 	#[test]
 	fn a_shortcut_with_nothing_playing_says_play_a_spotify_track_first() {
-		let (api, fake) = setup();
+		let (api, fake) = installed_api_and_backend();
 		press::<PlayingAlbum>();
 		press_open_artist();
 		press::<PlayingRadio>();
@@ -495,7 +468,7 @@ mod tests {
 
 	#[test]
 	fn a_shortcut_for_the_other_kind_says_what_to_play() {
-		let (api, fake) = setup();
+		let (api, fake) = installed_api_and_backend();
 		api.set_now_playing(Some((GETTY_TRACK, BOTH_GETTYS)));
 		press::<PlayingShow>();
 		api.set_now_playing(Some((EPISODE, NO_FIELDS)));
@@ -518,7 +491,7 @@ mod tests {
 
 	#[test]
 	fn a_shortcut_while_a_local_file_plays_says_play_a_spotify_track_first() {
-		let (api, fake) = setup();
+		let (api, fake) = installed_api_and_backend();
 		api.set_now_playing(Some((LOCAL, BOTH_GETTYS)));
 		press::<PlayingAlbum>();
 		press::<PlayingShow>();

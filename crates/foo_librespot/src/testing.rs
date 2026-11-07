@@ -18,23 +18,70 @@ use foo_librespot_core::related::{Found, Opened, Related, related_in};
 use foo_librespot_core::replaygain::ReplayGain;
 use foo_librespot_core::resolve::{ArtistTracks, Resolved};
 use foo_librespot_core::{CoreError, SpotifyId};
+use foxide2k::testing::{FakeApi, FakeFields};
 
 use crate::backend::{Backend, LoginTask, OnCode, OnDone, OnRelated, PcmTrack};
 
 pub const CHIRP: &[u8] = include_bytes!("../../foo_librespot_core/tests/fixtures/chirp.ogg");
 
-/// "In Christ Alone" by Keith & Kristyn Getty.
-pub const TRACK_ID: &str = "2hQxLiI93xdjqENJuKeXjO";
+/// "In Christ Alone" by Keith & Kristyn Getty, as foobar2000 stores it.
+pub const GETTY_TRACK: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
+
+/// The Spotify ID of [`GETTY_TRACK`].
+pub const TRACK_ID: &str = GETTY_TRACK.split_at("sptf://spotify:track:".len()).1;
 
 pub fn track_id() -> SpotifyId {
 	SpotifyId::from_base62(TRACK_ID).unwrap()
 }
 
-/// A podcast episode, the one the maintainer shared as an example.
-pub const EPISODE_ID: &str = "4QomYTPgZ1mpVbUmxBsUpz";
+/// [`GETTY_TRACK`] as a Spotify item.
+pub fn getty_track() -> ItemId {
+	ItemId::Track(track_id())
+}
+
+/// A podcast episode, the one the maintainer shared as an example, as foobar2000 stores it.
+pub const EPISODE: &str = "sptf://spotify:episode:4QomYTPgZ1mpVbUmxBsUpz";
+
+/// The Spotify ID of [`EPISODE`].
+pub const EPISODE_ID: &str = EPISODE.split_at("sptf://spotify:episode:".len()).1;
 
 pub fn episode_id() -> SpotifyId {
 	SpotifyId::from_base62(EPISODE_ID).unwrap()
+}
+
+/// A local file.
+pub const LOCAL: &str = "file://C:\\a.mp3";
+
+/// The album "In Christ Alone".
+pub const ALBUM_ID: &str = "4wPtS24asgBAG4VOmYYB9O";
+/// Keith Getty.
+pub const KEITH_ID: &str = "0I4Bk2s2BUJyykCwtxx8Xx";
+/// Kristyn Getty, by a made-up ID.
+pub const KRISTYN_ID: &str = "2kxP07DLgs4xlWz8YHlvfh";
+
+/// What foobar2000 stores for "In Christ Alone".
+pub const BOTH_GETTYS: FakeFields<'static> =
+	&[("ARTIST", &["Keith Getty", "Kristyn Getty"]), ("TITLE", &["In Christ Alone"])];
+/// "In Christ Alone" stored with one artist.
+pub const ONE_ARTIST: FakeFields<'static> =
+	&[("ARTIST", &["Keith & Kristyn Getty"]), ("TITLE", &["In Christ Alone"])];
+pub const NO_FIELDS: FakeFields<'static> = &[];
+
+/// A menu entry's name and flags, as the test handles show them.
+pub fn entry(name: &str, flags: u32) -> (String, u32) {
+	(name.to_owned(), flags)
+}
+
+/// A fake foobar2000, installed as the host of this test process.
+pub fn installed_api() -> &'static FakeApi {
+	let api = FakeApi::new();
+	api.install();
+	api
+}
+
+/// A fake foobar2000 and a [`FakeBackend`], both installed for this test process.
+pub fn installed_api_and_backend() -> (&'static FakeApi, FakeBackend) {
+	(installed_api(), installed_backend())
 }
 
 pub fn track_info(id: SpotifyId, title: &str) -> TrackInfo {
@@ -77,10 +124,8 @@ pub fn track_info(id: SpotifyId, title: &str) -> TrackInfo {
 		release_type: Some("album"),
 		missing_album_details: false,
 		links: ItemLinks {
-			album: Some(SpotifyId::from_base62("4wPtS24asgBAG4VOmYYB9O").unwrap()),
-			artists: ["0I4Bk2s2BUJyykCwtxx8Xx", "2kxP07DLgs4xlWz8YHlvfh"]
-				.map(|id| SpotifyId::from_base62(id).unwrap())
-				.to_vec(),
+			album: Some(SpotifyId::from_base62(ALBUM_ID).unwrap()),
+			artists: [KEITH_ID, KRISTYN_ID].map(|id| SpotifyId::from_base62(id).unwrap()).to_vec(),
 			show: None,
 		},
 	}
@@ -161,21 +206,27 @@ pub type RecordedChange = (Edit, Target, Vec<ItemId>, std::thread::ThreadId);
 pub type RelatedResult = fn(ItemId, &Related) -> Result<Found, CoreError>;
 
 /// "In Christ Alone Radio", the radio Spotify makes from "In Christ Alone".
-pub const RADIO_ID: &str = "37i9dQZF1E8O9hzsgLi5jr";
+const RADIO_ID: &str = "37i9dQZF1E8O9hzsgLi5jr";
 
 /// What a lookup ends with unless [`FakeBackend::related_with`] says otherwise: the album, artists
 /// or show of the info [`Backend::track_info`] gives, and "In Christ Alone Radio" for a track.
 fn related_by_default(item: ItemId, what: &Related) -> Result<Found, CoreError> {
 	match (item, what) {
-		(ItemId::Track(_), Related::Radio) => Ok(Found::One(Opened {
-			name: "In Christ Alone Radio".to_owned(),
-			link: Link::Id {
-				kind: LinkKind::Playlist,
-				id: SpotifyId::from_base62(RADIO_ID).unwrap(),
-			},
-		})),
+		(ItemId::Track(_), Related::Radio) => {
+			let radio = SpotifyId::from_base62(RADIO_ID).unwrap();
+			Ok(Found::One(Opened::new("In Christ Alone Radio", LinkKind::Playlist, radio)))
+		}
 		(ItemId::Track(id), what) => related_in(&track_info(id, "In Christ Alone"), what),
 		(ItemId::Episode(id), what) => related_in(&episode_info(id, "Singing the Psalms"), what),
+	}
+}
+
+/// The artists of "In Christ Alone", in the track's order, as a lookup of every artist of
+/// [`GETTY_TRACK`] finds them by default.
+pub fn getty_artists() -> Vec<Opened> {
+	match related_by_default(getty_track(), &Related::Artist(None)) {
+		Ok(Found::Artists(artists)) => artists,
+		other => panic!("the Getty track has several artists: {other:?}"),
 	}
 }
 
@@ -740,64 +791,4 @@ pub fn stop_after(
 pub fn lock_shared_state() -> std::sync::MutexGuard<'static, ()> {
 	static SHARED: Mutex<()> = Mutex::new(());
 	SHARED.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-#[cfg(test)]
-mod tests {
-	use std::sync::mpsc;
-	use std::time::Duration;
-
-	use foo_librespot_core::CoreError;
-	use foo_librespot_core::link::{ItemId, Link, LinkKind};
-	use foo_librespot_core::related::{Found, Opened, Related};
-
-	use super::{FakeBackend, track_id};
-	use crate::backend::Backend;
-
-	/// Looks `what` up for the Getty track and waits for the answer and the thread it came on.
-	fn look_up(
-		fake: &FakeBackend,
-		what: Related,
-	) -> (Result<Found, CoreError>, std::thread::ThreadId) {
-		let (done, answer) = mpsc::channel();
-		fake.related(
-			ItemId::Track(track_id()),
-			what,
-			Box::new(move |result| {
-				let _ = done.send((result, std::thread::current().id()));
-			}),
-		);
-		answer.recv_timeout(Duration::from_secs(5)).unwrap()
-	}
-
-	#[test]
-	fn a_lookup_is_recorded_and_answered_from_the_tracks_info_on_another_thread() {
-		let fake = FakeBackend::default();
-		let (result, thread) = look_up(&fake, Related::Album);
-		assert_eq!(fake.related_calls(), [(ItemId::Track(track_id()), Related::Album)]);
-		let album = super::track_info(track_id(), "In Christ Alone").links.album.unwrap();
-		assert_eq!(
-			result.unwrap(),
-			Found::One(Opened {
-				name: "In Christ Alone".to_owned(),
-				link: Link::Id { kind: LinkKind::Album, id: album },
-			})
-		);
-		assert_ne!(thread, std::thread::current().id());
-	}
-
-	#[test]
-	fn a_lookup_ends_as_related_with_says() {
-		let fake = FakeBackend::default();
-		fake.related_with(|_, _| Err(CoreError::Unavailable("gone".to_owned())));
-		let (result, _) = look_up(&fake, Related::Artist(Some("Kristyn Getty".to_owned())));
-		assert!(
-			matches!(&result, Err(CoreError::Unavailable(reason)) if reason == "gone"),
-			"{result:?}"
-		);
-		assert_eq!(
-			fake.related_calls(),
-			[(ItemId::Track(track_id()), Related::Artist(Some("Kristyn Getty".to_owned())))]
-		);
-	}
 }

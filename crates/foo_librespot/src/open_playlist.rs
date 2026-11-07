@@ -192,13 +192,11 @@ mod tests {
 	use crate::login::controller;
 	use crate::tabs::TAB_PROPERTY;
 	use crate::testing::{
-		confirm_login_when_started, getty_favourites, getty_favourites_id, installed_backend,
-		installed_prompt, library_with, sunday_set,
+		GETTY_TRACK, confirm_login_when_started, getty_favourites, installed_api,
+		installed_backend, installed_prompt, library_with, sunday_set,
 	};
 	use crate::window::brought_up;
 	use foxide2k::popup::PopupIcon;
-
-	const GETTY_TRACK: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
 
 	fn ready() -> LibraryState {
 		LibraryState::Ready(library_with(vec![sunday_set(), getty_favourites()]))
@@ -227,7 +225,7 @@ mod tests {
 
 	#[test]
 	fn the_command_shows_the_window_and_brings_it_up_when_open() {
-		FakeApi::new().install();
+		installed_api();
 		installed_backend().set_library(ready());
 		let command = MainMenuHandle::new(mainmenu_command_service::<OpenPlaylist>());
 		command.execute(0, None).unwrap();
@@ -250,13 +248,14 @@ mod tests {
 
 	#[test]
 	fn the_window_lists_liked_songs_then_every_playlist_with_its_folders() {
-		FakeApi::new().install();
+		installed_api();
 		let fake = installed_backend();
 		fake.set_library(ready());
 		let dialog = WINDOW.open(hidden_window()).unwrap();
-		let texts: Vec<String> =
-			(0..dialog.list_count(LIST)).map(|row| dialog.list_text(LIST, row)).collect();
-		assert_eq!(texts, ["Liked Songs", "Church / Sunday set", "Getty favourites"]);
+		assert_eq!(
+			dialog.list_texts(LIST),
+			["Liked Songs", "Church / Sunday set", "Getty favourites"]
+		);
 		assert_eq!(dialog.tab_order(), [LIST, IDOK, IDCANCEL]);
 		assert_eq!(dialog.focused(), Some(LIST));
 		assert_eq!(dialog.list_selection(LIST), Some(0));
@@ -266,7 +265,7 @@ mod tests {
 
 	#[test]
 	fn the_window_says_loading_until_the_list_arrives() {
-		FakeApi::new().install();
+		installed_api();
 		let fake = installed_backend();
 		fake.set_library(LibraryState::Loading);
 		let dialog = WINDOW.open(hidden_window()).unwrap();
@@ -281,7 +280,7 @@ mod tests {
 
 	#[test]
 	fn a_failed_fetch_shows_why_and_is_not_retried_while_open() {
-		FakeApi::new().install();
+		installed_api();
 		let fake = installed_backend();
 		let failed = || LibraryState::Failed("Spotify is unreachable".to_owned());
 		fake.set_library(failed());
@@ -299,7 +298,7 @@ mod tests {
 
 	#[test]
 	fn logged_out_the_window_asks_for_a_login_and_loads_after_it() {
-		FakeApi::new().install();
+		installed_api();
 		let fake = installed_backend();
 		let prompt = installed_prompt();
 		let dialog = WINDOW.open(hidden_window()).unwrap();
@@ -320,7 +319,7 @@ mod tests {
 
 	#[test]
 	fn logged_out_found_while_loading_asks_for_a_login_once() {
-		FakeApi::new().install();
+		installed_api();
 		let fake = installed_backend();
 		let prompt = installed_prompt();
 		fake.set_library(LibraryState::Loading);
@@ -339,7 +338,7 @@ mod tests {
 
 	#[test]
 	fn a_logout_while_the_window_loads_asks_for_no_login() {
-		FakeApi::new().install();
+		installed_api();
 		let fake = installed_backend();
 		let prompt = installed_prompt();
 		fake.set_username(Some("Keith Getty"));
@@ -358,7 +357,7 @@ mod tests {
 
 	#[test]
 	fn a_logout_empties_the_list_without_asking_for_a_login() {
-		FakeApi::new().install();
+		installed_api();
 		let fake = installed_backend();
 		let prompt = installed_prompt();
 		fake.set_library(ready());
@@ -376,7 +375,7 @@ mod tests {
 
 	#[test]
 	fn a_refresh_with_the_same_playlists_keeps_the_selection() {
-		FakeApi::new().install();
+		installed_api();
 		let fake = installed_backend();
 		fake.set_library(ready());
 		let dialog = WINDOW.open(hidden_window()).unwrap();
@@ -390,7 +389,7 @@ mod tests {
 
 	#[test]
 	fn a_refresh_with_the_same_playlists_leaves_the_list_alone() {
-		FakeApi::new().install();
+		installed_api();
 		let fake = installed_backend();
 		fake.set_library(ready());
 		let dialog = WINDOW.open(hidden_window()).unwrap();
@@ -406,7 +405,7 @@ mod tests {
 
 	#[test]
 	fn a_refresh_that_moves_the_picked_playlist_selects_it_again() {
-		FakeApi::new().install();
+		installed_api();
 		let fake = installed_backend();
 		fake.set_library(ready());
 		let dialog = WINDOW.open(hidden_window()).unwrap();
@@ -429,8 +428,7 @@ mod tests {
 	}
 
 	fn ready_api() -> &'static FakeApi {
-		let api = FakeApi::new();
-		api.install();
+		let api = installed_api();
 		installed_backend().set_library(ready());
 		api
 	}
@@ -475,7 +473,7 @@ mod tests {
 		dialog.list_select(LIST, 2);
 		send_command(&dialog, LIST, LBN_DBLCLK);
 		assert!(!dialog.is_alive());
-		let getty_uri = format!("spotify:playlist:{}", getty_favourites_id().to_base62());
+		let getty_uri = getty_favourites().link().uri();
 		assert_eq!(api.location_requests(), [[format!("sptf://{getty_uri}")]]);
 		api.finish_locations(0, &[GETTY_TRACK]).unwrap();
 		assert_eq!(api.tabs().last().unwrap().name, "Getty favourites");
@@ -483,7 +481,7 @@ mod tests {
 
 	#[test]
 	fn closing_the_window_destroys_it() {
-		FakeApi::new().install();
+		installed_api();
 		let fake = installed_backend();
 		fake.set_library(ready());
 		let dialog = WINDOW.open(hidden_window()).unwrap();
@@ -498,7 +496,7 @@ mod tests {
 
 	#[test]
 	fn the_window_listens_to_the_library_while_it_is_open() {
-		FakeApi::new().install();
+		installed_api();
 		let fake = installed_backend();
 		fake.set_library(LibraryState::Loading);
 		let dialog = WINDOW.open(hidden_window()).unwrap();
@@ -513,7 +511,7 @@ mod tests {
 
 	#[test]
 	fn showing_twice_keeps_one_window() {
-		FakeApi::new().install();
+		installed_api();
 		let fake = installed_backend();
 		fake.set_library(ready());
 		let owner = hidden_window();

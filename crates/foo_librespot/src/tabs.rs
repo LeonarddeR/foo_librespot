@@ -81,18 +81,10 @@ mod tests {
 	use foxide2k::testing::FakeApi;
 
 	use super::{TAB_PROPERTY, open_in_tab};
-	use crate::testing::{sunday_set, sunday_set_id};
-
-	const GETTY_TRACK: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
-
-	fn installed_api() -> &'static FakeApi {
-		let api = FakeApi::new();
-		api.install();
-		api
-	}
+	use crate::testing::{ALBUM_ID, GETTY_TRACK, installed_api, sunday_set};
 
 	fn sunday_uri() -> String {
-		format!("spotify:playlist:{}", sunday_set_id().to_base62())
+		sunday_set().link().uri()
 	}
 
 	/// Opens the Sunday set playlist in its tab.
@@ -102,7 +94,7 @@ mod tests {
 
 	/// "In Christ Alone" by Keith & Kristyn Getty.
 	fn album() -> Link {
-		let id = SpotifyId::from_base62("4wPtS24asgBAG4VOmYYB9O").unwrap();
+		let id = SpotifyId::from_base62(ALBUM_ID).unwrap();
 		Link::Id { kind: LinkKind::Album, id }
 	}
 
@@ -168,7 +160,7 @@ mod tests {
 		let api = installed_api();
 		open_in_tab("In Christ Alone", &album()).unwrap();
 		open_in_tab("In Christ Alone", &album()).unwrap();
-		assert_eq!(api.location_requests(), [["sptf://spotify:album:4wPtS24asgBAG4VOmYYB9O"]]);
+		assert_eq!(api.location_requests(), [[format!("sptf://spotify:album:{ALBUM_ID}")]]);
 		api.finish_locations(0, &[GETTY_TRACK]).unwrap();
 		assert_eq!(api.tabs().len(), 1);
 	}
