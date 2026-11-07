@@ -111,6 +111,24 @@ Checked by hand on 7 November 2026. The new work they showed is under "Later rou
   - In foobar2000 this would mean letting the Spotify app drive foobar2000's playback. That is a big feature and a different way of using foobar2000; consider it last.
   - It is feasible, but awkward. librespot's Connect code (`Spirc::new`) only works with librespot's own player, which decodes the audio itself and hands it to an output. foo_librespot would supply that output and pass the audio to foobar2000 as one endless stream of whatever the Spotify app picks, with the track info changing as tracks change. The Spotify tracks wouldn't be separate playlist entries.
   - Logging in comes with it. The `librespot-discovery` crate is what makes foobar2000 show up in the Spotify app's device list on the same network. Picking foobar2000 there hands it the app's login, without a browser or a code. Windows Firewall will ask once whether foobar2000 may accept network connections.
+- [ ] Keep each right-click menu entry's name once
+  - Each entry of the "Add to Spotify playlist" submenu holds its name twice. foxide2k's `MenuNode::Command` owns the text the menu shows as a `String`, and the entry's change keeps its own copy for the question, the console report and the failure popup (`Pick` in `crates/foo_librespot/src/playlist_menu.rs`).
+  - Keeping one copy needs a change to foxide2k's `MenuNode` API, such as a name the menu and the change can share.
+  - It saves a few hundred short strings on a large library.
+- [ ] Read only what changed in Liked Songs
+  - Every library refresh reads Liked Songs whole. A playlist is read again only when its revision has changed.
+  - Spotify's collection service has sync tokens: `collection2v2.proto` describes a `DeltaRequest` and a `DeltaResponse`.
+  - Still to check: whether `/collection/v2/delta` answers through librespot. If it does, a refresh can ask for what changed since the last read.
+- [ ] Check whether a playlist change can land twice
+  - librespot's spclient sends a request again when Spotify answers with a 5xx status, 504 included. An add that Spotify made but answered with an error could then be added twice.
+  - The check: try it with the test playlist. If a change can land twice, the fix is to compare the playlist read back with what was sent before trying again.
+- [ ] Close the test gaps the menus round left
+  - A change aborted in the core has no test of its own: a `Core::change` still running at shutdown is covered only by a test of the runtime.
+  - The remove question has no test that it counts only the tracks for Liked Songs, or that it counts a track selected twice once.
+  - The console line about episodes left out of Liked Songs has no test of its plural, "episodes".
+  - The "Open playlist…" window has no test that a refresh with the same playlists leaves its list untouched; one test checks only that the selection stays.
+  - `OpenPlaylist::execute` isn't run through `MainMenuHandle` in a test.
+  - The window's error path has no test: a playlist whose link foobar2000 can't load shows the "Can't open this Spotify playlist" popup.
 
 ## After 1.0
 
