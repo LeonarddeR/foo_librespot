@@ -12,8 +12,7 @@ use crate::audio::track::{
 	FetchedTrack, KeyOrigin, SpotifyTrack, fetch_track, wrong_remembered_key,
 };
 use crate::library::{
-	Change, Edit, LIBRARY_FETCH_TIMEOUT, LibraryCache, LibraryState, LibrespotLibrary,
-	OnLibraryChange, Target,
+	Change, Edit, LibraryCache, LibraryState, LibrespotLibrary, OnLibraryChange, Target,
 };
 use crate::link::{ItemId, Link};
 use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
@@ -135,22 +134,12 @@ impl Core {
 		if !self.is_logged_in() {
 			return LibraryState::LoggedOut;
 		}
-		let now = Instant::now();
-		let (state, ticket) = self.library.snapshot(now, on_change);
-		if let Some(ticket) = ticket {
+		let (state, fetch) = self.library.snapshot(Instant::now(), on_change);
+		if let Some(fetch) = fetch {
 			let sessions = Arc::clone(&self.sessions);
-			let library = self.library.clone();
-			self.runtime.spawn(async move {
-				let read = async {
-					match sessions.session().await {
-						Ok(session) => {
-							library.fetch_of(ticket, &LibrespotLibrary::new(session)).await;
-						}
-						Err(error) => library.fail_of(ticket, &error),
-					}
-				};
-				library.run_within(ticket, LIBRARY_FETCH_TIMEOUT, read).await;
-			});
+			self.runtime.spawn(
+				fetch.run(async move { sessions.session().await.map(LibrespotLibrary::new) }),
+			);
 		}
 		state
 	}
