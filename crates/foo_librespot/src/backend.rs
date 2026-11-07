@@ -25,7 +25,6 @@ pub type OnCode = Box<dyn FnOnce(DeviceCode) + Send>;
 /// Gets the Spotify username, or why a login failed.
 pub type OnDone = Box<dyn FnOnce(Result<String, CoreError>) + Send>;
 /// Gets what a lookup found, or why it failed.
-#[cfg_attr(not(test), expect(dead_code, reason = "the Spotify menus will look items up"))]
 pub type OnRelated = Box<dyn FnOnce(Result<Found, CoreError>) + Send>;
 
 /// Everything the services need from Spotify. Every call that takes `is_aborting` blocks and
@@ -85,7 +84,6 @@ pub trait Backend: Send + Sync {
 	/// returns at once. `on_done` gets what was found, on another thread, which waits for
 	/// Spotify's core to start when it doesn't run yet; a lookup still running when foobar2000
 	/// quits is dropped unreported.
-	#[cfg_attr(not(test), expect(dead_code, reason = "the Spotify menus will look items up"))]
 	fn related(&self, item: ItemId, what: Related, on_done: OnRelated);
 }
 

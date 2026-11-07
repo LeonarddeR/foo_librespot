@@ -17,6 +17,7 @@ mod login_window;
 mod open_playlist;
 mod playlist_menu;
 mod prefs;
+mod related;
 mod settings;
 mod status_line;
 mod tabs;
