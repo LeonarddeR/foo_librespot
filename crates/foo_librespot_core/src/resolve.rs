@@ -113,8 +113,9 @@ pub trait MetadataSource: Send + Sync {
 		id: SpotifyId,
 	) -> impl Future<Output = Result<(String, Vec<SpotifyUri>), CoreError>> + Send;
 
-	/// The show name and its episode ids in listening order: oldest first for a show meant to be
-	/// heard from the start, newest first for the rest.
+	/// The show name and its episode ids. An audiobook's chapters keep Spotify's order, without
+	/// the audiobook's sample (its trailer). Other shows are in listening order: oldest first for a
+	/// show meant to be heard from the start, newest first for the rest.
 	fn show(
 		&self,
 		id: SpotifyId,

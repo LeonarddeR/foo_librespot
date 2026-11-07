@@ -43,6 +43,9 @@ pub trait MainMenuCommand: 'static {
 	fn shown() -> Shown {
 		Shown::Enabled
 	}
+	/// What picking the command does. An `Err` reaches foobar2000, whose menu helpers wrap
+	/// commands in `crashOnException`, so it can crash foobar2000: a command reports its own
+	/// failures and returns `Ok`.
 	fn execute() -> Result<()>;
 }
 
@@ -60,9 +63,12 @@ pub trait MainMenuDynamicCommand: 'static {
 	fn shown() -> Shown {
 		Shown::Enabled
 	}
-	/// The entry for the menu. Runs on the main thread while the menu opens, and never waits.
+	/// The entry for the menu. Runs on the main thread while the menu opens, and also when a
+	/// shortcut runs one of its entries, to find that entry's command. It never waits.
 	fn build() -> MainMenuNode;
-	/// What a shortcut bound to `NAME` does. Runs on the main thread.
+	/// What a shortcut bound to `NAME` does. Runs on the main thread. An `Err` reaches
+	/// foobar2000, whose menu helpers wrap commands in `crashOnException`, so it can crash
+	/// foobar2000: a command reports its own failures and returns `Ok`.
 	fn execute() -> Result<()>;
 }
 
@@ -74,8 +80,12 @@ pub enum MainMenuNode {
 		/// Tells this command apart from the others in the same entry; a shortcut bound to it
 		/// names this GUID. It only has to be unique within the entry.
 		guid: Guid,
-		/// False shows it greyed out, and it can't be picked.
+		/// False shows it greyed out, and it can't be picked from the menu. A shortcut bound to
+		/// it still runs it: `dynamic_execute` runs a greyed command too.
 		enabled: bool,
+		/// What picking it does. An `Err` reaches foobar2000, whose menu helpers wrap commands in
+		/// `crashOnException`, so it can crash foobar2000: a command reports its own failures and
+		/// returns `Ok`.
 		run: RunFn,
 	},
 	Group {
