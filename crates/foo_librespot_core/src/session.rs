@@ -64,6 +64,20 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// connect again in turn, up to [`CONNECT_TIMEOUT`] each.
 const FAILED_CONNECT_HOLD: Duration = Duration::from_secs(5);
 
+/// What the profile's stored login is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Login {
+	Missing,
+	/// A login for the account named, if it names one.
+	Stored(Option<String>),
+}
+
+impl Login {
+	fn of(credentials: &Credentials) -> Self {
+		Self::Stored(credentials.username.clone())
+	}
+}
+
 /// A connect that failed, and the logout count it was made under.
 struct Failure {
 	at: tokio::time::Instant,
@@ -84,8 +98,9 @@ pub struct SessionManager<C: Connector> {
 	logouts: AtomicU64,
 	// Held while the logout count is read or bumped together with reading, saving or deleting the
 	// stored login, so a logout can't fall between a connect's check and its save and have the
-	// login written back.
-	stored: std::sync::Mutex<()>,
+	// login written back. Holds what the stored login was last read or written as: `None` until a
+	// read succeeds, and after a write that failed.
+	stored: std::sync::Mutex<Option<Login>>,
 	// Only used while `current` is held.
 	failure: std::sync::Mutex<Option<Failure>>,
 }
@@ -106,12 +121,12 @@ impl<C: Connector> SessionManager<C> {
 			connect_timeout,
 			current: tokio::sync::Mutex::new(None),
 			logouts: AtomicU64::new(0),
-			stored: std::sync::Mutex::new(()),
+			stored: std::sync::Mutex::new(None),
 			failure: std::sync::Mutex::new(None),
 		}
 	}
 
-	fn lock_stored(&self) -> std::sync::MutexGuard<'_, ()> {
+	fn lock_stored(&self) -> std::sync::MutexGuard<'_, Option<Login>> {
 		self.stored.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 	}
 
@@ -145,8 +160,10 @@ impl<C: Connector> SessionManager<C> {
 			_ => {}
 		}
 		let (logouts, loaded) = {
-			let _stored = self.lock_stored();
-			(self.logouts.load(Ordering::SeqCst), self.profile.load_credentials())
+			let mut stored = self.lock_stored();
+			let loaded = self.profile.load_credentials();
+			*stored = found_login(&loaded);
+			(self.logouts.load(Ordering::SeqCst), loaded)
 		};
 		let credentials = match loaded {
 			Ok(Some(credentials)) => credentials,
@@ -154,7 +171,7 @@ impl<C: Connector> SessionManager<C> {
 			Err(ProfileError::Unreadable(reason)) => {
 				// It will never become readable; remove it so this is reported only once.
 				log::warn!("the stored Spotify login can't be read ({reason}); log in again");
-				self.profile.clear_credentials()?;
+				self.forget_stored()?;
 				return Err(CoreError::NotLoggedIn);
 			}
 			Err(error) => return Err(error.into()),
@@ -165,19 +182,19 @@ impl<C: Connector> SessionManager<C> {
 		match self.connect(credentials).await {
 			Ok(connected) => {
 				{
-					let _stored = self.lock_stored();
+					let mut stored = self.lock_stored();
 					if self.logouts.load(Ordering::SeqCst) != logouts {
 						connected.session.shutdown();
 						return Err(CoreError::NotLoggedIn);
 					}
-					self.save(&connected.credentials);
+					self.save(&mut stored, &connected.credentials);
 				}
 				*current = Some((connected.session.clone(), logouts));
 				Ok(connected.session)
 			}
 			Err(CoreError::Spotify(error)) if rejects_credentials(&error) => {
 				log::warn!("Spotify rejected the stored login: {error}");
-				self.profile.clear_credentials()?;
+				self.forget_stored()?;
 				Err(CoreError::NotLoggedIn)
 			}
 			Err(error) => {
@@ -198,12 +215,14 @@ impl<C: Connector> SessionManager<C> {
 		let logouts = self.logouts.load(Ordering::SeqCst);
 		let connected = self.connect(Credentials::with_access_token(access_token)).await?;
 		{
-			let _stored = self.lock_stored();
+			let mut stored = self.lock_stored();
 			if self.logouts.load(Ordering::SeqCst) != logouts {
 				connected.session.shutdown();
 				return Err(CoreError::NotLoggedIn);
 			}
-			self.profile.save_credentials(&connected.credentials)?;
+			let saved = self.profile.save_credentials(&connected.credentials);
+			*stored = saved.is_ok().then(|| Login::of(&connected.credentials));
+			saved?;
 		}
 		*self.lock_failure() = None;
 		if let Some((previous, _)) = current.replace((connected.session, logouts)) {
@@ -218,8 +237,9 @@ impl<C: Connector> SessionManager<C> {
 	/// can't be deleted, the session still ends and the error is returned.
 	pub fn logout(&self) -> Result<(), CoreError> {
 		let cleared = {
-			let _stored = self.lock_stored();
+			let mut stored = self.lock_stored();
 			let cleared = self.profile.clear_credentials();
+			*stored = cleared.is_ok().then_some(Login::Missing);
 			self.logouts.fetch_add(1, Ordering::SeqCst);
 			cleared
 		};
@@ -231,14 +251,37 @@ impl<C: Connector> SessionManager<C> {
 		Ok(cleared?)
 	}
 
-	/// True when a stored login exists and can be read.
+	/// True when a stored login exists and can be read. The profile is read only until the
+	/// answer is known; logins and logouts keep it up to date.
 	pub fn is_logged_in(&self) -> bool {
-		matches!(self.profile.load_credentials(), Ok(Some(_)))
+		matches!(self.login(), Some(Login::Stored(_)))
 	}
 
-	/// The Spotify username in the stored login, or `None` when logged out.
+	/// The Spotify username in the stored login, or `None` when logged out. Read as
+	/// [`is_logged_in`](Self::is_logged_in) reads it.
 	pub fn username(&self) -> Option<String> {
-		self.profile.load_credentials().ok().flatten().and_then(|credentials| credentials.username)
+		match self.login() {
+			Some(Login::Stored(username)) => username,
+			Some(Login::Missing) | None => None,
+		}
+	}
+
+	/// What the stored login is, read from the profile unless it is known; `None` when it can't be
+	/// read.
+	fn login(&self) -> Option<Login> {
+		let mut stored = self.lock_stored();
+		if stored.is_none() {
+			*stored = found_login(&self.profile.load_credentials());
+		}
+		stored.clone()
+	}
+
+	/// Deletes the stored login.
+	fn forget_stored(&self) -> Result<(), ProfileError> {
+		let mut stored = self.lock_stored();
+		let cleared = self.profile.clear_credentials();
+		*stored = cleared.is_ok().then_some(Login::Missing);
+		cleared
 	}
 
 	async fn connect(&self, credentials: Credentials) -> Result<Connected<C::Session>, CoreError> {
@@ -255,11 +298,25 @@ impl<C: Connector> SessionManager<C> {
 			})?
 	}
 
-	fn save(&self, credentials: &Credentials) {
+	/// Stores `credentials`, and keeps in `stored` what was written.
+	fn save(&self, stored: &mut Option<Login>, credentials: &Credentials) {
 		// Playing matters more than refreshing the stored login, which still works next time.
-		if let Err(error) = self.profile.save_credentials(credentials) {
-			log::warn!("couldn't store the refreshed Spotify login: {error}");
+		match self.profile.save_credentials(credentials) {
+			Ok(()) => *stored = Some(Login::of(credentials)),
+			Err(error) => {
+				*stored = None;
+				log::warn!("couldn't store the refreshed Spotify login: {error}");
+			}
 		}
+	}
+}
+
+/// What `loaded`, a read of the stored login, found; `None` when the read failed.
+fn found_login(loaded: &Result<Option<Credentials>, ProfileError>) -> Option<Login> {
+	match loaded {
+		Ok(Some(credentials)) => Some(Login::of(credentials)),
+		Ok(None) => Some(Login::Missing),
+		Err(_) => None,
 	}
 }
 
@@ -499,6 +556,57 @@ mod tests {
 	fn username_comes_from_the_stored_login() {
 		assert_eq!(setup(connects(), true).manager.username().as_deref(), Some("alice"));
 		assert_eq!(setup(connects(), false).manager.username(), None);
+	}
+
+	fn delete_the_stored_login(setup: &Setup) {
+		std::fs::remove_file(setup.profile.dir().join("credentials.bin")).unwrap();
+	}
+
+	#[test]
+	fn the_stored_login_is_read_once() {
+		let setup = setup(connects(), true);
+		assert!(setup.manager.is_logged_in());
+		delete_the_stored_login(&setup);
+		assert!(setup.manager.is_logged_in());
+		assert_eq!(setup.manager.username().as_deref(), Some("alice"));
+	}
+
+	#[tokio::test]
+	async fn the_known_login_follows_login_and_logout() {
+		let setup = setup(connects(), false);
+		assert!(!setup.manager.is_logged_in());
+		setup.manager.login_with_token("tok".to_owned()).await.unwrap();
+		assert!(setup.manager.is_logged_in());
+		assert_eq!(setup.manager.username().as_deref(), Some("alice"));
+		setup.manager.logout().unwrap();
+		assert!(!setup.manager.is_logged_in());
+		assert_eq!(setup.manager.username(), None);
+	}
+
+	#[tokio::test]
+	async fn a_rejected_stored_login_is_known_to_be_gone() {
+		let setup = setup(Outcome::Fail(|| login_failed("Bad credentials")), true);
+		assert!(setup.manager.is_logged_in());
+		let _ = setup.manager.session().await;
+		assert!(!setup.manager.is_logged_in());
+		assert_eq!(setup.manager.username(), None);
+	}
+
+	#[test]
+	fn a_logout_that_cant_delete_the_login_reads_it_again() {
+		use std::os::windows::fs::OpenOptionsExt;
+
+		let setup = setup(connects(), true);
+		assert!(setup.manager.is_logged_in());
+		let locked = std::fs::OpenOptions::new()
+			.read(true)
+			.share_mode(0)
+			.open(setup.profile.dir().join("credentials.bin"))
+			.unwrap();
+		assert!(setup.manager.logout().is_err());
+		drop(locked);
+		delete_the_stored_login(&setup);
+		assert!(!setup.manager.is_logged_in());
 	}
 
 	#[tokio::test]
