@@ -73,24 +73,18 @@ impl ContextMenuItem for AddToSpotifyPlaylist {
 }
 
 fn greyed(name: &str) -> MenuNode {
-	MenuNode::Command {
-		name: name.into(),
-		checked: false,
-		enabled: false,
-		run: Box::new(|| Ok(())),
-	}
+	MenuNode::command(name, false, Box::new(|| Ok(())))
 }
 
 fn login_entry() -> MenuNode {
-	MenuNode::Command {
-		name: "Log in to Spotify…".into(),
-		checked: false,
-		enabled: true,
-		run: Box::new(|| {
+	MenuNode::command(
+		"Log in to Spotify…",
+		true,
+		Box::new(|| {
 			ask_for_login();
 			Ok(())
 		}),
-	}
+	)
 }
 
 /// Liked Songs, then each playlist the account can change. `items` holds each item once; every

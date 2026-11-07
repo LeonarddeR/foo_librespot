@@ -6,18 +6,19 @@
 //! out. A bound key runs a command whatever the menu would show, so each command checks the
 //! selection again when it runs; when that isn't one Spotify item of its kind, a popup says to
 //! select one, and nothing is looked up. The menu reads only what foobar2000 stores and never
-//! waits for Spotify.
+//! waits for Spotify; how a command shows is read from the selection's paths alone.
 //!
-//! These rules take a list of Spotify items and where it came from, so File > Spotify > Playing
+//! These rules take the Spotify items and where they came from, so File > Spotify > Playing
 //! track ([`crate::playing_menu`]) follows them for the playing track.
 
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use foo_librespot_core::link::{ItemId, parse_item};
 use foo_librespot_core::related::Related;
 use foxide2k::abi::contextmenu::GROUP_ROOT;
 use foxide2k::contextmenu::{
-	ContextMenuCommand, ContextMenuGroup, ContextMenuItem, MenuNode, Shown,
+	ContextMenuCommand, ContextMenuGroup, ContextMenuItem, MenuNode, RunFn, Shown,
 };
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
@@ -53,7 +54,7 @@ impl ContextMenuCommand for OpenAlbum {
 	}
 
 	fn execute(selection: &HandleList<'_>) -> Result<()> {
-		open(spotify_items(selection), Source::Selection, Self::NAME, Kind::Track, Related::Album);
+		open(spotify_items(selection), Source::Selection, Self::NAME, Related::Album);
 		Ok(())
 	}
 }
@@ -72,19 +73,12 @@ impl ContextMenuItem for OpenArtist {
 	const SORT_PRIORITY: f64 = 1.0;
 
 	fn build(selection: &HandleList<'_>) -> Option<MenuNode> {
-		let items = spotify_items(selection);
-		match shown_among(&items, Kind::Track) {
+		match shown_for(selection, Kind::Track) {
 			Shown::Hidden => None,
-			Shown::Greyed => Some(command(Self::NAME.into(), false, || {
-				show_message(
-					Self::NAME,
-					Source::Selection.wants(Kind::Track),
-					PopupIcon::Information,
-				);
-			})),
+			Shown::Greyed => Some(MenuNode::command(Self::NAME, false, Box::new(|| Ok(())))),
 			Shown::Enabled => {
-				let (item, track) = &items[0];
-				Some(artist_node(*item, track))
+				let (item, track) = spotify_items(selection).next()?;
+				Some(artist_node(item, &track))
 			}
 		}
 	}
@@ -128,7 +122,7 @@ impl ContextMenuCommand for TrackRadio {
 	}
 
 	fn execute(selection: &HandleList<'_>) -> Result<()> {
-		open(spotify_items(selection), Source::Selection, Self::NAME, Kind::Track, Related::Radio);
+		open(spotify_items(selection), Source::Selection, Self::NAME, Related::Radio);
 		Ok(())
 	}
 }
@@ -149,7 +143,7 @@ impl ContextMenuCommand for OpenShow {
 	}
 
 	fn execute(selection: &HandleList<'_>) -> Result<()> {
-		open(spotify_items(selection), Source::Selection, Self::NAME, Kind::Episode, Related::Show);
+		open(spotify_items(selection), Source::Selection, Self::NAME, Related::Show);
 		Ok(())
 	}
 }
@@ -166,6 +160,14 @@ impl Kind {
 		match item {
 			ItemId::Track(_) => Self::Track,
 			ItemId::Episode(_) => Self::Episode,
+		}
+	}
+
+	/// What opening `what` starts from: an episode for its show, a track for anything else.
+	const fn opening(what: &Related) -> Self {
+		match what {
+			Related::Show => Self::Episode,
+			Related::Album | Related::Artist(_) | Related::Radio => Self::Track,
 		}
 	}
 }
@@ -199,47 +201,87 @@ pub fn spotify_item(track: Track) -> Option<SpotifyItem> {
 	Some((parse_item(&track.path().ok()?)?, track))
 }
 
-/// The Spotify tracks and episodes in `selection`, in order. Local files, and items whose path
-/// can't be read, are left out.
-fn spotify_items(selection: &HandleList<'_>) -> Vec<SpotifyItem> {
-	selection.tracks().unwrap_or_default().into_iter().filter_map(spotify_item).collect()
+/// The Spotify tracks and episodes in `selection`, in order; an item's path is read only when the
+/// item is asked for. Local files, and items whose path can't be read, are left out.
+fn spotify_items(selection: &HandleList<'_>) -> impl Iterator<Item = SpotifyItem> {
+	selection.tracks().unwrap_or_default().into_iter().filter_map(spotify_item)
 }
 
-/// How a command that opens from `kind` shows for `selection`.
+/// How a command that opens from `kind` shows for `selection`, read from the paths alone, as
+/// [`shown_among`] says. Hidden when the selection can't be read.
 fn shown_for(selection: &HandleList<'_>, kind: Kind) -> Shown {
-	shown_among(&spotify_items(selection), kind)
+	let mut tally = Tally::new(kind);
+	let read = selection.try_for_each_path(|path| {
+		parse_item(path).map_or(ControlFlow::Continue(()), |item| tally.add(item))
+	});
+	if read.is_ok() { tally.shown() } else { Shown::Hidden }
 }
 
 /// Hidden when none of the Spotify `items` is of `kind`, enabled when the only one is, and
-/// greyed out among several.
-pub fn shown_among(items: &[SpotifyItem], kind: Kind) -> Shown {
-	if !items.iter().any(|(item, _)| Kind::of(*item) == kind) {
-		Shown::Hidden
-	} else if items.len() == 1 {
-		Shown::Enabled
-	} else {
-		Shown::Greyed
+/// greyed out among several. Reads `items` only until that is settled.
+pub fn shown_among(items: impl IntoIterator<Item = ItemId>, kind: Kind) -> Shown {
+	let mut tally = Tally::new(kind);
+	let _ = items.into_iter().try_for_each(|item| tally.add(item));
+	tally.shown()
+}
+
+/// How many Spotify items a command has seen, and whether one is of the kind it opens from.
+struct Tally {
+	kind: Kind,
+	items: usize,
+	of_kind: bool,
+}
+
+impl Tally {
+	const fn new(kind: Kind) -> Self {
+		Self { kind, items: 0, of_kind: false }
+	}
+
+	/// Counts `item`; breaks once no later item can change how the command shows.
+	fn add(&mut self, item: ItemId) -> ControlFlow<()> {
+		self.items += 1;
+		self.of_kind |= Kind::of(item) == self.kind;
+		if self.items > 1 && self.of_kind {
+			ControlFlow::Break(())
+		} else {
+			ControlFlow::Continue(())
+		}
+	}
+
+	const fn shown(&self) -> Shown {
+		match (self.of_kind, self.items) {
+			(false, _) => Shown::Hidden,
+			(true, 1) => Shown::Enabled,
+			(true, _) => Shown::Greyed,
+		}
 	}
 }
 
-/// The one Spotify item in `items`, when it is of `kind`. Otherwise a popup titled `command` says
-/// what `source` should hold.
+/// The one Spotify item in `items`, when it is of `kind`, read up to the second item. Otherwise
+/// a popup titled `command` says what `source` should hold.
 fn the_one(
-	mut items: Vec<SpotifyItem>,
+	items: impl IntoIterator<Item = SpotifyItem>,
 	kind: Kind,
 	source: Source,
 	command: &str,
 ) -> Option<SpotifyItem> {
-	if items.len() == 1 && Kind::of(items[0].0) == kind {
-		return items.pop();
+	let mut first_two: Vec<SpotifyItem> = items.into_iter().take(2).collect();
+	if shown_among(first_two.iter().map(|(item, _)| *item), kind) == Shown::Enabled {
+		return first_two.pop();
 	}
 	show_message(command, source.wants(kind), PopupIcon::Information);
 	None
 }
 
-/// Opens `what` for the one Spotify item in `items`, taken from `source`, when it is of `kind`.
-pub fn open(items: Vec<SpotifyItem>, source: Source, command: &str, kind: Kind, what: Related) {
-	if let Some((item, track)) = the_one(items, kind, source, command) {
+/// Opens `what` for the one Spotify item in `items`, taken from `source`, when it is of the kind
+/// `what` opens from.
+pub fn open(
+	items: impl IntoIterator<Item = SpotifyItem>,
+	source: Source,
+	command: &str,
+	what: Related,
+) {
+	if let Some((item, track)) = the_one(items, Kind::opening(&what), source, command) {
 		open_related(item, what, title_of(item, &track), None);
 	}
 }
@@ -247,41 +289,42 @@ pub fn open(items: Vec<SpotifyItem>, source: Source, command: &str, kind: Kind, 
 /// Asks Spotify for every artist of the one Spotify track in `items`, taken from `source`, as
 /// [`OpenArtistShortcut`] does: one opens in its tab, several fill the artist window. When
 /// foobar2000 stores two or more for the track, the window says "Loading…" meanwhile.
-pub fn open_artists(items: Vec<SpotifyItem>, source: Source, command: &str) {
+pub fn open_artists(items: impl IntoIterator<Item = SpotifyItem>, source: Source, command: &str) {
 	if let Some((item, track)) = the_one(items, Kind::Track, source, command) {
 		let wait = (stored_artists(&track).len() >= 2).then(artist_window::show_loading);
 		open_related(item, Related::Artist(None), title_of(item, &track), wait);
 	}
 }
 
-/// What picking an entry of an artist submenu does.
-pub type Pick = Box<dyn Fn() + Send + Sync>;
-
-/// What the artist submenu of a track offers.
+/// What the artist submenu of a track offers; each entry runs without failing.
 pub enum ArtistPicks {
 	/// One entry, for a track that stores fewer than two artists, that does what
 	/// [`OpenArtistShortcut`] does.
-	Every(Pick),
+	Every(RunFn),
 	/// An entry per stored artist, in Spotify's order, named after it and opening it.
-	Each(Vec<(Arc<str>, Pick)>),
+	Each(Vec<(Arc<str>, RunFn)>),
 }
 
 /// What the artist submenu of `track`, the Spotify track `item`, offers.
 pub fn artist_picks(item: ItemId, track: &Track) -> ArtistPicks {
-	let title = title_of(item, track);
+	let title = Arc::<str>::from(title_of(item, track));
 	let artists = stored_artists(track);
 	if artists.len() < 2 {
 		return ArtistPicks::Every(Box::new(move || {
-			open_related(item, Related::Artist(None), title.clone(), None);
+			open_related(item, Related::Artist(None), title.to_string(), None);
+			Ok(())
 		}));
 	}
 	let picks = artists
 		.into_iter()
 		.map(|artist| {
-			let (name, title) = (Arc::<str>::from(artist), title.clone());
-			let artist = Related::Artist(Some(name.to_string()));
-			let pick: Pick =
-				Box::new(move || open_related(item, artist.clone(), title.clone(), None));
+			let (name, title) = (Arc::<str>::from(artist), Arc::clone(&title));
+			let picked = Arc::clone(&name);
+			let pick: RunFn = Box::new(move || {
+				let artist = Related::Artist(Some(picked.to_string()));
+				open_related(item, artist, title.to_string(), None);
+				Ok(())
+			});
 			(name, pick)
 		})
 		.collect();
@@ -289,13 +332,16 @@ pub fn artist_picks(item: ItemId, track: &Track) -> ArtistPicks {
 }
 
 /// The submenu of `track`'s stored artists when it has several, each opening that artist; or
-/// else the command that does what [`OpenArtistShortcut`] does.
+/// else the command that asks Spotify for every artist.
 fn artist_node(item: ItemId, track: &Track) -> MenuNode {
 	match artist_picks(item, track) {
-		ArtistPicks::Every(pick) => command(OpenArtist::NAME.into(), true, pick),
+		ArtistPicks::Every(pick) => MenuNode::command(OpenArtist::NAME, true, pick),
 		ArtistPicks::Each(picks) => MenuNode::Popup {
 			name: OpenArtist::NAME.into(),
-			children: picks.into_iter().map(|(name, pick)| command(name, true, pick)).collect(),
+			children: picks
+				.into_iter()
+				.map(|(name, pick)| MenuNode::command(name, true, pick))
+				.collect(),
 		},
 	}
 }
@@ -316,19 +362,6 @@ fn stored_artists(track: &Track) -> Vec<String> {
 	artists
 }
 
-/// A command named `name` that runs `run`.
-fn command(name: Arc<str>, enabled: bool, run: impl Fn() + Send + Sync + 'static) -> MenuNode {
-	MenuNode::Command {
-		name,
-		checked: false,
-		enabled,
-		run: Box::new(move || {
-			run();
-			Ok(())
-		}),
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use foo_librespot_core::CoreError;
@@ -339,7 +372,7 @@ mod tests {
 		TYPE_COMMAND, TYPE_GROUP,
 	};
 	use foxide2k::contextmenu::{
-		ContextMenuCommand, ContextMenuGroup, context_menu_command_service,
+		ContextMenuCommand, ContextMenuGroup, Shown, context_menu_command_service,
 		context_menu_group_service, context_menu_service,
 	};
 	use foxide2k::dialog::host::{Dialog, destroy};
@@ -350,7 +383,10 @@ mod tests {
 		pump_messages,
 	};
 
-	use super::{OpenAlbum, OpenArtist, OpenArtistShortcut, OpenShow, SpotifyGroup, TrackRadio};
+	use super::{
+		Kind, OpenAlbum, OpenArtist, OpenArtistShortcut, OpenShow, SpotifyGroup, TrackRadio,
+		shown_among,
+	};
 	use crate::artist_window::{self, LIST, STATUS, WINDOW};
 	use crate::playlist_menu::AddToSpotifyPlaylist;
 	use crate::testing::{FakeBackend, episode_id, installed_backend, track_id, wait_until};
@@ -702,12 +738,17 @@ mod tests {
 	}
 
 	#[test]
-	fn the_greyed_open_artist_says_select_one_when_run() {
-		let (api, fake) = setup();
-		let data = select(&[(GETTY_TRACK, BOTH_GETTYS), (OTHER_TRACK, BOTH_GETTYS)]);
-		open_artist().instantiate(&data).node().execute(&data).unwrap();
-		assert_eq!(api.popups(), [select_one("Open artist", "track")]);
-		assert!(fake.related_calls().is_empty());
+	fn how_a_command_shows_is_known_from_the_first_items_that_settle_it() {
+		let (track, episode) = (getty_track(), ItemId::Episode(episode_id()));
+		let unread = || std::iter::from_fn(|| -> Option<ItemId> { panic!("read too far") });
+		let shown =
+			|items: &[ItemId], kind| shown_among(items.iter().copied().chain(unread()), kind);
+		assert_eq!(shown(&[track, track], Kind::Track), Shown::Greyed);
+		assert_eq!(shown(&[episode, track], Kind::Track), Shown::Greyed);
+		assert_eq!(shown_among([track], Kind::Track), Shown::Enabled);
+		assert_eq!(shown_among([track], Kind::Episode), Shown::Hidden);
+		assert_eq!(shown_among([episode, episode], Kind::Track), Shown::Hidden);
+		assert_eq!(shown_among([], Kind::Episode), Shown::Hidden);
 	}
 
 	#[test]

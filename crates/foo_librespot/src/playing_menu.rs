@@ -8,8 +8,6 @@
 //! the playing track again when it runs; when that isn't a Spotify item of its kind, a popup
 //! says to play one, and nothing is looked up.
 
-use std::sync::Arc;
-
 use foo_librespot_core::link::ItemId;
 use foo_librespot_core::related::Related;
 use foxide2k::abi::mainmenu::SORT_PRIORITY_BASE;
@@ -47,11 +45,11 @@ impl MainMenuCommand for PlayingAlbum {
 	const DESCRIPTION: &'static str = "Opens the playing Spotify track's album in a playlist tab.";
 
 	fn shown() -> Shown {
-		shown(&playing(), Kind::Track)
+		shown(playing().as_ref(), Kind::Track)
 	}
 
 	fn execute() -> Result<()> {
-		open(playing(), Source::Playing, Self::NAME, Kind::Track, Related::Album);
+		open(playing(), Source::Playing, Self::NAME, Related::Album);
 		Ok(())
 	}
 }
@@ -80,7 +78,7 @@ impl MainMenuCommand for PlayingArtist {
 	const DESCRIPTION: &'static str = "Opens an artist of the playing Spotify track in a playlist tab, or lists its artists to pick from.";
 
 	fn shown() -> Shown {
-		shown(&playing(), Kind::Track)
+		shown(playing().as_ref(), Kind::Track)
 	}
 
 	fn execute() -> Result<()> {
@@ -91,17 +89,18 @@ impl MainMenuCommand for PlayingArtist {
 
 impl MainMenuDynamicCommand for PlayingArtist {
 	fn build() -> MainMenuNode {
-		let items = playing();
-		match shown(&items, Kind::Track) {
-			Shown::Enabled => {
-				let (item, track) = &items[0];
-				artist_node(*item, track)
-			}
-			Shown::Hidden | Shown::Greyed => {
-				command(Self::NAME.into(), EVERY_ARTIST, false, || {
+		let now = playing();
+		match (shown(now.as_ref(), Kind::Track), now) {
+			(Shown::Enabled, Some((item, track))) => artist_node(item, &track),
+			_ => MainMenuNode::command(
+				Self::NAME,
+				EVERY_ARTIST,
+				false,
+				Box::new(|| {
 					open_artists(playing(), Source::Playing, Self::NAME);
-				})
-			}
+					Ok(())
+				}),
+			),
 		}
 	}
 }
@@ -118,11 +117,11 @@ impl MainMenuCommand for PlayingRadio {
 		"Opens Spotify's radio for the playing track in a playlist tab.";
 
 	fn shown() -> Shown {
-		shown(&playing(), Kind::Track)
+		shown(playing().as_ref(), Kind::Track)
 	}
 
 	fn execute() -> Result<()> {
-		open(playing(), Source::Playing, Self::NAME, Kind::Track, Related::Radio);
+		open(playing(), Source::Playing, Self::NAME, Related::Radio);
 		Ok(())
 	}
 }
@@ -138,25 +137,25 @@ impl MainMenuCommand for PlayingShow {
 	const DESCRIPTION: &'static str = "Opens the playing Spotify episode's show in a playlist tab.";
 
 	fn shown() -> Shown {
-		shown(&playing(), Kind::Episode)
+		shown(playing().as_ref(), Kind::Episode)
 	}
 
 	fn execute() -> Result<()> {
-		open(playing(), Source::Playing, Self::NAME, Kind::Episode, Related::Show);
+		open(playing(), Source::Playing, Self::NAME, Related::Show);
 		Ok(())
 	}
 }
 
-/// The playing track, alone, when it is a Spotify track or episode; empty when nothing plays,
-/// the playing track isn't from Spotify, or foobar2000 can't say what plays. Main thread only.
-fn playing() -> Vec<SpotifyItem> {
-	playback::now_playing().ok().flatten().and_then(spotify_item).into_iter().collect()
+/// The playing track, when it is a Spotify track or episode; `None` when nothing plays, the
+/// playing track isn't from Spotify, or foobar2000 can't say what plays. Main thread only.
+fn playing() -> Option<SpotifyItem> {
+	playback::now_playing().ok().flatten().and_then(spotify_item)
 }
 
-/// How a command that opens from `kind` shows for the `playing` items: greyed out when there is
+/// How a command that opens from `kind` shows for the `playing` item: greyed out when there is
 /// none, or else as the right-click rules say.
-fn shown(playing: &[SpotifyItem], kind: Kind) -> Shown {
-	if playing.is_empty() { Shown::Greyed } else { shown_among(playing, kind) }
+fn shown(playing: Option<&SpotifyItem>, kind: Kind) -> Shown {
+	playing.map_or(Shown::Greyed, |(item, _)| shown_among([*item], kind))
 }
 
 /// The submenu of `track`'s stored artists when it has several, each opening that artist; or
@@ -164,33 +163,19 @@ fn shown(playing: &[SpotifyItem], kind: Kind) -> Shown {
 /// for each value of the GUID's last byte.
 fn artist_node(item: ItemId, track: &Track) -> MainMenuNode {
 	match artist_picks(item, track) {
-		ArtistPicks::Every(pick) => command(PlayingArtist::NAME.into(), EVERY_ARTIST, true, pick),
+		ArtistPicks::Every(pick) => {
+			MainMenuNode::command(PlayingArtist::NAME, EVERY_ARTIST, true, pick)
+		}
 		ArtistPicks::Each(picks) => MainMenuNode::Group {
 			name: PlayingArtist::NAME.into(),
 			children: picks
 				.into_iter()
 				.zip(0..=u8::MAX)
-				.map(|((name, pick), index)| command(name, artist_guid(index), true, pick))
+				.map(|((name, pick), index)| {
+					MainMenuNode::command(name, artist_guid(index), true, pick)
+				})
 				.collect(),
 		},
-	}
-}
-
-/// A command named `name` that runs `run`.
-fn command(
-	name: Arc<str>,
-	guid: Guid,
-	enabled: bool,
-	run: impl Fn() + Send + Sync + 'static,
-) -> MainMenuNode {
-	MainMenuNode::Command {
-		name,
-		guid,
-		enabled,
-		run: Box::new(move || {
-			run();
-			Ok(())
-		}),
 	}
 }
 
