@@ -123,7 +123,8 @@ impl Held {
 pub struct Library {
 	pub playlists: Vec<LibraryPlaylist>,
 	items: HashMap<SpotifyId, Held>,
-	/// The playlists without items whose read failed in the last fetch that finished.
+	/// The playlists without items whose read failed, or hadn't finished, when the last fetch
+	/// that read the list ended.
 	unreadable: HashSet<SpotifyId>,
 	liked: Option<HashSet<String>>,
 }
@@ -162,7 +163,7 @@ impl Library {
 	}
 
 	/// Liked Songs is known, and every playlist the account can change has its items or couldn't
-	/// be read in the last fetch that finished.
+	/// be read by the last fetch that read the list.
 	pub fn is_complete(&self) -> bool {
 		self.liked.is_some()
 			&& self.editable().all(|playlist| {
@@ -174,6 +175,16 @@ impl Library {
 	fn store(&mut self, id: SpotifyId, contents: PlaylistContents) {
 		self.items.insert(id, Held::new(contents));
 		self.unreadable.remove(&id);
+	}
+
+	/// Counts every playlist the account can change that has no items as unreadable.
+	fn settle_unread(&mut self) {
+		let unread: Vec<SpotifyId> = self
+			.editable()
+			.filter(|playlist| !self.items.contains_key(&playlist.id))
+			.map(|playlist| playlist.id)
+			.collect();
+		self.unreadable.extend(unread);
 	}
 
 	pub fn editable(&self) -> impl Iterator<Item = &LibraryPlaylist> {
@@ -664,10 +675,11 @@ impl LibraryCache {
 	}
 
 	/// A fetch that couldn't start, for example because there is no session. It ends the running
-	/// fetch with `error`, or, when none runs, one that counts as started at the call. A complete
-	/// library stays as it is, so the next refresh waits [`LIBRARY_REFRESH`] from that start. An
-	/// incomplete one answers `Failed` with `error`, unless the ended fetch had published the
-	/// playlist list and Liked Songs is known; either way the next snapshot starts a fetch.
+	/// fetch with `error`, or, when none runs, one that counts as started at the call. When the
+	/// ended fetch had published the playlist list and Liked Songs is known, the playlists still
+	/// without items count as unreadable. A library that is then complete stays as it is, and the
+	/// next refresh waits [`LIBRARY_REFRESH`] from that start; any other answers `Failed` with
+	/// `error`, and the next snapshot starts a fetch.
 	pub fn fail(&self, error: &CoreError) {
 		let ticket = self.current_ticket(Instant::now());
 		self.fetch_failed(ticket, error);
@@ -835,9 +847,9 @@ impl LibraryCache {
 		}
 	}
 
-	/// Ends the fetch of `ticket` with `error`. A complete library stays as it is, and so does an
-	/// incomplete one whose list this fetch published while Liked Songs is known; any other
-	/// answers `Failed`.
+	/// Ends the fetch of `ticket` with `error`. A complete library stays as it is. When this fetch
+	/// published the list and Liked Songs is known, the playlists still without items count as
+	/// unreadable, which completes the library; any other library answers `Failed`.
 	fn fetch_failed(&self, ticket: FetchTicket, error: &CoreError) {
 		let listeners = {
 			let mut inner = self.lock();
@@ -850,6 +862,9 @@ impl LibraryCache {
 				log::warn!("couldn't refresh the Spotify library: {error}");
 			} else if inner.listed && liked_known {
 				log::warn!("couldn't read every Spotify playlist: {error}");
+				if let Some(library) = inner.library.as_mut().map(Arc::make_mut) {
+					library.settle_unread();
+				}
 			} else {
 				inner.failed = Some(error.to_string());
 			}
@@ -2284,7 +2299,7 @@ mod tests {
 	}
 
 	#[tokio::test(start_paused = true)]
-	async fn a_fetch_that_runs_out_of_time_keeps_the_rows_it_read() {
+	async fn a_fetch_that_runs_out_of_time_keeps_the_rows_it_read_and_settles_the_rest() {
 		let source = fake();
 		add_c(&source);
 		source.held.lock().unwrap().insert(id(3));
@@ -2293,16 +2308,17 @@ mod tests {
 		let ticket = cache.snapshot_ticket(now, None).1.unwrap();
 		cache.run_within(ticket, LIBRARY_FETCH_TIMEOUT, cache.fetch_of(ticket, &source)).await;
 		let library = ready(cache.held());
-		assert!(!library.is_complete());
+		assert!(library.is_complete());
 		assert_eq!(library.holds_all(id(1), &["t1".to_owned()]), Some(true));
 		assert_eq!(library.holds_all(id(3), &["t3".to_owned()]), None);
 		assert_eq!(library.liked_holds_all(&["t2".to_owned()]), Some(true));
 		source.held.lock().unwrap().clear();
 		let read_before = source.contents_ids.lock().unwrap().len();
-		let ticket = cache.snapshot_ticket(now, None).1.expect("no fetch started");
+		let next_menu = now + LIBRARY_FETCH_TIMEOUT;
+		let ticket = cache.snapshot_ticket(next_menu, None).1.expect("no fetch started");
 		cache.fetch_of(ticket, &source).await;
 		assert_eq!(source.contents_ids.lock().unwrap()[read_before..], [id(3)]);
-		assert!(ready(cache.held()).is_complete());
+		assert_eq!(ready(cache.held()).holds_all(id(3), &["t3".to_owned()]), Some(true));
 	}
 
 	#[tokio::test]
