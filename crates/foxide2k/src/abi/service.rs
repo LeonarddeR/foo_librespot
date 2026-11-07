@@ -47,3 +47,6 @@ pub struct ServiceBaseVtbl {
 		guid: *const Guid,
 	) -> bool,
 }
+
+/// `N` vtable slots that are never called. A fake fills it with `[None; N]`.
+pub type Unused<const N: usize> = [Option<unsafe extern "C-unwind" fn()>; N];

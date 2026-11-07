@@ -141,13 +141,9 @@ unsafe impl ServiceImpl for FakePopupV3 {
 	const IIDS: &'static [Guid] = &[popup::V3_IID];
 	const VTBL: &'static PopupV3Vtbl = &PopupV3Vtbl {
 		base: ServiceBaseVtbl::new::<Self>(),
-		show_query: popup_query,
+		unused_3: [None; 1],
 		show_query_modal: popup_query_modal,
 	};
-}
-
-unsafe extern "C-unwind" fn popup_query(this: *mut ServiceBase, query: *const Query) {
-	unsafe { popup_query_modal(this, query) };
 }
 
 unsafe extern "C-unwind" fn popup_query_modal(this: *mut ServiceBase, query: *const Query) -> u32 {

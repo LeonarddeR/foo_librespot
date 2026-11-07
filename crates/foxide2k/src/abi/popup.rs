@@ -26,7 +26,7 @@
 
 use std::ffi::{c_char, c_void};
 
-use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
+use crate::abi::service::{ServiceBase, ServiceBaseVtbl, Unused};
 use crate::guid::Guid;
 
 pub const IID: Guid = Guid::from_u128(0xd5cac75a_3023_4dce_8b0d_b502bd056a7c);
@@ -77,7 +77,8 @@ pub struct Query {
 #[repr(C)]
 pub struct PopupV3Vtbl {
 	pub base: ServiceBaseVtbl,
-	pub show_query: unsafe extern "C-unwind" fn(this: *mut ServiceBase, query: *const Query),
+	/// `show_query`.
+	pub unused_3: Unused<1>,
 	/// Returns the button code the user pressed.
 	pub show_query_modal:
 		unsafe extern "C-unwind" fn(this: *mut ServiceBase, query: *const Query) -> u32,
@@ -87,11 +88,16 @@ pub struct PopupV3Vtbl {
 mod tests {
 	use std::mem::{offset_of, size_of};
 
-	use super::Query;
+	use super::{PopupV3Vtbl, Query};
 
 	#[test]
 	fn query_t_is_56_bytes_with_reply_at_32() {
 		assert_eq!(size_of::<Query>(), 56);
 		assert_eq!(offset_of!(Query, reply), 32);
+	}
+
+	#[test]
+	fn show_query_modal_is_the_fifth_slot() {
+		assert_eq!(offset_of!(PopupV3Vtbl, show_query_modal), 4 * 8);
 	}
 }

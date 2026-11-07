@@ -1,6 +1,6 @@
 //! Writing to foobar2000's `pfc::string_base` out-parameters.
 
-use std::ffi::{CStr, c_char};
+use std::ffi::{CStr, CString, c_char};
 
 use crate::abi::string_base::{StringBase, StringBaseVtbl};
 use crate::boundary::guard;
@@ -40,6 +40,13 @@ impl OwnedString {
 	pub fn value(&self) -> String {
 		String::from_utf8_lossy(&self.bytes[..self.bytes.len() - 1]).into_owned()
 	}
+}
+
+/// `text` as a NUL-terminated string. Fails with `InvalidParams` when `text` holds a NUL; `what`
+/// names the text in the message, such as "a link".
+pub(crate) fn c_string(text: &str, what: &str) -> Result<CString> {
+	CString::new(text)
+		.map_err(|_| Error::new(ExceptionKind::InvalidParams, format!("{what} contains a NUL")))
 }
 
 /// `text` as a NUL-terminated UTF-16 string, for Win32.

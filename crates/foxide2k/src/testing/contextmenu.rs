@@ -1,20 +1,21 @@
 //! Driving a right-click menu item and its nodes through their vtables, as foobar2000's menu
 //! does, and a list of tracks to pass them.
 
-use std::ffi::{CString, c_char};
+use std::ffi::CString;
 use std::marker::PhantomData;
 
 use super::FakeString;
 use crate::abi::contextmenu::{CALLER_KEYBOARD_SHORTCUT_LIST, ItemVtbl, Node};
-
-static CALLER: Guid = CALLER_KEYBOARD_SHORTCUT_LIST;
 use crate::abi::metadb_handle::{HandleListRaw, MetadbHandleVtbl};
 use crate::abi::pfc_list::{ListBaseConst, ListBaseConstVtbl};
-use crate::abi::playlist_loader::{PlayableLocation, PlayableLocationVtbl};
+use crate::abi::playlist_loader::PlayableLocation;
 use crate::abi::service::ServiceBase;
 use crate::cxx::{HostException, try_host};
 use crate::guid::Guid;
+use crate::playlist_loader::LOCATION_VTBL;
 use crate::service::{ServiceImpl, ServiceObject, ServicePtr, new_service};
+
+static CALLER: Guid = CALLER_KEYBOARD_SHORTCUT_LIST;
 
 /// A `metadb_handle` that knows only its location.
 struct LocationHandle {
@@ -39,25 +40,6 @@ unsafe impl ServiceImpl for LocationHandle {
 unsafe extern "C-unwind" fn handle_location(this: *mut ServiceBase) -> *const PlayableLocation {
 	&raw const unsafe { ServiceObject::<LocationHandle>::value(this) }.location
 }
-
-static LOCATION_VTBL: PlayableLocationVtbl = PlayableLocationVtbl {
-	get_path: location_get_path,
-	set_path: location_set_path,
-	get_subsong: location_get_subsong,
-	set_subsong: location_set_subsong,
-};
-
-unsafe extern "C-unwind" fn location_get_path(this: *const PlayableLocation) -> *const c_char {
-	unsafe { (*this).path }
-}
-
-unsafe extern "C-unwind" fn location_set_path(_this: *mut PlayableLocation, _path: *const c_char) {}
-
-unsafe extern "C-unwind" fn location_get_subsong(this: *const PlayableLocation) -> u32 {
-	unsafe { (*this).subsong }
-}
-
-unsafe extern "C-unwind" fn location_set_subsong(_this: *mut PlayableLocation, _subsong: u32) {}
 
 /// A `metadb_handle_list_cref` of fake handles.
 #[repr(C)]

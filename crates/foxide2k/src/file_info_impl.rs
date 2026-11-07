@@ -7,6 +7,7 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 
 use crate::abi::file_info::{FileInfo as RawFileInfo, FileInfoVtbl, ReplayGainInfo};
+use crate::abi::pfc_list::BitArray;
 use crate::boundary::guard;
 use crate::cxx::try_host;
 use crate::error::Result;
@@ -116,16 +117,10 @@ static VTBL: FileInfoVtbl = FileInfoVtbl {
 	info_set_nocheck_ex: info_set,
 };
 
-/// The one slot of `pfc::bit_array` used here: `virtual bool get(t_size n) const`, its first
-/// virtual (`pfc\bit_array.h`).
-#[repr(C)]
-struct BitArrayVtbl {
-	get: unsafe extern "C-unwind" fn(this: *const c_void, index: usize) -> bool,
-}
-
-/// Asks a `bit_array` whether `index` is set.
+/// Asks `mask`, a `pfc::bit_array`, whether `index` is set.
 unsafe fn bit(mask: *const c_void, index: usize) -> Result<bool> {
-	let vtbl = unsafe { &**mask.cast::<*const BitArrayVtbl>() };
+	let mask = mask.cast::<BitArray>();
+	let vtbl = unsafe { &*(*mask).vtbl };
 	Ok(try_host(|| unsafe { (vtbl.get)(mask, index) })?)
 }
 
@@ -456,6 +451,7 @@ mod tests {
 
 	use super::FileInfoImpl;
 	use crate::abi::file_info::ReplayGainInfo;
+	use crate::abi::pfc_list::{BitArray, BitArrayVtbl};
 
 	const GAIN_INVALID: f32 = -1000.0;
 	const PEAK_INVALID: f32 = -1.0;
@@ -511,26 +507,31 @@ mod tests {
 		assert_eq!((value.track_peak, value.album_peak), (PEAK_INVALID, PEAK_INVALID));
 	}
 
-	/// A `pfc::bit_array` whose `get` (its only slot we need) marks the indices in `marked`.
+	/// A `pfc::bit_array` whose `get` marks the indices in `marked`. Its `find`, which
+	/// `FileInfoImpl` never calls, finds nothing.
 	#[repr(C)]
-	struct BitArray {
-		vtbl: *const BitArrayVtbl,
+	struct Mask {
+		base: BitArray,
 		marked: Vec<usize>,
 	}
 
-	#[repr(C)]
-	struct BitArrayVtbl {
-		get: unsafe extern "C-unwind" fn(this: *const BitArray, index: usize) -> bool,
-	}
-
 	unsafe extern "C-unwind" fn bit_get(this: *const BitArray, index: usize) -> bool {
-		unsafe { &*this }.marked.contains(&index)
+		unsafe { &*this.cast::<Mask>() }.marked.contains(&index)
 	}
 
-	static BIT_ARRAY_VTBL: BitArrayVtbl = BitArrayVtbl { get: bit_get };
+	unsafe extern "C-unwind" fn bit_find(
+		_this: *const BitArray,
+		_value: bool,
+		start: usize,
+		count: isize,
+	) -> usize {
+		start.wrapping_add_signed(count)
+	}
 
-	fn mask(marked: Vec<usize>) -> BitArray {
-		BitArray { vtbl: &raw const BIT_ARRAY_VTBL, marked }
+	static BIT_ARRAY_VTBL: BitArrayVtbl = BitArrayVtbl { get: bit_get, find: bit_find };
+
+	fn mask(marked: Vec<usize>) -> Mask {
+		Mask { base: BitArray { vtbl: &raw const BIT_ARRAY_VTBL }, marked }
 	}
 
 	#[test]
@@ -559,7 +560,7 @@ mod tests {
 		index == 0
 	}
 
-	static THROWING_VTBL: BitArrayVtbl = BitArrayVtbl { get: throwing_get };
+	static THROWING_VTBL: BitArrayVtbl = BitArrayVtbl { get: throwing_get, find: bit_find };
 
 	#[test]
 	fn a_mask_that_throws_removes_nothing() {
@@ -569,7 +570,8 @@ mod tests {
 		}
 		let raw = info.as_raw();
 		let vtbl = unsafe { &*(*raw).vtbl };
-		let throwing = BitArray { vtbl: &raw const THROWING_VTBL, marked: Vec::new() };
+		let throwing =
+			Mask { base: BitArray { vtbl: &raw const THROWING_VTBL }, marked: Vec::new() };
 		let result = crate::cxx::try_host(|| unsafe {
 			(vtbl.meta_remove_mask)(raw, (&raw const throwing).cast::<c_void>());
 		});

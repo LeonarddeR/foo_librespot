@@ -18,8 +18,8 @@ use crate::metadb::HandleList;
 use crate::service::{ServiceImpl, ServicePtr, free_from_release, new_service};
 use crate::strings::set_string;
 
-/// What a command does: runs on the main thread with the selected items' paths.
-pub type RunFn = Box<dyn Fn(&[String]) -> Result<()> + Send + Sync>;
+/// What a command does: runs on the main thread when the command is picked.
+pub type RunFn = Box<dyn Fn() -> Result<()> + Send + Sync>;
 
 /// What a right-click menu item shows, built each time the menu opens.
 pub enum MenuNode {
@@ -28,7 +28,6 @@ pub enum MenuNode {
 		checked: bool,
 		/// False shows it greyed out, and it can't be picked.
 		enabled: bool,
-		/// Runs on the main thread with the selected items' paths.
 		run: RunFn,
 	},
 	Popup {
@@ -44,9 +43,10 @@ pub trait ContextMenuItem: 'static {
 	const DESCRIPTION: &'static str;
 	const PARENT: Guid = GROUP_ROOT;
 	const SORT_PRIORITY: f64 = 0.0;
-	/// The node to show for the selected items' paths; `None` hides the item. Runs on the main
-	/// thread while the menu opens, so it must not wait for anything.
-	fn build(paths: &[String]) -> Option<MenuNode>;
+	/// The node to show for `selection`, the selected items; `None` hides the item. Runs on the
+	/// main thread while the menu opens, and must not wait for anything. A command that needs the
+	/// selection keeps what it needs from it.
+	fn build(selection: &HandleList<'_>) -> Option<MenuNode>;
 }
 
 /// The factory that registers item `T` with foobar2000.
@@ -91,11 +91,8 @@ unsafe extern "C-unwind" fn item_instantiate<T: ContextMenuItem>(
 ) -> *mut Node {
 	unsafe {
 		guard(|| {
-			let kind = HandleList::from_raw(data)
-				.paths()
-				.ok()
-				.and_then(|paths| T::build(&paths))
-				.map_or(NodeKind::Hidden, NodeKind::from);
+			let kind =
+				T::build(&HandleList::from_raw(data)).map_or(NodeKind::Hidden, NodeKind::from);
 			Ok(Box::into_raw(Box::new(NodeObject { vtbl: &raw const NODE_VTBL, kind }))
 				.cast::<Node>())
 		})
@@ -260,13 +257,13 @@ unsafe extern "C-unwind" fn node_type(this: *mut Node) -> i32 {
 
 unsafe extern "C-unwind" fn node_execute(
 	this: *mut Node,
-	data: *const HandleListRaw,
+	_data: *const HandleListRaw,
 	_caller: *const Guid,
 ) {
 	unsafe {
 		guard(|| {
 			if let NodeKind::Command { run, .. } = kind(this) {
-				run(&HandleList::from_raw(data).paths()?)?;
+				run()?;
 			}
 			Ok(())
 		});
@@ -304,7 +301,7 @@ unsafe extern "C-unwind" fn node_description(_this: *mut Node, _out: *mut String
 }
 
 unsafe extern "C-unwind" fn node_guid(_this: *mut Node, ret: *mut Guid) -> *mut Guid {
-	unsafe { ret.write(Guid::from_u128(0)) };
+	unsafe { ret.write(Guid::NULL) };
 	ret
 }
 
@@ -334,6 +331,7 @@ mod tests {
 	use crate::cxx::ExceptionKind;
 	use crate::error::Error;
 	use crate::guid::Guid;
+	use crate::metadb::HandleList;
 	use crate::testing::{ContextMenuHandle, FakeHandleList};
 
 	thread_local! {
@@ -343,14 +341,16 @@ mod tests {
 		static FLAG: RefCell<Arc<AtomicBool>> = RefCell::new(Arc::new(AtomicBool::new(false)));
 	}
 
-	fn command(name: &str, checked: bool, enabled: bool) -> MenuNode {
+	/// A command that keeps `paths` to record when it runs.
+	fn command(name: &str, checked: bool, enabled: bool, paths: &[String]) -> MenuNode {
+		let paths = paths.to_vec();
 		MenuNode::Command {
 			name: name.into(),
 			checked,
 			enabled,
-			run: Box::new(|paths| {
+			run: Box::new(move || {
 				RUNS.set(RUNS.get() + 1);
-				RAN_WITH.with_borrow_mut(|ran| *ran = paths.to_vec());
+				RAN_WITH.with_borrow_mut(|ran| ran.clone_from(&paths));
 				Ok(())
 			}),
 		}
@@ -364,17 +364,18 @@ mod tests {
 		const DESCRIPTION: &'static str = "Adds the tracks to a test list.";
 		const SORT_PRIORITY: f64 = 2.5;
 
-		fn build(paths: &[String]) -> Option<MenuNode> {
-			BUILT_WITH.with_borrow_mut(|built| *built = paths.to_vec());
+		fn build(selection: &HandleList<'_>) -> Option<MenuNode> {
+			let paths = selection.paths().ok()?;
+			BUILT_WITH.with_borrow_mut(|built| built.clone_from(&paths));
 			if paths.is_empty() {
 				return None;
 			}
 			Some(MenuNode::Popup {
 				name: "Add to test".into(),
 				children: vec![
-					command("Checked one", true, true),
-					command("Greyed one", false, false),
-					command("Plain", false, true),
+					command("Checked one", true, true, &paths),
+					command("Greyed one", false, false, &paths),
+					command("Plain", false, true, &paths),
 				],
 			})
 		}
@@ -387,12 +388,12 @@ mod tests {
 		const NAME: &'static str = "Fail";
 		const DESCRIPTION: &'static str = "Always fails.";
 
-		fn build(_paths: &[String]) -> Option<MenuNode> {
+		fn build(_selection: &HandleList<'_>) -> Option<MenuNode> {
 			Some(MenuNode::Command {
 				name: "Fail".into(),
 				checked: false,
 				enabled: true,
-				run: Box::new(|_| Err(Error::new(ExceptionKind::Io, "can't add"))),
+				run: Box::new(|| Err(Error::new(ExceptionKind::Io, "can't add"))),
 			})
 		}
 	}
@@ -412,7 +413,7 @@ mod tests {
 		const NAME: &'static str = "Flag";
 		const DESCRIPTION: &'static str = "Holds a drop flag.";
 
-		fn build(_paths: &[String]) -> Option<MenuNode> {
+		fn build(_selection: &HandleList<'_>) -> Option<MenuNode> {
 			let flag = DropFlag(FLAG.with_borrow(Arc::clone));
 			Some(MenuNode::Popup {
 				name: "Flag".into(),
@@ -420,7 +421,7 @@ mod tests {
 					name: "Child".into(),
 					checked: false,
 					enabled: true,
-					run: Box::new(move |_| {
+					run: Box::new(move || {
 						let _held = &flag;
 						Ok(())
 					}),
@@ -493,10 +494,10 @@ mod tests {
 	}
 
 	#[test]
-	fn executing_a_command_runs_it_with_the_selection() {
+	fn executing_a_command_runs_what_build_made_of_the_selection() {
 		let list = FakeHandleList::new(&[PATH, "file://C:\\a.mp3"]);
 		let root = item().instantiate(&list);
-		root.node().child("Plain").unwrap().execute(&list).unwrap();
+		root.node().child("Plain").unwrap().execute(&FakeHandleList::new(&[])).unwrap();
 		assert_eq!(RUNS.get(), 1);
 		RAN_WITH.with_borrow(|ran| assert_eq!(ran, &[PATH, "file://C:\\a.mp3"]));
 	}

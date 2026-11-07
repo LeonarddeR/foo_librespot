@@ -1,7 +1,7 @@
 //! foobar2000's playlist tabs: creating and switching them, keeping a value with one across
 //! restarts, and loading links into one the way pasting them does. Main thread only.
 
-use std::ffi::{CString, c_char, c_void};
+use std::ffi::{c_char, c_void};
 use std::sync::{Mutex, PoisonError};
 
 use crate::abi::abort_callback::AbortCallback;
@@ -22,6 +22,7 @@ use crate::guid::Guid;
 use crate::host::host;
 use crate::metadb::HandleList;
 use crate::service::{ServiceImpl, ServiceObject, ServicePtr, new_service};
+use crate::strings::c_string;
 
 /// What runs with the tracks of a finished load, on the main thread.
 type Done = Box<dyn FnOnce(&HandleList<'_>) -> Result<()> + Send>;
@@ -44,9 +45,12 @@ fn vtbl<'a>(service: &ServicePtr) -> &'a PlaylistManagerVtbl {
 
 /// How many tabs there are.
 pub fn count() -> Result<usize> {
-	let manager = manager()?;
+	count_of(&manager()?)
+}
+
+fn count_of(manager: &ServicePtr) -> Result<usize> {
 	let raw = manager.as_raw();
-	Ok(try_host(|| unsafe { (vtbl(&manager).get_playlist_count)(raw) })?)
+	Ok(try_host(|| unsafe { (vtbl(manager).get_playlist_count)(raw) })?)
 }
 
 /// Creates a tab named `name` after the others and returns its index.
@@ -88,26 +92,25 @@ pub fn set_property(index: usize, property: &Guid, value: &[u8]) -> Result<()> {
 
 /// What `set_property` kept under `property` with tab `index`, if anything.
 pub fn property(index: usize, property: &Guid) -> Result<Option<Vec<u8>>> {
-	let manager = manager_v2()?;
+	property_of(&manager_v2()?, index, property)
+}
+
+/// [`property`] through `manager`, a `playlist_manager_v2`.
+fn property_of(manager: &ServicePtr, index: usize, property: &Guid) -> Result<Option<Vec<u8>>> {
 	let raw = manager.as_raw();
 	let mut writer = MemoryWriter { vtbl: &raw const WRITER_VTBL, data: Vec::new() };
 	let stream = (&raw mut writer).cast::<c_void>();
 	let found = try_host(|| unsafe {
-		(vtbl(&manager).playlist_get_property)(
-			raw,
-			index,
-			property,
-			stream,
-			abort::never().as_raw(),
-		)
+		(vtbl(manager).playlist_get_property)(raw, index, property, stream, abort::never().as_raw())
 	})?;
 	Ok(found.then_some(writer.data))
 }
 
 /// The first tab whose `property` is `value`.
 pub fn find_by_property(property: &Guid, value: &[u8]) -> Result<Option<usize>> {
-	for index in 0..count()? {
-		if self::property(index, property)?.as_deref() == Some(value) {
+	let manager = manager_v2()?;
+	for index in 0..count_of(&manager)? {
+		if property_of(&manager, index, property)?.as_deref() == Some(value) {
 			return Ok(Some(index));
 		}
 	}
@@ -238,10 +241,7 @@ pub fn load_locations(locations: &[String], done: Done) -> Result<()> {
 		})?;
 	let strings = locations
 		.iter()
-		.map(|location| {
-			CString::new(location.as_str())
-				.map_err(|_| Error::new(ExceptionKind::InvalidParams, "a link contains a NUL"))
-		})
+		.map(|location| c_string(location, "a link"))
 		.collect::<Result<Vec<_>>>()?;
 	let list = UrlList {
 		vtbl: &raw const URL_LIST_VTBL,

@@ -121,7 +121,7 @@ unsafe impl ServiceImpl for FakeManager {
 	const VTBL: &'static PlaylistManagerVtbl = &PlaylistManagerVtbl {
 		base: ServiceBaseVtbl::new::<Self>(),
 		get_playlist_count: manager_count,
-		get_active_playlist: manager_active,
+		unused_4: [None; 1],
 		set_active_playlist: manager_set_active,
 		unused_6_8: [None; 3],
 		create_playlist: manager_create,
@@ -139,10 +139,6 @@ fn state<'a>(this: *mut ServiceBase) -> &'a PlaylistsState {
 
 unsafe extern "C-unwind" fn manager_count(this: *mut ServiceBase) -> usize {
 	state(this).tabs.lock().unwrap_or_else(PoisonError::into_inner).len()
-}
-
-unsafe extern "C-unwind" fn manager_active(this: *mut ServiceBase) -> usize {
-	state(this).active.lock().unwrap_or_else(PoisonError::into_inner).unwrap_or(usize::MAX)
 }
 
 unsafe extern "C-unwind" fn manager_set_active(this: *mut ServiceBase, index: usize) {

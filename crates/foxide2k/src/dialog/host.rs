@@ -139,57 +139,44 @@ impl Dialog {
 		usize::try_from(selected.0).ok()
 	}
 
+	/// Sends `message` to control `id` and returns its answer.
+	fn send(self, id: u16, message: i32, wparam: usize, lparam: isize) -> isize {
+		unsafe {
+			SendMessageW(self.control(id), message.cast_unsigned(), WPARAM(wparam), LPARAM(lparam))
+		}
+		.0
+	}
+
 	pub fn list_clear(&self, id: u16) {
-		unsafe { SendMessageW(self.control(id), LB_RESETCONTENT as u32, WPARAM(0), LPARAM(0)) };
+		self.send(id, LB_RESETCONTENT, 0, 0);
 	}
 
 	pub fn list_add(&self, id: u16, text: &str) {
 		let text = wide(text);
-		unsafe {
-			SendMessageW(
-				self.control(id),
-				LB_ADDSTRING as u32,
-				WPARAM(0),
-				LPARAM(text.as_ptr() as isize),
-			);
-		}
+		self.send(id, LB_ADDSTRING, 0, text.as_ptr() as isize);
 	}
 
 	pub fn list_select(&self, id: u16, index: usize) {
-		unsafe { SendMessageW(self.control(id), LB_SETCURSEL as u32, WPARAM(index), LPARAM(0)) };
+		self.send(id, LB_SETCURSEL, index, 0);
 	}
 
 	/// The selected item, or `None` when nothing is selected.
 	pub fn list_selection(&self, id: u16) -> Option<usize> {
-		let selected =
-			unsafe { SendMessageW(self.control(id), LB_GETCURSEL as u32, WPARAM(0), LPARAM(0)) };
-		usize::try_from(selected.0).ok()
+		usize::try_from(self.send(id, LB_GETCURSEL, 0, 0)).ok()
 	}
 
 	pub fn list_count(&self, id: u16) -> usize {
-		let count =
-			unsafe { SendMessageW(self.control(id), LB_GETCOUNT as u32, WPARAM(0), LPARAM(0)) };
-		usize::try_from(count.0).unwrap_or(0)
+		usize::try_from(self.send(id, LB_GETCOUNT, 0, 0)).unwrap_or(0)
 	}
 
 	/// The text of item `index`, or an empty string when there is no such item.
 	pub fn list_text(&self, id: u16, index: usize) -> String {
-		let control = self.control(id);
-		let length =
-			unsafe { SendMessageW(control, LB_GETTEXTLEN as u32, WPARAM(index), LPARAM(0)) };
-		let Ok(length) = usize::try_from(length.0) else {
+		let Ok(length) = usize::try_from(self.send(id, LB_GETTEXTLEN, index, 0)) else {
 			return String::new();
 		};
 		let mut buffer = vec![0u16; length + 1];
-		let copied = unsafe {
-			SendMessageW(
-				control,
-				LB_GETTEXT as u32,
-				WPARAM(index),
-				LPARAM(buffer.as_mut_ptr() as isize),
-			)
-		};
-		String::from_utf16_lossy(&buffer[..usize::try_from(copied.0).unwrap_or(0)])
+		let copied = self.send(id, LB_GETTEXT, index, buffer.as_mut_ptr() as isize);
+		String::from_utf16_lossy(&buffer[..usize::try_from(copied).unwrap_or(0)])
 	}
 
 	pub fn is_checked(&self, id: u16) -> bool {

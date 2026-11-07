@@ -5,7 +5,7 @@
 //! extension, which these loaders don't use). A loader that doesn't handle the path throws
 //! `exception_io_unsupported_format`, and foobar2000 tries the next one.
 
-use std::ffi::{CString, c_char, c_void};
+use std::ffi::{c_char, c_void};
 use std::marker::PhantomData;
 
 use crate::abi::abort_callback::AbortCallback;
@@ -24,7 +24,7 @@ use crate::error::{Error, Result};
 use crate::file_info_impl::FileInfoImpl;
 use crate::guid::Guid;
 use crate::service::{ServiceImpl, ServicePtr, new_service};
-use crate::strings::str_of;
+use crate::strings::{c_string, str_of};
 
 /// A component's playlist loader.
 pub trait PlaylistLoader: 'static {
@@ -126,7 +126,7 @@ impl LoaderCallback<'_> {
 
 	/// Shows `path` in foobar2000's progress display.
 	pub fn on_progress(&mut self, path: &str) -> Result<()> {
-		let path = c_string(path)?;
+		let path = c_string(path, "a path")?;
 		let (vtbl, raw) = (self.vtbl(), self.raw);
 		try_host(|| unsafe { (vtbl.on_progress)(raw, path.as_ptr()) })?;
 		Ok(())
@@ -135,7 +135,7 @@ impl LoaderCallback<'_> {
 	/// Adds an entry for `path` that the user asked for, with `info` already known, so
 	/// foobar2000 shows it without opening the track.
 	pub fn add_entry(&mut self, path: &str, info: &mut FileInfoImpl) -> Result<()> {
-		let path = c_string(path)?;
+		let path = c_string(path, "a path")?;
 		let location =
 			PlayableLocation { vtbl: &raw const LOCATION_VTBL, path: path.as_ptr(), subsong: 0 };
 		let (vtbl, raw) = (self.vtbl(), self.raw);
@@ -163,13 +163,9 @@ impl LoaderCallback<'_> {
 	}
 }
 
-fn c_string(text: &str) -> Result<CString> {
-	CString::new(text).map_err(|_| Error::new(ExceptionKind::InvalidParams, "text contains NUL"))
-}
-
 /// The `playable_location` vtable for [`LoaderCallback::add_entry`], like the SDK's
 /// `make_playable_location`: read-only, the setters do nothing.
-static LOCATION_VTBL: PlayableLocationVtbl = PlayableLocationVtbl {
+pub(crate) static LOCATION_VTBL: PlayableLocationVtbl = PlayableLocationVtbl {
 	get_path: location_get_path,
 	set_path: location_set_path,
 	get_subsong: location_get_subsong,

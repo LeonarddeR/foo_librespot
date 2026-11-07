@@ -1,6 +1,6 @@
 //! foobar2000's non-modal message window.
 
-use std::ffi::{CString, c_void};
+use std::ffi::c_void;
 
 use crate::abi::popup::{
 	BUTTON_NO, BUTTON_YES, ICON_ERROR, ICON_INFORMATION, ICON_QUESTION, IID, PopupMessageVtbl,
@@ -9,6 +9,7 @@ use crate::abi::popup::{
 use crate::cxx::{ExceptionKind, try_host};
 use crate::error::{Error, Result};
 use crate::host::host;
+use crate::strings::c_string;
 
 /// The icon a popup shows next to its message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,9 +59,8 @@ pub fn ask(title: &str, message: &str) -> Result<bool> {
 	let popup = host()
 		.core_service(&V3_IID)
 		.ok_or_else(|| Error::new(ExceptionKind::BugCheck, "foobar2000 has no popup_message_v3"))?;
-	let nul = |_| Error::new(ExceptionKind::InvalidParams, "a question contains a NUL");
-	let title = CString::new(title).map_err(nul)?;
-	let message = CString::new(message).map_err(nul)?;
+	let title = c_string(title, "a question")?;
+	let message = c_string(message, "a question")?;
 	let query = Query {
 		title: title.as_ptr(),
 		message: message.as_ptr(),

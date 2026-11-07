@@ -17,6 +17,7 @@ use foxide2k::console;
 use foxide2k::contextmenu::{ContextMenuItem, MenuNode};
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
+use foxide2k::metadb::HandleList;
 use foxide2k::popup::{self, PopupIcon};
 
 use crate::backend::backend;
@@ -35,13 +36,18 @@ impl ContextMenuItem for AddToSpotifyPlaylist {
 	const PARENT: Guid = GROUP_ROOT;
 	const SORT_PRIORITY: f64 = 1000.0;
 
-	fn build(paths: &[String]) -> Option<MenuNode> {
+	fn build(selection: &HandleList<'_>) -> Option<MenuNode> {
 		let mut seen = HashSet::new();
-		let items: Vec<ItemId> = paths
-			.iter()
-			.filter_map(|path| parse_item(path))
-			.filter(|item| seen.insert(*item))
-			.collect();
+		let mut items = Vec::new();
+		selection
+			.for_each_path(|path| {
+				if let Some(item) = parse_item(path)
+					&& seen.insert(item)
+				{
+					items.push(item);
+				}
+			})
+			.ok()?;
 		if items.is_empty() {
 			return None;
 		}
@@ -68,7 +74,7 @@ fn greyed(name: &str) -> MenuNode {
 		name: name.to_owned(),
 		checked: false,
 		enabled: false,
-		run: Box::new(|_| Ok(())),
+		run: Box::new(|| Ok(())),
 	}
 }
 
@@ -77,7 +83,7 @@ fn login_entry() -> MenuNode {
 		name: "Log in to Spotify…".to_owned(),
 		checked: false,
 		enabled: true,
-		run: Box::new(|_| {
+		run: Box::new(|| {
 			ask_for_login();
 			Ok(())
 		}),
@@ -126,7 +132,7 @@ impl Pick {
 			name: self.name.clone(),
 			checked: self.checked,
 			enabled,
-			run: Box::new(move |_| self.choose()),
+			run: Box::new(move || self.choose()),
 		}
 	}
 

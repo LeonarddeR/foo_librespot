@@ -31,7 +31,7 @@ use crate::abi::abort_callback::AbortCallback;
 use crate::abi::input::ByValueServicePtr;
 use crate::abi::metadb_handle::HandleListRaw;
 use crate::abi::pfc_list::{BitArray, ListBaseConst};
-use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
+use crate::abi::service::{ServiceBase, ServiceBaseVtbl, Unused};
 use crate::guid::Guid;
 
 pub const MANAGER_IID: Guid = Guid::from_u128(0xd8d51855_d79d_49b8_97a8_065785fa2426);
@@ -40,17 +40,14 @@ pub const INCOMING_IID: Guid = Guid::from_u128(0xeb8fa333_f365_46ad_8621_3456715
 pub const INCOMING_V2_IID: Guid = Guid::from_u128(0xf335802b_a522_434d_be89_e86d59561648);
 pub const NOTIFY_IID: Guid = Guid::from_u128(0x7d7eddac_f93e_4707_969b_cf44a9e1fb78);
 
-/// `N` vtable slots that are never called. A fake fills it with `[None; N]`.
-pub type Unused<const N: usize> = [Option<unsafe extern "C-unwind" fn()>; N];
-
 /// `playlist_manager`'s 54 slots after `service_base`, then `playlist_manager_v2`'s first two.
 /// Only the slots used are typed; the others are [`Unused`].
 #[repr(C)]
 pub struct PlaylistManagerVtbl {
 	pub base: ServiceBaseVtbl,
 	pub get_playlist_count: unsafe extern "C-unwind" fn(this: *mut ServiceBase) -> usize,
-	/// Infinite (`usize::MAX`) when no playlist is active.
-	pub get_active_playlist: unsafe extern "C-unwind" fn(this: *mut ServiceBase) -> usize,
+	/// `get_active_playlist`.
+	pub unused_4: Unused<1>,
 	pub set_active_playlist: unsafe extern "C-unwind" fn(this: *mut ServiceBase, index: usize),
 	/// `get_playing_playlist`, `set_playing_playlist` and `remove_playlists`.
 	pub unused_6_8: Unused<3>,
@@ -137,6 +134,7 @@ mod tests {
 	#[test]
 	fn playlist_vtbls_have_their_sdk_slots() {
 		assert_eq!(size_of::<PlaylistManagerVtbl>(), 59 * 8);
+		assert_eq!(offset_of!(PlaylistManagerVtbl, set_active_playlist), 5 * 8);
 		assert_eq!(offset_of!(PlaylistManagerVtbl, create_playlist), 9 * 8);
 		assert_eq!(offset_of!(PlaylistManagerVtbl, playlist_insert_items), 20 * 8);
 		assert_eq!(offset_of!(PlaylistManagerVtbl, playlist_set_property), 57 * 8);

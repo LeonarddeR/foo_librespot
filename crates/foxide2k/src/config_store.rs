@@ -1,12 +1,11 @@
 //! foobar2000's settings store, for values a component keeps between sessions.
 
-use std::ffi::CString;
-
 use crate::abi::config_store::{ConfigStoreVtbl, IID};
 use crate::cxx::{ExceptionKind, try_host};
 use crate::error::{Error, Result};
 use crate::host::host;
 use crate::service::ServicePtr;
+use crate::strings::c_string;
 
 fn store() -> Result<ServicePtr> {
 	host()
@@ -14,15 +13,10 @@ fn store() -> Result<ServicePtr> {
 		.ok_or_else(|| Error::new(ExceptionKind::BugCheck, "foobar2000 has no configStore"))
 }
 
-fn c_name(name: &str) -> Result<CString> {
-	CString::new(name)
-		.map_err(|_| Error::new(ExceptionKind::InvalidParams, "NUL in a setting name"))
-}
-
 /// The integer stored under `name`, or `default` when there is none, no host, or the host
 /// fails.
 pub fn get_int(name: &str, default: i64) -> i64 {
-	let (Ok(store), Ok(name)) = (store(), c_name(name)) else { return default };
+	let (Ok(store), Ok(name)) = (store(), c_string(name, "a setting name")) else { return default };
 	let raw = store.as_raw();
 	try_host(|| unsafe {
 		let vtbl = &*(*raw).vtbl.cast::<ConfigStoreVtbl>();
@@ -34,7 +28,7 @@ pub fn get_int(name: &str, default: i64) -> i64 {
 /// Stores `value` under `name`.
 pub fn set_int(name: &str, value: i64) -> Result<()> {
 	let store = store()?;
-	let name = c_name(name)?;
+	let name = c_string(name, "a setting name")?;
 	let raw = store.as_raw();
 	try_host(|| unsafe {
 		let vtbl = &*(*raw).vtbl.cast::<ConfigStoreVtbl>();
