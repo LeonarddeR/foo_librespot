@@ -41,6 +41,7 @@ pub struct FakeApi {
 }
 
 mod advconfig;
+mod contextmenu;
 mod live_info;
 mod mainmenu;
 mod preferences;
@@ -48,6 +49,7 @@ mod services;
 mod windows;
 
 pub use advconfig::AdvconfigHandle;
+pub use contextmenu::{ContextMenuHandle, FakeHandleList, NodeHandle, NodeRef};
 pub use live_info::FakeLiveInfoList;
 pub use mainmenu::MainMenuHandle;
 pub use preferences::{FakePageCallback, PageInstanceHandle, PreferencesHandle};
