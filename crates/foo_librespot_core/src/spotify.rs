@@ -11,7 +11,9 @@ use crate::audio::keys::AudioKeys;
 use crate::audio::track::{
 	FetchedTrack, KeyOrigin, SpotifyTrack, fetch_track, wrong_remembered_key,
 };
-use crate::library::{LibraryCache, LibraryState, LibrespotLibrary, OnLibraryChange};
+use crate::library::{
+	LIBRARY_FETCH_TIMEOUT, LibraryCache, LibraryState, LibrespotLibrary, OnLibraryChange,
+};
 use crate::link::{ItemId, Link};
 use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
 use crate::metadata::{TrackInfo, largest_cover};
@@ -125,7 +127,9 @@ impl Core {
 
 	/// The account's playlists and Liked Songs as last read, without waiting for Spotify. When
 	/// they are missing or old, a read starts in the background; `on_change` runs once when it
-	/// next publishes, on a runtime thread, and is dropped unrun when no read is running.
+	/// next publishes, on a runtime thread, and is dropped unrun when no read is running. A logout
+	/// runs it on the thread that calls `logout`, and a login on the runtime thread that
+	/// finishes it.
 	pub fn library(&self, on_change: Option<OnLibraryChange>) -> LibraryState {
 		if !self.is_logged_in() {
 			return LibraryState::LoggedOut;
@@ -136,9 +140,16 @@ impl Core {
 			let sessions = Arc::clone(&self.sessions);
 			let library = self.library.clone();
 			self.runtime.spawn(async move {
-				match sessions.session().await {
-					Ok(session) => library.fetch(&LibrespotLibrary::new(session), now).await,
-					Err(error) => library.fail(&error),
+				let read = async {
+					match sessions.session().await {
+						Ok(session) => library.fetch(&LibrespotLibrary::new(session), now).await,
+						Err(error) => library.fail(&error),
+					}
+				};
+				if tokio::time::timeout(LIBRARY_FETCH_TIMEOUT, read).await.is_err() {
+					library.fail(&CoreError::Unavailable(
+						"Spotify took too long to send your playlists".to_owned(),
+					));
 				}
 			});
 		}
