@@ -2,7 +2,7 @@
 //! drives services through their vtables, exactly as foobar2000 does.
 
 use std::ffi::{CString, c_char, c_void};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::abi::abort_callback::{AbortCallback, AbortCallbackVtbl};
@@ -38,6 +38,8 @@ pub struct FakeApi {
 	console: Arc<Mutex<Vec<String>>>,
 	profile_path: CString,
 	state: Arc<services::FakeState>,
+	/// The window `get_main_window` answers; 0 until set.
+	main_window: AtomicIsize,
 }
 
 mod advconfig;
@@ -87,6 +89,7 @@ impl FakeApi {
 			console: console.clone(),
 			profile_path,
 			state: Arc::default(),
+			main_window: AtomicIsize::new(0),
 		}));
 		api.add_service(console::IID, new_service(FakeConsole { lines: console }));
 		services::register(api, &api.state);
@@ -121,6 +124,11 @@ impl FakeApi {
 	/// The profile path the fake reports, `file://` URL included.
 	pub fn profile_path(&self) -> String {
 		self.profile_path.to_string_lossy().into_owned()
+	}
+
+	/// Makes `window` foobar2000's main window from now on; there is none until then.
+	pub fn set_main_window(&self, window: isize) {
+		self.main_window.store(window, Ordering::SeqCst);
 	}
 
 	/// Makes this fake the host of the Foxide2k inside the test binary itself, to test services
@@ -176,8 +184,9 @@ unsafe extern "C-unwind" fn create(
 	true
 }
 
-unsafe extern "C-unwind" fn get_main_window(_this: *mut Api) -> *mut c_void {
-	std::ptr::null_mut()
+unsafe extern "C-unwind" fn get_main_window(this: *mut Api) -> *mut c_void {
+	let window = unsafe { fake(this) }.main_window.load(Ordering::SeqCst);
+	std::ptr::without_provenance_mut(window.cast_unsigned())
 }
 
 unsafe extern "C-unwind" fn yes(_this: *mut Api) -> bool {

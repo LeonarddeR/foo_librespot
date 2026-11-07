@@ -55,11 +55,34 @@ impl<H: DialogHandler + Default> SingleWindow<H> {
 
 	/// Shows the window, or brings it to the front when it is open. Main thread only.
 	pub fn show(&self, owner: isize) -> Result<()> {
-		let dialog = self.open(owner)?;
-		dialog.show();
-		dialog.activate();
+		bring_up(self.open(owner)?);
 		Ok(())
 	}
+}
+
+/// Makes `dialog` visible and brings it to the front.
+#[cfg(not(test))]
+fn bring_up(dialog: Dialog) {
+	dialog.show();
+	dialog.activate();
+}
+
+#[cfg(test)]
+thread_local! {
+	/// How often a window was brought up on this thread.
+	static BROUGHT_UP: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Only counts, so that no test shows a window or takes the keyboard focus.
+#[cfg(test)]
+fn bring_up(_dialog: Dialog) {
+	BROUGHT_UP.set(BROUGHT_UP.get() + 1);
+}
+
+/// How often [`SingleWindow::show`] brought a window up on this thread.
+#[cfg(test)]
+pub fn brought_up() -> usize {
+	BROUGHT_UP.get()
 }
 
 /// The window's own handler, and the window to forget once it is destroyed.
@@ -103,7 +126,7 @@ mod tests {
 	use foxide2k::dialog::template::{DialogTemplate, shell_font};
 	use foxide2k::testing::{hidden_window, pump_messages, send_close};
 
-	use super::SingleWindow;
+	use super::{SingleWindow, brought_up};
 
 	fn template() -> DialogTemplate {
 		DialogTemplate {
@@ -167,6 +190,17 @@ mod tests {
 		assert!(ONE.current().is_none());
 		assert_eq!(OTHER.current(), Some(other));
 		destroy(other);
+	}
+
+	#[test]
+	fn showing_opens_the_window_once_and_brings_it_up_each_time() {
+		let owner = hidden_window();
+		ONE.show(owner).unwrap();
+		let shown = ONE.current().expect("showing opens the window");
+		ONE.show(owner).unwrap();
+		assert_eq!(ONE.current(), Some(shown));
+		assert_eq!(brought_up(), 2);
+		destroy(shown);
 	}
 
 	#[test]

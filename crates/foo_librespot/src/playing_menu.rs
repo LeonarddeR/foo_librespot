@@ -211,9 +211,8 @@ mod tests {
 	use super::{PlayingAlbum, PlayingArtist, PlayingRadio, PlayingShow, PlayingTrack};
 	use crate::artist_window::{STATUS, WINDOW};
 	use crate::open_playlist::{OpenPlaylist, SpotifyMenu};
-	use crate::testing::{
-		FakeBackend, episode_id, installed_backend, installed_screen, track_id, wait_until,
-	};
+	use crate::testing::{FakeBackend, episode_id, installed_backend, track_id, wait_until};
+	use crate::window::brought_up;
 
 	/// "In Christ Alone".
 	const GETTY_TRACK: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
@@ -435,7 +434,6 @@ mod tests {
 	#[test]
 	fn a_playing_track_with_one_stored_artist_gets_a_command_that_asks_spotify() {
 		let (api, fake) = setup();
-		installed_screen();
 		for fields in [ONE_ARTIST, NO_FIELDS] {
 			api.set_now_playing(Some((GETTY_TRACK, fields)));
 			let root = open_artist().instantiate(0);
@@ -470,12 +468,11 @@ mod tests {
 	#[test]
 	fn open_artist_by_its_shortcut_shows_loading_for_two_stored_artists() {
 		let (api, fake) = setup();
-		let screen = installed_screen();
 		api.set_now_playing(Some((GETTY_TRACK, BOTH_GETTYS)));
 		press_open_artist();
 		let dialog = WINDOW.current().expect("the artist window is open");
 		assert_eq!(dialog.text(STATUS), "Loading…");
-		assert_eq!(screen.brought_up(), 1);
+		assert_eq!(brought_up(), 1);
 		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist(None))]);
 		destroy(dialog);
 	}
@@ -483,7 +480,6 @@ mod tests {
 	#[test]
 	fn open_artist_by_its_shortcut_for_one_stored_artist_asks_spotify_without_a_window() {
 		let (api, fake) = setup();
-		installed_screen();
 		api.set_now_playing(Some((GETTY_TRACK, ONE_ARTIST)));
 		press_open_artist();
 		assert!(WINDOW.current().is_none());

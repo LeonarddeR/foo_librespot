@@ -2,9 +2,10 @@
 //! playlist tab of its own.
 //!
 //! The lookup runs in the background; the tab opens on the main thread once it ends. When a
-//! track's artists are asked for and it has several, the artist window lists them instead; any
-//! other result of that lookup closes the artist window if it says "Loading…". Every failure is
-//! told in the console and a popup; none reaches foobar2000.
+//! track's artists are asked for and it has several, the artist window lists them instead. A
+//! lookup that the artist window says "Loading…" for settles that window whatever it finds
+//! ([`artist_window::settle`]). Every failure is told in the console and a popup; none reaches
+//! foobar2000.
 
 use std::fmt::Display;
 
@@ -15,18 +16,19 @@ use foxide2k::console;
 use foxide2k::main_thread;
 use foxide2k::popup::PopupIcon;
 
-use crate::artist_window;
+use crate::artist_window::{self, Wait};
 use crate::backend::backend;
 use crate::errors::show_failure;
 use crate::first_use::ask_for_login;
 use crate::tabs::open_in_tab;
 
 /// Starts finding `what` for `item` and returns at once; what was found then opens in its tab.
-/// `title` names the track in a failure: its stored title, or its URI. Main thread only.
-pub fn open_related(item: ItemId, what: Related, title: String) {
+/// `title` names the track in a failure: its stored title, or its URI. `wait` is the artist
+/// window's "Loading…" for this lookup, from [`artist_window::show_loading`], if it shows one.
+/// Main thread only.
+pub fn open_related(item: ItemId, what: Related, title: String, wait: Option<Wait>) {
 	let noun = noun(&what);
-	let every_artist = what == Related::Artist(None);
-	backend().related(item, what, Box::new(move |result| end(result, noun, &title, every_artist)));
+	backend().related(item, what, Box::new(move |result| end(result, noun, &title, wait)));
 }
 
 /// What a failure calls `what`.
@@ -39,16 +41,15 @@ const fn noun(what: &Related) -> &'static str {
 	}
 }
 
-/// On the main thread, opens what the lookup found, or lists the artists to pick from when it
-/// found several. Otherwise asks for a login, or says why it failed. When `every_artist` was
-/// asked for and there is no list to show, it also closes the artist window if it says
-/// "Loading…".
-fn end(result: Result<Found, CoreError>, noun: &'static str, title: &str, every_artist: bool) {
+/// On the main thread, settles the artist window for the lookup that carried `wait`, and opens
+/// what the lookup found; several artists are the artist window's to list. Otherwise asks for a
+/// login, or says why it failed, on this thread.
+fn end(result: Result<Found, CoreError>, noun: &'static str, title: &str, wait: Option<Wait>) {
 	let found = match result {
 		Ok(found) => found,
 		Err(error) => {
-			if every_artist {
-				close_loading_window();
+			if wait.is_some() {
+				close_loading_window(wait);
 			}
 			return match error {
 				CoreError::NotLoggedIn => ask_for_login(),
@@ -60,22 +61,20 @@ fn end(result: Result<Found, CoreError>, noun: &'static str, title: &str, every_
 	let queued_title = title.to_owned();
 	let queued = main_thread::run(Box::new(move || match found {
 		Found::One(opened) => {
-			if every_artist {
-				artist_window::close_loading();
-			}
+			artist_window::settle(wait, None);
 			open(&opened, noun, &queued_title);
 		}
-		Found::Artists(artists) => artist_window::show_choices(artists),
+		Found::Artists(artists) => artist_window::settle(wait, Some(artists)),
 	}));
 	if let Err(error) = queued {
 		fail(noun, title, &error.message);
 	}
 }
 
-/// Closes the artist window on the main thread if it says "Loading…". Says in the console when
-/// it can't.
-fn close_loading_window() {
-	if let Err(error) = main_thread::run(Box::new(artist_window::close_loading)) {
+/// On the main thread, closes the artist window if it still says "Loading…" for the lookup
+/// that carried `wait`. Says in the console when it can't.
+fn close_loading_window(wait: Option<Wait>) {
+	if let Err(error) = main_thread::run(Box::new(move || artist_window::settle(wait, None))) {
 		console::print(&format!("foo_librespot: can't close the artist window: {}", error.message));
 	}
 }
@@ -106,9 +105,8 @@ mod tests {
 
 	use super::open_related;
 	use crate::artist_window;
-	use crate::testing::{
-		installed_backend, installed_prompt, installed_screen, track_id, wait_until,
-	};
+	use crate::testing::{installed_backend, installed_prompt, track_id, wait_until};
+	use crate::window::brought_up;
 
 	const GETTY_TRACK: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
 	const KEITH: &str = "0I4Bk2s2BUJyykCwtxx8Xx";
@@ -138,7 +136,7 @@ mod tests {
 	fn an_album_opens_in_a_tab_named_after_it() {
 		let api = installed_api();
 		let fake = installed_backend();
-		open_related(getty_track(), Related::Album, GETTY_TRACK.to_owned());
+		open_related(getty_track(), Related::Album, GETTY_TRACK.to_owned(), None);
 		run_main_thread_work(api);
 		assert_eq!(fake.related_calls(), [(getty_track(), Related::Album)]);
 		assert_eq!(api.location_requests(), [["sptf://spotify:album:4wPtS24asgBAG4VOmYYB9O"]]);
@@ -150,13 +148,12 @@ mod tests {
 	fn several_artists_open_the_artist_window() {
 		let api = installed_api();
 		let fake = installed_backend();
-		let screen = installed_screen();
-		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned());
+		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned(), None);
 		run_main_thread_work(api);
 		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist(None))]);
 		let dialog = artist_window::WINDOW.current().expect("the artist window is open");
 		assert_eq!(listed(dialog), ["Keith Getty", "Kristyn Getty"]);
-		assert_eq!(screen.brought_up(), 1);
+		assert_eq!(brought_up(), 1);
 		assert!(api.location_requests().is_empty());
 		assert!(!reported_a_failure(api), "{:?} {:?}", api.popups(), api.console_lines());
 		destroy(dialog);
@@ -181,9 +178,14 @@ mod tests {
 	/// Shows the artist window saying "Loading…" and starts looking up every artist of the
 	/// Getty track, as the shortcut-only Open artist… does.
 	fn look_up_artists_while_loading() -> Dialog {
-		artist_window::show_loading();
+		let wait = artist_window::show_loading();
 		let dialog = artist_window::WINDOW.current().unwrap();
-		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned());
+		open_related(
+			getty_track(),
+			Related::Artist(None),
+			"In Christ Alone".to_owned(),
+			Some(wait),
+		);
 		dialog
 	}
 
@@ -191,14 +193,13 @@ mod tests {
 	fn artists_found_fill_the_loading_window() {
 		let api = installed_api();
 		installed_backend();
-		let screen = installed_screen();
 		let dialog = look_up_artists_while_loading();
 		run_main_thread_work(api);
 		pump_messages();
 		assert_eq!(artist_window::WINDOW.current(), Some(dialog));
 		assert_eq!(listed(dialog), ["Keith Getty", "Kristyn Getty"]);
 		assert_eq!(dialog.text(artist_window::STATUS), "");
-		assert_eq!(screen.brought_up(), 2);
+		assert_eq!(brought_up(), 2);
 		destroy(dialog);
 	}
 
@@ -206,7 +207,6 @@ mod tests {
 	fn one_artist_found_closes_the_loading_window_and_opens_the_tab() {
 		let api = installed_api();
 		let fake = installed_backend();
-		installed_screen();
 		fake.related_with(|_, _| Ok(keith_alone()));
 		let dialog = look_up_artists_while_loading();
 		run_main_thread_work(api);
@@ -220,7 +220,6 @@ mod tests {
 	fn logged_out_closes_the_loading_window_and_asks_for_a_login() {
 		let api = installed_api();
 		let fake = installed_backend();
-		installed_screen();
 		let prompt = installed_prompt();
 		fake.require_login();
 		let dialog = look_up_artists_while_loading();
@@ -236,7 +235,6 @@ mod tests {
 	fn an_aborted_lookup_closes_the_loading_window() {
 		let api = installed_api();
 		let fake = installed_backend();
-		installed_screen();
 		fake.related_with(|_, _| Err(CoreError::Aborted));
 		let dialog = look_up_artists_while_loading();
 		run_main_thread_work(api);
@@ -249,7 +247,6 @@ mod tests {
 	fn a_failure_closes_the_loading_window_and_says_why() {
 		let api = installed_api();
 		let fake = installed_backend();
-		installed_screen();
 		fake.related_with(|_, _| {
 			Err(CoreError::Unavailable("Spotify names no artist for this track".to_owned()))
 		});
@@ -274,18 +271,26 @@ mod tests {
 	fn a_window_listing_artists_is_left_alone_by_other_results() {
 		let api = installed_api();
 		let fake = installed_backend();
-		installed_screen();
-		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned());
+		let earlier = artist_window::show_loading();
+		let dialog = look_up_artists_while_loading();
 		run_main_thread_work(api);
-		let dialog = artist_window::WINDOW.current().expect("the artist window is open");
+		pump_messages();
+		assert_eq!(listed(dialog), ["Keith Getty", "Kristyn Getty"]);
+		let look_up = |wait| {
+			open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned(), wait);
+		};
 		fake.related_with(|_, _| Ok(keith_alone()));
-		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned());
+		look_up(Some(earlier));
+		run_main_thread_work(api);
+		look_up(None);
 		run_main_thread_work(api);
 		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KEITH}")]]);
 		fake.related_with(|_, _| Err(CoreError::Unavailable("gone".to_owned())));
-		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned());
+		look_up(Some(earlier));
 		wait_until(|| !api.popups().is_empty());
 		run_main_thread_work(api);
+		look_up(None);
+		wait_until(|| api.popups().len() == 2);
 		assert_eq!(artist_window::WINDOW.current(), Some(dialog));
 		assert_eq!(listed(dialog), ["Keith Getty", "Kristyn Getty"]);
 		destroy(dialog);
@@ -295,12 +300,29 @@ mod tests {
 	fn another_kind_of_lookup_leaves_the_loading_window_alone() {
 		let api = installed_api();
 		installed_backend();
-		installed_screen();
 		artist_window::show_loading();
 		let dialog = artist_window::WINDOW.current().unwrap();
-		open_related(getty_track(), Related::Album, "In Christ Alone".to_owned());
+		open_related(getty_track(), Related::Album, "In Christ Alone".to_owned(), None);
 		run_main_thread_work(api);
 		assert_eq!(api.location_requests(), [["sptf://spotify:album:4wPtS24asgBAG4VOmYYB9O"]]);
+		assert_eq!(artist_window::WINDOW.current(), Some(dialog));
+		assert_eq!(dialog.text(artist_window::STATUS), "Loading…");
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_lookup_without_a_window_leaves_another_lookups_loading_window_alone() {
+		let api = installed_api();
+		let fake = installed_backend();
+		artist_window::show_loading();
+		let dialog = artist_window::WINDOW.current().unwrap();
+		fake.related_with(|_, _| Ok(keith_alone()));
+		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned(), None);
+		run_main_thread_work(api);
+		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KEITH}")]]);
+		fake.related_with(|_, _| Err(CoreError::Unavailable("gone".to_owned())));
+		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned(), None);
+		wait_until(|| !api.popups().is_empty());
 		assert_eq!(artist_window::WINDOW.current(), Some(dialog));
 		assert_eq!(dialog.text(artist_window::STATUS), "Loading…");
 		destroy(dialog);
@@ -312,8 +334,9 @@ mod tests {
 		let fake = installed_backend();
 		api.remove_services(main_thread::MANAGER_IID);
 		fake.related_with(|_, _| Err(CoreError::Unavailable("gone".to_owned())));
-		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned());
+		let dialog = look_up_artists_while_loading();
 		wait_until(|| !api.popups().is_empty());
+		destroy(dialog);
 		assert_eq!(
 			api.popups(),
 			[(
@@ -337,7 +360,7 @@ mod tests {
 			))
 		});
 		let artist = Related::Artist(Some("Someone Else".to_owned()));
-		open_related(getty_track(), artist.clone(), "In Christ Alone".to_owned());
+		open_related(getty_track(), artist.clone(), "In Christ Alone".to_owned(), None);
 		wait_until(|| !api.popups().is_empty());
 		assert_eq!(fake.related_calls(), [(getty_track(), artist)]);
 		assert_eq!(
@@ -360,7 +383,7 @@ mod tests {
 		let fake = installed_backend();
 		let prompt = installed_prompt();
 		fake.require_login();
-		open_related(getty_track(), Related::Radio, "In Christ Alone".to_owned());
+		open_related(getty_track(), Related::Radio, "In Christ Alone".to_owned(), None);
 		wait_until(|| prompt.shown() == 1);
 		assert_eq!(fake.logins_started(), 1);
 		std::thread::sleep(std::time::Duration::from_millis(200));
@@ -373,7 +396,7 @@ mod tests {
 		let api = installed_api();
 		let fake = installed_backend();
 		fake.related_with(|_, _| Err(CoreError::Aborted));
-		open_related(getty_track(), Related::Album, "In Christ Alone".to_owned());
+		open_related(getty_track(), Related::Album, "In Christ Alone".to_owned(), None);
 		wait_until(|| fake.related_calls().len() == 1);
 		std::thread::sleep(std::time::Duration::from_millis(200));
 		assert_eq!(api.run_main_thread(), 0);
@@ -385,7 +408,7 @@ mod tests {
 		let api = installed_api();
 		installed_backend();
 		api.remove_services(playlist::MANAGER_IID);
-		open_related(getty_track(), Related::Album, "In Christ Alone".to_owned());
+		open_related(getty_track(), Related::Album, "In Christ Alone".to_owned(), None);
 		run_main_thread_work(api);
 		assert_eq!(
 			api.popups(),
@@ -405,7 +428,7 @@ mod tests {
 		let api = installed_api();
 		installed_backend();
 		api.remove_services(main_thread::MANAGER_IID);
-		open_related(getty_track(), Related::Album, "In Christ Alone".to_owned());
+		open_related(getty_track(), Related::Album, "In Christ Alone".to_owned(), None);
 		wait_until(|| !api.popups().is_empty());
 		assert_eq!(
 			api.popups(),

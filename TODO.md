@@ -129,7 +129,7 @@ Checked by hand on 7 November 2026. The new work they showed is under "Later rou
 - [x] Close the test gaps the menus round left
   - The menus round left six behaviours without a test of their own.
   - Each now has one, and each test fails when its behaviour is broken: a `Core::change` still waiting for its turn at shutdown is dropped with its callback; the remove question counts only the tracks for Liked Songs, and a track selected twice once; the console says "episodes" for more than one; a refresh with the same playlists leaves the "Open playlist…" list alone; and a pick the window can't open shows the "Can't open this Spotify playlist" popup. foxide2k's fake host can now unregister a service (`FakeApi::remove_services`) to cause that failure.
-  - `OpenPlaylist::execute` stays without a test through `MainMenuHandle`: running it shows the window and takes the keyboard focus, which the tests avoid, and foxide2k's own tests cover how a main-menu command runs.
+  - `OpenPlaylist::execute` is now tested through `MainMenuHandle` too. In the tests, `SingleWindow::show` only counts the step that makes a window visible and brings it to the front (`crates/foo_librespot/src/window.rs`), so no test shows a window or takes the keyboard focus.
 - [ ] Show the artist's picture as album art
   - foo_spotify answered foobar2000's request for an artist picture with the Spotify picture of the track's first artist.
   - foo_librespot only has a front cover. `SpotifyArt::query` in `crates/foo_librespot/src/art.rs` returns nothing for any other kind of art.

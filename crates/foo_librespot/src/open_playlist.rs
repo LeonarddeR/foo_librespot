@@ -275,6 +275,7 @@ mod tests {
 		confirm_login_when_started, getty_favourites, getty_favourites_id, installed_backend,
 		installed_prompt, library_with, sunday_set,
 	};
+	use crate::window::brought_up;
 	use foxide2k::popup::PopupIcon;
 
 	const GETTY_TRACK: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
@@ -302,6 +303,21 @@ mod tests {
 		);
 		assert_eq!(SpotifyMenu::GUID, Guid::from_u128(0x2d703516_99e0_4545_aeb0_534a4930ff20));
 		assert_eq!(OpenPlaylist::GUID, Guid::from_u128(0x459200a7_f04a_465d_9c07_d6ada1d2eb5d));
+	}
+
+	#[test]
+	fn the_command_shows_the_window_and_brings_it_up_when_open() {
+		FakeApi::new().install();
+		installed_backend().set_library(ready());
+		let command = MainMenuHandle::new(mainmenu_command_service::<OpenPlaylist>());
+		command.execute(0, None).unwrap();
+		let dialog = WINDOW.current().expect("the command opens the window");
+		assert_eq!(dialog.list_count(LIST), 3);
+		assert_eq!(brought_up(), 1);
+		command.execute(0, None).unwrap();
+		assert_eq!(WINDOW.current(), Some(dialog));
+		assert_eq!(brought_up(), 2);
+		destroy(dialog);
 	}
 
 	#[test]

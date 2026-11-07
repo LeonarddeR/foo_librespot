@@ -236,15 +236,17 @@ fn the_one(
 /// Opens `what` for the one Spotify item in `items`, taken from `source`, when it is of `kind`.
 pub fn open(items: Vec<SpotifyItem>, source: Source, command: &str, kind: Kind, what: Related) {
 	if let Some((item, track)) = the_one(items, kind, source, command) {
-		open_related(item, what, title_of(item, &track));
+		open_related(item, what, title_of(item, &track), None);
 	}
 }
 
 /// Asks Spotify for every artist of the one Spotify track in `items`, taken from `source`, as
-/// [`OpenArtistShortcut`] does.
+/// [`OpenArtistShortcut`] does: one opens in its tab, several fill the artist window. When
+/// foobar2000 stores two or more for the track, the window says "Loading…" meanwhile.
 pub fn open_artists(items: Vec<SpotifyItem>, source: Source, command: &str) {
 	if let Some((item, track)) = the_one(items, Kind::Track, source, command) {
-		open_every_artist(item, stored_artists(&track).len(), title_of(item, &track));
+		let wait = (stored_artists(&track).len() >= 2).then(artist_window::show_loading);
+		open_related(item, Related::Artist(None), title_of(item, &track), wait);
 	}
 }
 
@@ -265,9 +267,8 @@ pub fn artist_picks(item: ItemId, track: &Track) -> ArtistPicks {
 	let title = title_of(item, track);
 	let artists = stored_artists(track);
 	if artists.len() < 2 {
-		let stored = artists.len();
 		return ArtistPicks::Every(Box::new(move || {
-			open_every_artist(item, stored, title.clone());
+			open_related(item, Related::Artist(None), title.clone(), None);
 		}));
 	}
 	let picks = artists
@@ -275,7 +276,8 @@ pub fn artist_picks(item: ItemId, track: &Track) -> ArtistPicks {
 		.map(|artist| {
 			let (name, title) = (Arc::<str>::from(artist), title.clone());
 			let artist = Related::Artist(Some(name.to_string()));
-			let pick: Pick = Box::new(move || open_related(item, artist.clone(), title.clone()));
+			let pick: Pick =
+				Box::new(move || open_related(item, artist.clone(), title.clone(), None));
 			(name, pick)
 		})
 		.collect();
@@ -292,15 +294,6 @@ fn artist_node(item: ItemId, track: &Track) -> MenuNode {
 			children: picks.into_iter().map(|(name, pick)| command(name, true, pick)).collect(),
 		},
 	}
-}
-
-/// Asks Spotify for every artist of `item`: one opens in its tab, several fill the artist
-/// window. When foobar2000 stores two or more for it, the window says "Loading…" meanwhile.
-fn open_every_artist(item: ItemId, stored: usize, title: String) {
-	if stored >= 2 {
-		artist_window::show_loading();
-	}
-	open_related(item, Related::Artist(None), title);
 }
 
 /// What a failure calls the track: its stored title, or its Spotify URI when it has none.
@@ -363,9 +356,8 @@ mod tests {
 	use super::{OpenAlbum, OpenArtist, OpenArtistShortcut, OpenShow, SpotifyGroup, TrackRadio};
 	use crate::artist_window::{self, LIST, STATUS, WINDOW};
 	use crate::playlist_menu::AddToSpotifyPlaylist;
-	use crate::testing::{
-		FakeBackend, episode_id, installed_backend, installed_screen, track_id, wait_until,
-	};
+	use crate::testing::{FakeBackend, episode_id, installed_backend, track_id, wait_until};
+	use crate::window::brought_up;
 
 	const GREYED: u32 = FLAG_DISABLED | FLAG_GRAYED;
 
@@ -602,7 +594,6 @@ mod tests {
 	#[test]
 	fn a_track_with_one_stored_artist_gets_a_command_that_asks_spotify() {
 		let (_, fake) = setup();
-		installed_screen();
 		for fields in [ONE_ARTIST, NO_FIELDS] {
 			let data = select(&[(GETTY_TRACK, fields)]);
 			let root = open_artist().instantiate(&data);
@@ -741,11 +732,10 @@ mod tests {
 	#[test]
 	fn open_artist_shortcut_shows_loading_for_two_stored_artists_then_lists_them() {
 		let (api, fake) = setup();
-		let screen = installed_screen();
 		press::<OpenArtistShortcut>(&select(&[(GETTY_TRACK, BOTH_GETTYS)]));
 		let dialog = WINDOW.current().expect("the artist window is open");
 		assert_eq!(dialog.text(STATUS), "Loading…");
-		assert_eq!(screen.brought_up(), 1);
+		assert_eq!(brought_up(), 1);
 		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist(None))]);
 		wait_until(|| api.run_main_thread() > 0);
 		pump_messages();
@@ -757,7 +747,6 @@ mod tests {
 	#[test]
 	fn open_artist_shortcut_for_one_stored_artist_asks_spotify_without_a_window() {
 		let (_, fake) = setup();
-		installed_screen();
 		press::<OpenArtistShortcut>(&select(&[(GETTY_TRACK, ONE_ARTIST)]));
 		assert!(WINDOW.current().is_none());
 		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist(None))]);

@@ -188,4 +188,13 @@ mod tests {
 		api.install();
 		assert_eq!(host().loaded_components(), ["foo_youtube", "foo_librespot"]);
 	}
+
+	#[test]
+	fn main_window_is_the_one_the_fake_host_was_given() {
+		let api = FakeApi::new();
+		api.install();
+		assert_eq!(host().main_window(), 0);
+		api.set_main_window(0x4321);
+		assert_eq!(host().main_window(), 0x4321);
+	}
 }
