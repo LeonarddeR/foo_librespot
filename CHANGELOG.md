@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - File > Spotify > Open playlist… lists your Liked Songs and the playlists in your Spotify library, including ones you follow, and opens the one you pick as a playlist tab named after it, filled as pasting its link would. If it already has a tab, that tab comes to the front.
+- Right-click Spotify tracks > Add to Spotify playlist adds them to Liked Songs or to one of your Spotify playlists you can change. Tracks already in it aren't added again. A checkmark shows the playlists that have all of them; choosing a checked one asks, then removes them.
 - A checkbox under File > Preferences > Advanced > Tools > Spotify, "Log details to the console, for bug reports", shows foo_librespot's and librespot's debug messages in the console, for a bug report. It's off by default and takes effect at once. It never shows your login or other secrets, and links to Spotify's audio servers in any console line leave out their signed part.
 - For developers: foxide2k can add branches and checkboxes to Advanced preferences (`foxide2k::advconfig`).
 - For developers: foxide2k can add popups and commands to foobar2000's main menu (`foxide2k::mainmenu`).

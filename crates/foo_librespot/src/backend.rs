@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use foo_librespot_core::audio::format::FileFormat;
 use foo_librespot_core::audio::track::SpotifyTrack;
-use foo_librespot_core::library::{LibraryState, OnLibraryChange};
+use foo_librespot_core::library::{Change, LibraryState, OnLibraryChange, Target};
 use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
@@ -63,6 +63,20 @@ pub trait Backend: Send + Sync {
 	fn library(&self, on_change: Option<OnLibraryChange>) -> LibraryState;
 	/// What [`Backend::library`] would answer, without starting a read.
 	fn held_library(&self) -> LibraryState;
+	/// Adds `items` to a playlist or Liked Songs, leaving out what is already there.
+	fn add_to(
+		&self,
+		target: Target,
+		items: &[ItemId],
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<Change, CoreError>;
+	/// Removes `items` from a playlist or Liked Songs.
+	fn remove_from(
+		&self,
+		target: Target,
+		items: &[ItemId],
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<Change, CoreError>;
 }
 
 /// A login running in the background.
@@ -186,6 +200,24 @@ impl Backend for CoreBackend {
 			Ok(core) => core.held_library(),
 			Err(error) => LibraryState::Failed(error.to_string()),
 		}
+	}
+
+	fn add_to(
+		&self,
+		target: Target,
+		items: &[ItemId],
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<Change, CoreError> {
+		core()?.add_to(target, items, is_aborting)
+	}
+
+	fn remove_from(
+		&self,
+		target: Target,
+		items: &[ItemId],
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<Change, CoreError> {
+		core()?.remove_from(target, items, is_aborting)
 	}
 }
 

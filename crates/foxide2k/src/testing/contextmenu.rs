@@ -250,7 +250,7 @@ impl NodeRef<'_> {
 		unsafe { ((*(*raw).vtbl).get_type)(raw) }
 	}
 
-	pub fn children(&self) -> Vec<NodeRef<'_>> {
+	pub fn children(&self) -> Vec<Self> {
 		let raw = self.raw;
 		let count = unsafe { ((*(*raw).vtbl).get_children_count)(raw) };
 		(0..count)
@@ -262,7 +262,7 @@ impl NodeRef<'_> {
 	}
 
 	/// The child whose display text is `name`.
-	pub fn child(&self, name: &str) -> Option<NodeRef<'_>> {
+	pub fn child(&self, name: &str) -> Option<Self> {
 		let data = FakeHandleList::new(&[]);
 		self.children()
 			.into_iter()

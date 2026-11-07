@@ -15,6 +15,7 @@ mod logging;
 mod login;
 mod login_window;
 mod open_playlist;
+mod playlist_menu;
 mod prefs;
 mod settings;
 #[cfg(test)]
@@ -24,6 +25,7 @@ mod worker;
 use foxide2k::advconfig::{advconfig_branch_factory, advconfig_checkbox_factory};
 use foxide2k::album_art::album_art_factory;
 use foxide2k::component::Factory;
+use foxide2k::contextmenu::context_menu_factory;
 use foxide2k::filesystem_service::filesystem_factory;
 use foxide2k::initquit::{InitQuit, InitQuitService};
 use foxide2k::input::input_factory;
@@ -69,5 +71,6 @@ foxide2k::component! {
 		advconfig_checkbox_factory::<advanced::DetailedLogging>(),
 		mainmenu_popup_factory::<open_playlist::SpotifyMenu>(),
 		mainmenu_command_factory::<open_playlist::OpenPlaylist>(),
+		context_menu_factory::<playlist_menu::AddToSpotifyPlaylist>(),
 	],
 }

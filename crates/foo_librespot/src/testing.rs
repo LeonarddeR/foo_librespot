@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use foo_librespot_core::audio::decoder::PcmDecoder;
 use foo_librespot_core::audio::format::FileFormat;
 use foo_librespot_core::library::{
-	Library, LibraryPlaylist, LibraryState, OnLibraryChange, PlaylistContents,
+	Change, Library, LibraryPlaylist, LibraryState, OnLibraryChange, PlaylistContents, Target,
 };
 use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
@@ -135,7 +135,22 @@ struct State {
 	library: Mutex<Option<LibraryState>>,
 	library_listeners: Mutex<Vec<OnLibraryChange>>,
 	library_calls: AtomicUsize,
+	changes: Mutex<Vec<RecordedChange>>,
+	change_result: Mutex<Option<ChangeResult>>,
 }
+
+/// Which way a change went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangeKind {
+	Add,
+	Remove,
+}
+
+/// What a change ends with.
+pub type ChangeResult = fn() -> Result<Change, CoreError>;
+
+/// A change that was asked for, and the thread it ran on.
+pub type RecordedChange = (ChangeKind, Target, Vec<ItemId>, std::thread::ThreadId);
 
 /// A login the test answers itself, with [`FakeBackend::send_code`] and
 /// [`FakeBackend::finish_login`].
@@ -240,6 +255,37 @@ impl FakeBackend {
 	/// How many times `library` was called; `held_library` isn't counted.
 	pub fn library_calls(&self) -> usize {
 		self.0.library_calls.load(Ordering::SeqCst)
+	}
+
+	/// The changes asked for so far, each with the thread it ran on.
+	pub fn changes(&self) -> Vec<RecordedChange> {
+		self.0.changes.lock().unwrap_or_else(PoisonError::into_inner).clone()
+	}
+
+	/// Makes later changes end with `result()`; by default every item counts as changed.
+	pub fn change_with(&self, result: ChangeResult) {
+		*self.0.change_result.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
+	}
+
+	fn change(
+		&self,
+		kind: ChangeKind,
+		target: Target,
+		items: &[ItemId],
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<Change, CoreError> {
+		self.0.changes.lock().unwrap_or_else(PoisonError::into_inner).push((
+			kind,
+			target,
+			items.to_vec(),
+			std::thread::current().id(),
+		));
+		self.enter(is_aborting)?;
+		let result = *self.0.change_result.lock().unwrap_or_else(PoisonError::into_inner);
+		result.map_or_else(
+			|| Ok(Change { changed: items.len(), ..Change::default() }),
+			|result| result(),
+		)
 	}
 
 	fn library_state(&self) -> LibraryState {
@@ -412,6 +458,24 @@ impl Backend for FakeBackend {
 	fn held_library(&self) -> LibraryState {
 		self.library_state()
 	}
+
+	fn add_to(
+		&self,
+		target: Target,
+		items: &[ItemId],
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<Change, CoreError> {
+		self.change(ChangeKind::Add, target, items, is_aborting)
+	}
+
+	fn remove_from(
+		&self,
+		target: Target,
+		items: &[ItemId],
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<Change, CoreError> {
+		self.change(ChangeKind::Remove, target, items, is_aborting)
+	}
 }
 
 /// The fixture, decoded.
@@ -485,6 +549,26 @@ pub fn getty_favourites() -> LibraryPlaylist {
 		folders: Vec::new(),
 		can_edit: false,
 		revision: b"r1".to_vec(),
+	}
+}
+
+/// "Shared", a collaborative playlist the account can change.
+pub fn shared_playlist() -> LibraryPlaylist {
+	LibraryPlaylist {
+		id: SpotifyId::from_raw(&[0x52; 16]).unwrap(),
+		name: "Shared".to_owned(),
+		folders: Vec::new(),
+		can_edit: true,
+		revision: b"r1".to_vec(),
+	}
+}
+
+/// Polls every 5 ms until `condition` holds; panics after 5 s.
+pub fn wait_until(condition: impl Fn() -> bool) {
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+	while !condition() {
+		assert!(std::time::Instant::now() < deadline, "the condition did not hold within 5 s");
+		std::thread::sleep(std::time::Duration::from_millis(5));
 	}
 }
 
