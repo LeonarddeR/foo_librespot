@@ -1,6 +1,8 @@
 //! File > Spotify > "Open playlist…": a window that lists Liked Songs and the playlists of the
 //! Spotify library, and opens the one picked as a playlist tab named after it, as
 //! [`open_in_tab`] opens any link.
+//!
+//! [`open_in_tab`]: crate::tabs::open_in_tab
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,27 +10,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use foo_librespot_core::library::{LIKED_SONGS, Library, LibraryState};
 use foo_librespot_core::link::Link;
 use foxide2k::abi::mainmenu::{GROUP_FILE, SORT_PRIORITY_BASE};
-use foxide2k::console;
 use foxide2k::dialog::host::{Dialog, DialogHandler, destroy, refresh_poster};
-use foxide2k::dialog::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
-use foxide2k::dialog::style::{
-	BS_DEFPUSHBUTTON, DS_CENTER, DS_MODALFRAME, LBS_NOTIFY, SS_NOPREFIX, WS_BORDER, WS_CAPTION,
-	WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
-};
-use foxide2k::dialog::template::{ControlClass, DialogTemplate, shell_font};
+use foxide2k::dialog::notify::IDCANCEL;
+use foxide2k::dialog::template::DialogTemplate;
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
 use foxide2k::host::host;
 use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
-use foxide2k::popup::PopupIcon;
 
-use crate::account::item;
 use crate::backend::backend;
-use crate::errors::show_failure;
 use crate::first_use::ask_for_login;
+use crate::link_list::{self, Entry, Ids, LinkList, is_pick};
 use crate::login::controller;
 use crate::status_line::StatusLine;
-use crate::tabs::open_in_tab;
 use crate::window::SingleWindow;
 
 pub const LABEL: u16 = 301;
@@ -61,58 +55,21 @@ impl MainMenuCommand for OpenPlaylist {
 }
 
 pub fn window_template() -> DialogTemplate {
-	DialogTemplate {
-		style: WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | DS_CENTER,
-		title: "Open a Spotify playlist".to_owned(),
-		cx: 260,
-		cy: 200,
-		font: shell_font(),
-		items: vec![
-			item(LABEL, ControlClass::Static, "&Playlists:", 0, (7, 7, 246, 10)),
-			item(
-				LIST,
-				ControlClass::ListBox,
-				"",
-				WS_TABSTOP | WS_VSCROLL | WS_BORDER | LBS_NOTIFY,
-				(7, 19, 246, 140),
-			),
-			item(STATUS, ControlClass::Static, "", SS_NOPREFIX, (7, 163, 246, 10)),
-			item(
-				IDOK,
-				ControlClass::Button,
-				"&Open",
-				BS_DEFPUSHBUTTON | WS_TABSTOP,
-				(115, 178, 66, 14),
-			),
-			item(IDCANCEL, ControlClass::Button, "Close", WS_TABSTOP, (187, 178, 66, 14)),
-		],
-	}
+	let ids = Ids { label: LABEL, list: LIST, status: STATUS };
+	link_list::template("Open a Spotify playlist", "&Playlists:", ids, (260, 200), 140)
 }
 
 /// The "Open playlist…" window.
 pub static WINDOW: SingleWindow<OpenPlaylistWindow> = SingleWindow::new(window_template);
 
-/// One line of the list: what the tab is called and where its tracks come from.
-#[derive(PartialEq, Eq)]
-struct Entry {
-	text: String,
-	name: String,
-	link: Link,
-}
-
-impl Entry {
-	fn liked_songs() -> Self {
-		Self {
-			text: LIKED_SONGS.to_owned(),
-			name: LIKED_SONGS.to_owned(),
-			link: Link::LikedSongs { account: None },
-		}
-	}
-}
-
 /// Liked Songs, then every playlist of `library`.
 fn entries_of(library: &Library) -> Vec<Entry> {
-	std::iter::once(Entry::liked_songs())
+	let liked_songs = Entry {
+		text: LIKED_SONGS.to_owned(),
+		name: LIKED_SONGS.to_owned(),
+		link: Link::LikedSongs { account: None },
+	};
+	std::iter::once(liked_songs)
 		.chain(library.playlists.iter().map(|playlist| Entry {
 			text: playlist.display_name(),
 			name: playlist.name.clone(),
@@ -123,7 +80,7 @@ fn entries_of(library: &Library) -> Vec<Entry> {
 
 #[derive(Default)]
 pub struct OpenPlaylistWindow {
-	entries: Vec<Entry>,
+	entries: LinkList,
 	status: Option<StatusLine>,
 	login_subscription: Option<u64>,
 	library_subscription: Option<u64>,
@@ -133,7 +90,8 @@ pub struct OpenPlaylistWindow {
 }
 
 impl OpenPlaylistWindow {
-	/// Shows `state` in the list and the status line; a new status is announced.
+	/// Shows `state` in the list, keeping the entry picked selected, and in the status line; a
+	/// new status is announced.
 	fn render(&mut self, dialog: Dialog, state: LibraryState) {
 		let (entries, status) = match state {
 			LibraryState::Ready(library) => (entries_of(&library), String::new()),
@@ -145,49 +103,11 @@ impl OpenPlaylistWindow {
 				(Vec::new(), "Log in to Spotify to see your playlists.".to_owned())
 			}
 		};
-		self.fill(dialog, entries);
+		self.entries.fill(dialog, LIST, entries, true);
 		if let Some(line) = &mut self.status {
 			line.show(dialog, status);
 		}
 	}
-
-	/// Shows `entries` in the list. An unchanged list is left alone; a changed one is refilled
-	/// with the entry of the same link selected, or the first.
-	fn fill(&mut self, dialog: Dialog, entries: Vec<Entry>) {
-		if entries == self.entries {
-			return;
-		}
-		let picked = dialog
-			.list_selection(LIST)
-			.and_then(|row| self.entries.get(row))
-			.map(|entry| entry.link.clone());
-		dialog.list_clear(LIST);
-		for entry in &entries {
-			dialog.list_add(LIST, &entry.text);
-		}
-		let row = entries.iter().position(|entry| Some(&entry.link) == picked.as_ref());
-		self.entries = entries;
-		if !self.entries.is_empty() {
-			dialog.list_select(LIST, row.unwrap_or(0));
-		}
-	}
-
-	/// Opens the selected entry and closes the window; does nothing when none is selected.
-	fn pick(&self, dialog: Dialog) {
-		let Some(entry) = dialog.list_selection(LIST).and_then(|row| self.entries.get(row)) else {
-			return;
-		};
-		if let Err(error) = open_in_tab(&entry.name, &entry.link) {
-			cant_open(&entry.name, &error.message);
-		}
-		destroy(dialog);
-	}
-}
-
-/// Says in the console and a popup that the playlist `name` couldn't be opened, and why.
-fn cant_open(name: &str, why: &str) {
-	console::print(&format!("foo_librespot: can't open {name}: {why}"));
-	show_failure("Can't open this Spotify playlist", PopupIcon::Error, name, &why);
 }
 
 impl DialogHandler for OpenPlaylistWindow {
@@ -217,10 +137,10 @@ impl DialogHandler for OpenPlaylistWindow {
 	}
 
 	fn command(&mut self, dialog: &Dialog, id: u16, notification: u16) {
-		match (id, notification) {
-			(IDOK, BN_CLICKED) | (LIST, LBN_DBLCLK) => self.pick(*dialog),
-			(IDCANCEL, _) => destroy(*dialog),
-			_ => {}
+		if is_pick(LIST, id, notification) {
+			self.entries.pick(*dialog, LIST, "Can't open this Spotify playlist");
+		} else if id == IDCANCEL {
+			destroy(*dialog);
 		}
 	}
 

@@ -11,6 +11,7 @@ mod fields;
 mod first_use;
 mod input;
 mod lifecycle;
+mod link_list;
 mod links;
 mod logging;
 mod login;

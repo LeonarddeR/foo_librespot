@@ -18,10 +18,10 @@ use foxide2k::contextmenu::{ContextMenuGroup, ContextMenuItem, MenuNode};
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
 use foxide2k::metadb::HandleList;
-use foxide2k::popup::{self, PopupIcon};
+use foxide2k::popup;
 
 use crate::backend::backend;
-use crate::errors::show_failure;
+use crate::errors::report_failure;
 use crate::first_use::ask_for_login;
 use crate::links::plural;
 use crate::spotify_menu::SpotifyGroup;
@@ -201,8 +201,8 @@ impl Pick {
 	}
 
 	fn fail(&self, error: &CoreError) {
-		console::print(&format!("foo_librespot: can't change {}: {error}", self.name));
-		show_failure("Can't change the Spotify playlist", PopupIcon::Error, &self.name, error);
+		let failed = format!("can't change {}", self.name);
+		report_failure(&failed, "Can't change the Spotify playlist", &self.name, error);
 	}
 }
 

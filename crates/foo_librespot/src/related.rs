@@ -14,11 +14,10 @@ use foo_librespot_core::link::ItemId;
 use foo_librespot_core::related::{Found, Opened, Related};
 use foxide2k::console;
 use foxide2k::main_thread;
-use foxide2k::popup::PopupIcon;
 
 use crate::artist_window::{self, Wait};
 use crate::backend::backend;
-use crate::errors::show_failure;
+use crate::errors::report_failure;
 use crate::first_use::ask_for_login;
 use crate::tabs::open_in_tab;
 
@@ -89,8 +88,12 @@ fn open(opened: &Opened, noun: &str, title: &str) {
 /// Says in the console and a popup that the `noun` of the track `title` can't be opened, and
 /// why.
 fn fail(noun: &str, title: &str, why: &dyn Display) {
-	console::print(&format!("foo_librespot: can't open the {noun} of {title}: {why}"));
-	show_failure(&format!("Can't open this {noun}"), PopupIcon::Error, title, why);
+	report_failure(
+		&format!("can't open the {noun} of {title}"),
+		&format!("Can't open this {noun}"),
+		title,
+		why,
+	);
 }
 
 #[cfg(test)]

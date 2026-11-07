@@ -48,13 +48,24 @@ pub fn host_error(error: CoreError) -> Error {
 	}
 }
 
-/// Shows "`subject`, a blank line, `why`." in a popup titled `title`. When the popup can't be
-/// shown, says so in the console.
-pub fn show_failure(title: &str, icon: PopupIcon, subject: &str, why: &dyn Display) {
-	let message = format!("{subject}\n\n{why}.");
-	if let Err(shown) = popup::show(title, &message, icon) {
-		console::print(&format!("foo_librespot: can't show a message: {}", shown.message));
+/// Shows `message` in a popup titled `title`. When the popup can't be shown, the console says
+/// the title and the message instead, and why.
+pub fn show_message(title: &str, message: &str, icon: PopupIcon) {
+	if let Err(error) = popup::show(title, message, icon) {
+		console::print(&format!("foo_librespot: {title}: {message} ({})", error.message));
 	}
+}
+
+/// Shows "`subject`, a blank line, `why`." in a popup titled `title`, as [`show_message`] does.
+pub fn show_failure(title: &str, icon: PopupIcon, subject: &str, why: &dyn Display) {
+	show_message(title, &format!("{subject}\n\n{why}."), icon);
+}
+
+/// Says in the console "`failed`: `why`", and shows `subject` and `why` in an error popup titled
+/// `title`.
+pub fn report_failure(failed: &str, title: &str, subject: &str, why: &dyn Display) {
+	console::print(&format!("foo_librespot: {failed}: {why}"));
+	show_failure(title, PopupIcon::Error, subject, why);
 }
 
 /// What to do when `foo_youtube` is loaded: its host filter takes every web link by default,
@@ -73,7 +84,7 @@ mod tests {
 	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::FakeApi;
 
-	use super::{host_error, show_failure, youtube_hint};
+	use super::{host_error, report_failure, show_failure, show_message, youtube_hint};
 
 	#[test]
 	fn a_failure_popup_names_the_subject_then_says_why() {
@@ -87,6 +98,53 @@ mod tests {
 				"Sunday set\n\nno tab.".to_owned(),
 				PopupIcon::Error
 			)]
+		);
+	}
+
+	#[test]
+	fn a_failure_report_says_what_failed_in_the_console_and_shows_an_error_popup() {
+		let api = FakeApi::new();
+		api.install();
+		report_failure(
+			"can't open Sunday set",
+			"Can't open this Spotify playlist",
+			"Sunday set",
+			&"no tab",
+		);
+		assert_eq!(api.console_lines(), ["foo_librespot: can't open Sunday set: no tab"]);
+		assert_eq!(
+			api.popups(),
+			[(
+				"Can't open this Spotify playlist".to_owned(),
+				"Sunday set\n\nno tab.".to_owned(),
+				PopupIcon::Error
+			)]
+		);
+	}
+
+	#[test]
+	fn a_message_shows_in_a_popup_or_else_in_the_console() {
+		let api = FakeApi::new();
+		api.install();
+		show_message("Open show", "Select one Spotify episode first.", PopupIcon::Information);
+		assert_eq!(
+			api.popups(),
+			[(
+				"Open show".to_owned(),
+				"Select one Spotify episode first.".to_owned(),
+				PopupIcon::Information
+			)]
+		);
+		assert!(api.console_lines().is_empty());
+		api.remove_services(foxide2k::abi::popup::IID);
+		show_message("Open show", "Select one Spotify episode first.", PopupIcon::Information);
+		show_failure("Can't open this album", PopupIcon::Error, "In Christ Alone", &"gone");
+		assert_eq!(
+			api.console_lines(),
+			[
+				"foo_librespot: Open show: Select one Spotify episode first. (foobar2000 has no popup_message)",
+				"foo_librespot: Can't open this album: In Christ Alone\n\ngone. (foobar2000 has no popup_message)",
+			]
 		);
 	}
 

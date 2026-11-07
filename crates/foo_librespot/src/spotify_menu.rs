@@ -16,16 +16,16 @@ use std::sync::Arc;
 use foo_librespot_core::link::{ItemId, parse_item};
 use foo_librespot_core::related::Related;
 use foxide2k::abi::contextmenu::GROUP_ROOT;
-use foxide2k::console;
 use foxide2k::contextmenu::{
 	ContextMenuCommand, ContextMenuGroup, ContextMenuItem, MenuNode, Shown,
 };
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
 use foxide2k::metadb::{HandleList, Track};
-use foxide2k::popup::{self, PopupIcon};
+use foxide2k::popup::PopupIcon;
 
 use crate::artist_window;
+use crate::errors::show_message;
 use crate::related::open_related;
 
 /// The Spotify submenu at the bottom of the right-click menu.
@@ -76,7 +76,11 @@ impl ContextMenuItem for OpenArtist {
 		match shown_among(&items, Kind::Track) {
 			Shown::Hidden => None,
 			Shown::Greyed => Some(command(Self::NAME.into(), false, || {
-				tell(Self::NAME, Source::Selection.wants(Kind::Track));
+				show_message(
+					Self::NAME,
+					Source::Selection.wants(Kind::Track),
+					PopupIcon::Information,
+				);
 			})),
 			Shown::Enabled => {
 				let (item, track) = &items[0];
@@ -229,7 +233,7 @@ fn the_one(
 	if items.len() == 1 && Kind::of(items[0].0) == kind {
 		return items.pop();
 	}
-	tell(command, source.wants(kind));
+	show_message(command, source.wants(kind), PopupIcon::Information);
 	None
 }
 
@@ -322,13 +326,6 @@ fn command(name: Arc<str>, enabled: bool, run: impl Fn() + Send + Sync + 'static
 			run();
 			Ok(())
 		}),
-	}
-}
-
-/// Shows `message` in a popup titled `title`, or in the console when there is no popup.
-fn tell(title: &str, message: &str) {
-	if let Err(error) = popup::show(title, message, PopupIcon::Information) {
-		console::print(&format!("foo_librespot: {title}: {message} ({})", error.message));
 	}
 }
 

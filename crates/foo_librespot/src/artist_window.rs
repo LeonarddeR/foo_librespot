@@ -6,25 +6,20 @@
 //! window's handler reads it when the window opens and on each refresh. A window that says
 //! "Loading…" waits for one lookup, the one [`show_loading`] gave its [`Wait`]: [`settle`] fills
 //! the window with that lookup's artists, or closes it after any other result.
+//!
+//! [`open_in_tab`]: crate::tabs::open_in_tab
 
 use std::cell::{Cell, RefCell};
 
 use foo_librespot_core::related::Opened;
-use foxide2k::console;
 use foxide2k::dialog::host::{Dialog, DialogHandler, destroy, refresh_poster};
-use foxide2k::dialog::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
-use foxide2k::dialog::style::{
-	BS_DEFPUSHBUTTON, DS_CENTER, DS_MODALFRAME, LBS_NOTIFY, SS_NOPREFIX, WS_BORDER, WS_CAPTION,
-	WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
-};
-use foxide2k::dialog::template::{ControlClass, DialogTemplate, shell_font};
+use foxide2k::dialog::notify::IDCANCEL;
+use foxide2k::dialog::template::DialogTemplate;
 use foxide2k::host::host;
-use foxide2k::popup::PopupIcon;
 
-use crate::account::item;
-use crate::errors::show_failure;
+use crate::errors::report_failure;
+use crate::link_list::{self, Ids, LinkList, is_pick};
 use crate::status_line::StatusLine;
-use crate::tabs::open_in_tab;
 use crate::window::SingleWindow;
 
 pub const LABEL: u16 = 401;
@@ -33,33 +28,12 @@ pub const STATUS: u16 = 403;
 
 const TITLE: &str = "Open a Spotify artist";
 
+/// The title of the popup that says the window or an artist can't be opened.
+const CANT_OPEN: &str = "Can't open this artist";
+
 pub fn window_template() -> DialogTemplate {
-	DialogTemplate {
-		style: WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | DS_CENTER,
-		title: TITLE.to_owned(),
-		cx: 200,
-		cy: 139,
-		font: shell_font(),
-		items: vec![
-			item(LABEL, ControlClass::Static, "&Artists:", 0, (7, 7, 186, 10)),
-			item(
-				LIST,
-				ControlClass::ListBox,
-				"",
-				WS_TABSTOP | WS_VSCROLL | WS_BORDER | LBS_NOTIFY,
-				(7, 19, 186, 80),
-			),
-			item(STATUS, ControlClass::Static, "", SS_NOPREFIX, (7, 103, 186, 10)),
-			item(
-				IDOK,
-				ControlClass::Button,
-				"&Open",
-				BS_DEFPUSHBUTTON | WS_TABSTOP,
-				(55, 118, 66, 14),
-			),
-			item(IDCANCEL, ControlClass::Button, "Close", WS_TABSTOP, (127, 118, 66, 14)),
-		],
-	}
+	let ids = Ids { label: LABEL, list: LIST, status: STATUS };
+	link_list::template(TITLE, "&Artists:", ids, (200, 139), 80)
 }
 
 /// The artist window.
@@ -119,66 +93,28 @@ fn show(choices: Option<Vec<Opened>>) {
 		refresh_poster(&dialog).post();
 	}
 	if let Err(error) = WINDOW.show(host().main_window()) {
-		cant_show(&error.message);
+		report_failure("can't open the artist window", CANT_OPEN, TITLE, &error.message);
 	}
-}
-
-/// Says in the console and a popup that the window can't open, and why.
-fn cant_show(why: &str) {
-	console::print(&format!("foo_librespot: can't open the artist window: {why}"));
-	show_failure("Can't open this artist", PopupIcon::Error, TITLE, &why);
-}
-
-/// Says in the console and a popup that the artist `name` couldn't be opened, and why.
-fn cant_open(name: &str, why: &str) {
-	console::print(&format!("foo_librespot: can't open {name}: {why}"));
-	show_failure("Can't open this artist", PopupIcon::Error, name, &why);
 }
 
 #[derive(Default)]
 pub struct ArtistWindow {
-	/// The artists the list shows, row by row.
-	artists: Vec<Opened>,
+	artists: LinkList,
 	status: Option<StatusLine>,
 }
 
 impl ArtistWindow {
-	/// Shows [`CHOICES`] in the list and the status line; a new status is announced.
+	/// Shows [`CHOICES`] in the list, the first selected, and the status line; a new status is
+	/// announced.
 	fn render(&mut self, dialog: Dialog) {
 		let (artists, status) = match CHOICES.with_borrow(Clone::clone) {
 			Some(artists) => (artists, ""),
 			None => (Vec::new(), "Loading…"),
 		};
-		self.fill(dialog, artists);
+		self.artists.fill(dialog, LIST, artists.into_iter().map(Into::into).collect(), false);
 		if let Some(line) = &mut self.status {
 			line.show(dialog, status.to_owned());
 		}
-	}
-
-	/// Shows `artists` in the list with the first selected. An unchanged list is left alone.
-	fn fill(&mut self, dialog: Dialog, artists: Vec<Opened>) {
-		if artists == self.artists {
-			return;
-		}
-		dialog.list_clear(LIST);
-		for artist in &artists {
-			dialog.list_add(LIST, &artist.name);
-		}
-		self.artists = artists;
-		if !self.artists.is_empty() {
-			dialog.list_select(LIST, 0);
-		}
-	}
-
-	/// Opens the selected artist and closes the window; does nothing when none is selected.
-	fn pick(&self, dialog: Dialog) {
-		let Some(artist) = dialog.list_selection(LIST).and_then(|row| self.artists.get(row)) else {
-			return;
-		};
-		if let Err(error) = open_in_tab(&artist.name, &artist.link) {
-			cant_open(&artist.name, &error.message);
-		}
-		destroy(dialog);
 	}
 }
 
@@ -190,13 +126,11 @@ impl DialogHandler for ArtistWindow {
 	}
 
 	fn command(&mut self, dialog: &Dialog, id: u16, notification: u16) {
-		match (id, notification) {
-			(IDOK, BN_CLICKED) | (LIST, LBN_DBLCLK) => self.pick(*dialog),
-			(IDCANCEL, _) => {
-				WAITING.set(None);
-				destroy(*dialog);
-			}
-			_ => {}
+		if is_pick(LIST, id, notification) {
+			self.artists.pick(*dialog, LIST, CANT_OPEN);
+		} else if id == IDCANCEL {
+			WAITING.set(None);
+			destroy(*dialog);
 		}
 	}
 
