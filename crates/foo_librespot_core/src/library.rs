@@ -22,7 +22,7 @@ use protobuf::{CodedInputStream, CodedOutputStream, EnumOrUnknown, Message, Mess
 
 use crate::link::{ItemId, Link, LinkKind, decode_search, parse_item};
 use crate::resolve::retry_rate_limited;
-use crate::{CoreError, SpotifyId, SpotifyUri};
+use crate::{CoreError, SpotifyId};
 
 /// The name Liked Songs goes by in menus.
 pub const LIKED_SONGS: &str = "Liked Songs";
@@ -134,6 +134,17 @@ impl Held {
 	}
 }
 
+/// Liked Songs as held: its tracks and episodes, a clone sharing them, with the stamp and token
+/// of the read or write that produced them.
+#[derive(Clone, Debug)]
+struct HeldLiked {
+	items: Arc<HashSet<ItemId>>,
+	stamp: Stamp,
+	/// The token Spotify gave with the last read, to ask what changed since; `None` when the next
+	/// read must be whole.
+	token: Option<String>,
+}
+
 /// What was read from the account. A clone shares the items and Liked Songs it holds.
 #[derive(Clone, Debug)]
 pub struct Library {
@@ -142,12 +153,8 @@ pub struct Library {
 	/// The playlists without items whose read failed, or hadn't finished, when the last fetch
 	/// that read the list ended.
 	unreadable: HashSet<SpotifyId>,
-	liked: Option<Arc<HashSet<ItemId>>>,
-	/// The stamp of the read or write that produced `liked`.
-	liked_stamp: Stamp,
-	/// The token Spotify gave with the last read of `liked`, to ask what changed since; `None`
-	/// when the next read must be whole.
-	liked_token: Option<String>,
+	/// `None` while Liked Songs isn't known.
+	liked: Option<HeldLiked>,
 }
 
 impl Library {
@@ -160,8 +167,6 @@ impl Library {
 			items: HashMap::new(),
 			unreadable: HashSet::new(),
 			liked: previous.and_then(|previous| previous.liked.clone()),
-			liked_stamp: previous.map_or(0, |previous| previous.liked_stamp),
-			liked_token: previous.and_then(|previous| previous.liked_token.clone()),
 		};
 		if let Some(previous) = previous {
 			let editable: Vec<SpotifyId> = library.editable().map(|playlist| playlist.id).collect();
@@ -190,9 +195,7 @@ impl Library {
 			playlists,
 			items,
 			unreadable: HashSet::new(),
-			liked: liked.map(Arc::new),
-			liked_stamp: 0,
-			liked_token: None,
+			liked: liked.map(|items| HeldLiked { items: Arc::new(items), stamp: 0, token: None }),
 		}
 	}
 
@@ -222,32 +225,30 @@ impl Library {
 
 	/// Keeps what `read`, asked with token `since` and stamped `stamp`, found in Liked Songs, with
 	/// its token, when the store [`lands`] above `floor`: a whole set replaces the held one, and
-	/// changes apply to the held set when it carries the token `since`. An empty token makes the
-	/// next read whole.
+	/// changes apply to the held set when it carries the token `since`. A read without a token
+	/// makes the next read whole.
 	fn store_liked(&mut self, read: LikedRead, since: Option<&str>, stamp: Stamp, floor: Stamp) {
-		if !lands(stamp, self.liked.as_ref().map(|_| self.liked_stamp), floor) {
+		if !lands(stamp, self.liked.as_ref().map(|liked| liked.stamp), floor) {
 			return;
 		}
-		let token = match read {
+		match read {
 			LikedRead::Whole { items, token } => {
-				self.liked = Some(Arc::new(items));
-				token
+				self.liked = Some(HeldLiked { items: Arc::new(items), stamp, token });
 			}
 			LikedRead::Changes { added, removed, token } => {
-				let follows = since.is_some() && self.liked_token.as_deref() == since;
-				let Some(liked) = self.liked.as_mut().filter(|_| follows) else {
+				let Some(liked) = self.liked.as_mut() else { return };
+				if since.is_none() || liked.token.as_deref() != since {
 					return;
-				};
-				let liked = Arc::make_mut(liked);
-				for item in &removed {
-					liked.remove(item);
 				}
-				liked.extend(added);
-				token
+				let items = Arc::make_mut(&mut liked.items);
+				for item in &removed {
+					items.remove(item);
+				}
+				items.extend(added);
+				liked.stamp = stamp;
+				liked.token = token;
 			}
-		};
-		self.liked_token = Some(token).filter(|token| !token.is_empty());
-		self.liked_stamp = stamp;
+		}
 	}
 
 	/// Makes `change`, written with `stamp`, to Liked Songs, when it is known and the write
@@ -259,10 +260,15 @@ impl Library {
 		floor: Stamp,
 	) {
 		let Some(liked) = self.liked.as_mut() else { return };
-		if lands(stamp, Some(self.liked_stamp), floor) {
-			change(Arc::make_mut(liked));
-			self.liked_stamp = stamp;
+		if lands(stamp, Some(liked.stamp), floor) {
+			change(Arc::make_mut(&mut liked.items));
+			liked.stamp = stamp;
 		}
+	}
+
+	/// The tracks and episodes Liked Songs holds; `None` while it isn't known.
+	fn liked_items(&self) -> Option<&HashSet<ItemId>> {
+		self.liked.as_ref().map(|liked| &*liked.items)
 	}
 
 	/// Counts every playlist the account can change that has no items as unreadable.
@@ -294,7 +300,7 @@ impl Library {
 				Some(items.iter().all(|item| held.items.contains(item)))
 			}
 			Target::LikedSongs => {
-				let liked = self.liked.as_ref()?;
+				let liked = self.liked_items()?;
 				let tracks = tracks_of(items);
 				Some(!tracks.is_empty() && tracks.iter().all(|track| liked.contains(track)))
 			}
@@ -303,7 +309,7 @@ impl Library {
 
 	/// How many songs Liked Songs holds; `None` while it isn't known.
 	pub fn liked_count(&self) -> Option<usize> {
-		self.liked.as_ref().map(|liked| liked.len())
+		self.liked_items().map(HashSet::len)
 	}
 
 	/// The playlists the account can change whose items aren't known or are of an older revision.
@@ -386,10 +392,12 @@ impl Default for Subscribers {
 /// What a read of Liked Songs found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LikedRead {
-	/// Every track and episode in Liked Songs, and the token to ask for later changes with.
-	Whole { items: HashSet<ItemId>, token: String },
-	/// What changed since the token the read was asked with, and the token to ask with next.
-	Changes { added: Vec<ItemId>, removed: Vec<ItemId>, token: String },
+	/// Every track and episode in Liked Songs, and the token to ask for later changes with;
+	/// `None` when Spotify gave none.
+	Whole { items: HashSet<ItemId>, token: Option<String> },
+	/// What changed since the token the read was asked with, and the token to ask with next;
+	/// `None` when Spotify gave none.
+	Changes { added: Vec<ItemId>, removed: Vec<ItemId>, token: Option<String> },
 }
 
 /// Where the library is read from.
@@ -692,18 +700,24 @@ impl CollectionItem {
 
 	/// The track or episode it names; `None` for anything else, such as a saved album.
 	fn liked(&self) -> Option<ItemId> {
-		SpotifyUri::from_uri(&self.uri).ok().as_ref().and_then(item_of)
+		parse_item(&self.uri)
 	}
 }
 
-/// What a collection answer holds: its items, the token of the next page, and the sync token.
-/// For an answer to a request for changes, `possible` says whether Spotify could list them.
+/// What a collection answer holds: its items, the token of the next page, and the sync token,
+/// `None` when Spotify sent an empty one. For an answer to a request for changes, `possible`
+/// says whether Spotify could list them.
 #[derive(Default)]
 struct CollectionAnswer {
 	items: Vec<CollectionItem>,
 	next: String,
-	token: String,
+	token: Option<String>,
 	possible: bool,
+}
+
+/// A sync token read from `input`; Spotify sends an empty one for none.
+fn read_token(input: &mut CodedInputStream<'_>) -> protobuf::Result<Option<String>> {
+	Ok(Some(input.read_string()?).filter(|token| !token.is_empty()))
 }
 
 impl CollectionAnswer {
@@ -716,7 +730,7 @@ impl CollectionAnswer {
 					answer.items.push(CollectionItem::parse(&input.read_bytes()?)?);
 				}
 				(2, WireType::LengthDelimited) => answer.next = input.read_string()?,
-				(3, WireType::LengthDelimited) => answer.token = input.read_string()?,
+				(3, WireType::LengthDelimited) => answer.token = read_token(input)?,
 				_ => return Ok(false),
 			}
 			Ok(true)
@@ -749,7 +763,7 @@ impl CollectionAnswer {
 				(2, WireType::LengthDelimited) => {
 					answer.items.push(CollectionItem::parse(&input.read_bytes()?)?);
 				}
-				(3, WireType::LengthDelimited) => answer.token = input.read_string()?,
+				(3, WireType::LengthDelimited) => answer.token = read_token(input)?,
 				_ => return Ok(false),
 			}
 			Ok(true)
@@ -807,13 +821,11 @@ where
 	P: FnMut(String) -> PF,
 	PF: Future<Output = Result<Vec<u8>, CoreError>>,
 {
-	let (mut items, mut token, mut from) = (HashSet::new(), String::new(), String::new());
+	let (mut items, mut token, mut from) = (HashSet::new(), None, String::new());
 	let mut asked = HashSet::new();
 	loop {
 		let answer = decoded(CollectionAnswer::page(&page(from.clone()).await?))?;
-		if token.is_empty() {
-			token = answer.token;
-		}
+		token = token.or(answer.token);
 		for item in &answer.items {
 			if let Some(liked) = item.liked() {
 				if item.removed {
@@ -1027,7 +1039,7 @@ impl LibraryCache {
 				let (tracks, episodes_left_out) = split_items(items);
 				let lacking: Vec<ItemId> = {
 					let inner = self.lock();
-					let held = inner.library.as_ref().and_then(|library| library.liked.as_deref());
+					let held = inner.library.as_ref().and_then(|library| library.liked_items());
 					tracks
 						.iter()
 						.copied()
@@ -1183,7 +1195,8 @@ impl Fetch {
 			if !inner.admits(self.stamp) {
 				return;
 			}
-			let since = inner.library.as_ref().and_then(|library| library.liked_token.clone());
+			let since =
+				inner.library.as_ref().and_then(|library| library.liked.as_ref()?.token.clone());
 			(inner.stamp_within(self.stamp), since)
 		};
 		let mut liked_read = Box::pin(future::maybe_done(source.liked(since.as_deref())));
@@ -1361,15 +1374,6 @@ pub(crate) fn playlist_contents(message: &SelectedListContent) -> PlaylistConten
 		revision: message.revision().to_vec(),
 		rows,
 		truncated: message.contents.truncated(),
-	}
-}
-
-/// The track or episode `uri` names; `None` for anything else.
-fn item_of(uri: &SpotifyUri) -> Option<ItemId> {
-	match uri {
-		SpotifyUri::Track { id } => Some(ItemId::Track(*id)),
-		SpotifyUri::Episode { id } => Some(ItemId::Episode(*id)),
-		_ => None,
 	}
 }
 
@@ -1870,9 +1874,9 @@ mod tests {
 				Some(before) => LikedRead::Changes {
 					added: now.difference(&before).copied().collect(),
 					removed: before.difference(&now).copied().collect(),
-					token,
+					token: Some(token),
 				},
-				None => LikedRead::Whole { items: now, token },
+				None => LikedRead::Whole { items: now, token: Some(token) },
 			};
 			if self.hold_liked.load(Ordering::SeqCst) {
 				self.liked_gate.notified().await;
@@ -2273,7 +2277,7 @@ mod tests {
 
 	/// What [`FakeCollection::new`]'s pages hold.
 	fn every_page() -> LikedRead {
-		LikedRead::Whole { items: HashSet::from([t1(), episode(2), t3()]), token: token(1) }
+		LikedRead::Whole { items: HashSet::from([t1(), episode(2), t3()]), token: Some(token(1)) }
 	}
 
 	#[tokio::test]
@@ -2301,7 +2305,7 @@ mod tests {
 		};
 		assert_eq!(added, [t1()]);
 		assert_eq!(removed.into_iter().collect::<HashSet<_>>(), HashSet::from([t2(), t3()]));
-		assert_eq!(next, token(3));
+		assert_eq!(next, Some(token(3)));
 		assert_eq!(collection.asked_delta(), [token(1)]);
 		assert!(collection.asked_pages().is_empty());
 	}
@@ -2360,9 +2364,25 @@ mod tests {
 		collection.pages = HashMap::from([(String::new(), first), ("page 2".to_owned(), second)]);
 		assert_eq!(
 			collection.read(None).await.unwrap(),
-			LikedRead::Whole { items: HashSet::from([t1(), t3()]), token: token(2) }
+			LikedRead::Whole { items: HashSet::from([t1(), t3()]), token: Some(token(2)) }
 		);
 		assert_eq!(collection.asked_pages(), ["", "page 2"]);
+	}
+
+	#[tokio::test]
+	async fn an_empty_sync_token_is_none() {
+		let mut collection = FakeCollection::new();
+		let only = page_answer(&[(uri_of(t1()), false)], "", "");
+		collection.pages = HashMap::from([(String::new(), only)]);
+		assert_eq!(
+			collection.read(None).await.unwrap(),
+			LikedRead::Whole { items: HashSet::from([t1()]), token: None }
+		);
+		collection.delta = Some(delta_answer(true, &[], ""));
+		assert_eq!(
+			collection.read(Some(&token(1))).await.unwrap(),
+			LikedRead::Changes { added: Vec::new(), removed: Vec::new(), token: None }
+		);
 	}
 
 	async fn loaded(source: &FakeLibrary) -> LibraryCache {
@@ -2597,6 +2617,13 @@ mod tests {
 		format!("token {n}")
 	}
 
+	impl super::Library {
+		/// The token the held Liked Songs carries.
+		fn liked_token(&self) -> Option<String> {
+			self.liked.as_ref()?.token.clone()
+		}
+	}
+
 	/// The token each read of Liked Songs was asked with, in order.
 	fn asked_with(source: &FakeLibrary) -> Vec<Option<String>> {
 		source.liked_since.lock().unwrap().clone()
@@ -2617,7 +2644,7 @@ mod tests {
 		assert_eq!(asked_with(&source), [None]);
 		let library = ready(cache.held());
 		assert_eq!(library.holds(Target::LikedSongs, &[t2()]), Some(true));
-		assert_eq!(library.liked_token, Some(token(1)));
+		assert_eq!(library.liked_token(), Some(token(1)));
 		cache.fetch(&source, Instant::now()).await;
 		assert_eq!(asked_with(&source), [None, Some(token(1))]);
 	}
@@ -2634,7 +2661,7 @@ mod tests {
 		assert_eq!(library.holds(Target::LikedSongs, &[t3(), t9()]), Some(true));
 		assert_eq!(library.holds(Target::LikedSongs, &[t2()]), Some(false));
 		assert_eq!(library.liked_count(), Some(2));
-		assert_eq!(library.liked_token, Some(token(2)));
+		assert_eq!(library.liked_token(), Some(token(2)));
 	}
 
 	#[tokio::test]
@@ -2649,7 +2676,7 @@ mod tests {
 		assert_eq!(library.holds(Target::LikedSongs, &[t3()]), Some(true));
 		assert_eq!(library.holds(Target::LikedSongs, &[t2()]), Some(false));
 		assert_eq!(library.liked_count(), Some(1));
-		assert_eq!(library.liked_token, Some(token(2)));
+		assert_eq!(library.liked_token(), Some(token(2)));
 	}
 
 	#[tokio::test]
@@ -2665,35 +2692,35 @@ mod tests {
 	#[test]
 	fn changes_apply_only_to_the_liked_songs_they_follow() {
 		let changes =
-			|| LikedRead::Changes { added: vec![t3()], removed: vec![t2()], token: token(3) };
+			|| LikedRead::Changes { added: vec![t3()], removed: vec![t2()], token: Some(token(3)) };
 		let mut unknown = super::Library::from_parts(Vec::new(), Vec::new(), None);
 		unknown.store_liked(changes(), Some(&token(1)), 1, 0);
 		assert_eq!(unknown.liked_count(), None);
-		assert_eq!(unknown.liked_token, None);
+		assert_eq!(unknown.liked_token(), None);
 
 		let mut library =
 			super::Library::from_parts(Vec::new(), Vec::new(), Some(HashSet::from([t2()])));
-		library.liked_token = Some(token(1));
+		library.liked.as_mut().unwrap().token = Some(token(1));
 		library.store_liked(changes(), Some(&token(2)), 1, 0);
 		library.store_liked(changes(), None, 2, 0);
 		assert_eq!(library.holds(Target::LikedSongs, &[t2()]), Some(true));
-		assert_eq!(library.liked_token, Some(token(1)));
+		assert_eq!(library.liked_token(), Some(token(1)));
 		library.store_liked(changes(), Some(&token(1)), 3, 0);
 		assert_eq!(library.holds(Target::LikedSongs, &[t2()]), Some(false));
 		assert_eq!(library.holds(Target::LikedSongs, &[t3()]), Some(true));
-		assert_eq!(library.liked_token, Some(token(3)));
+		assert_eq!(library.liked_token(), Some(token(3)));
 	}
 
 	#[test]
 	fn a_read_that_brings_no_token_makes_the_next_read_whole() {
 		let mut library =
 			super::Library::from_parts(Vec::new(), Vec::new(), Some(HashSet::from([t9()])));
-		library.liked_token = Some(token(1));
-		let whole = LikedRead::Whole { items: HashSet::from([t2()]), token: String::new() };
+		library.liked.as_mut().unwrap().token = Some(token(1));
+		let whole = LikedRead::Whole { items: HashSet::from([t2()]), token: None };
 		library.store_liked(whole, Some(&token(1)), 1, 0);
 		assert_eq!(library.holds(Target::LikedSongs, &[t2()]), Some(true));
 		assert_eq!(library.liked_count(), Some(1));
-		assert_eq!(library.liked_token, None);
+		assert_eq!(library.liked_token(), None);
 	}
 
 	#[tokio::test]
