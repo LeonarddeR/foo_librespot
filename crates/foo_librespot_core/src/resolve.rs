@@ -864,6 +864,9 @@ impl LibrespotMetadata {
 				let message = EpisodeMessage::parse_from_bytes(bytes).map_err(parse_error)?;
 				let episode = Episode::try_from(&message)?;
 				let mut info = episode_info(&episode)?;
+				// librespot's `Episode` keeps only the show's name; the message has its ID.
+				info.links.show =
+					message.show.as_ref().and_then(|show| SpotifyId::from_raw(show.gid()).ok());
 				// `external_url` is set only for an episode Spotify doesn't host.
 				let hosted = info.external_url.is_none();
 				info.unavailable = explicit_allowed(episode.is_explicit, viewer.filter_explicit)
@@ -1132,7 +1135,7 @@ mod tests {
 	use librespot_protocol::metadata::{
 		Album as AlbumMessage, AlbumGroup as AlbumGroupMessage, Artist as ArtistMessage,
 		AudioFile as AudioFileMessage, Episode as EpisodeMessage,
-		Restriction as RestrictionMessage, Track as TrackMessage,
+		Restriction as RestrictionMessage, Show as ShowMessage, Track as TrackMessage,
 	};
 	use protobuf::{CodedOutputStream, Message};
 
@@ -1142,7 +1145,7 @@ mod tests {
 		context_tracks, extension_values, listening_order, releases, resolve, retry_rate_limited,
 	};
 	use crate::link::{ItemId, Link, LinkError, LinkKind};
-	use crate::metadata::{AlbumDetails, EXPLICIT_FILTERED, TrackInfo};
+	use crate::metadata::{AlbumDetails, EXPLICIT_FILTERED, ItemLinks, TrackInfo};
 	use crate::{CoreError, SpotifyId, SpotifyUri};
 
 	fn id(byte: u8) -> SpotifyId {
@@ -1180,6 +1183,7 @@ mod tests {
 			barcode: None,
 			release_type: None,
 			missing_album_details: false,
+			links: ItemLinks::default(),
 		}
 	}
 
@@ -1214,6 +1218,7 @@ mod tests {
 			barcode: None,
 			release_type: None,
 			missing_album_details: false,
+			links: ItemLinks::default(),
 		}
 	}
 
@@ -2089,6 +2094,23 @@ mod tests {
 			Some(EXPLICIT_FILTERED)
 		);
 		assert_eq!(unavailable(episode, &explicit_episode(), false), None);
+	}
+
+	#[test]
+	fn an_episode_links_its_show() {
+		let mut show = ShowMessage::new();
+		show.set_gid(vec![0x70; 16]);
+		show.set_name("Sing! Podcast".to_owned());
+		let mut episode = EpisodeMessage::new();
+		episode.set_gid(vec![0x50; 16]);
+		episode.show = MessageField::some(show);
+		let values = ExtensionValues {
+			metadata: Some(episode.write_to_bytes().unwrap()),
+			..Default::default()
+		};
+		let item = ItemId::Episode(id(0x50));
+		let (info, _) = LibrespotMetadata::info(item, Some(&values), &viewer(false)).unwrap();
+		assert_eq!(info.links.show, Some(id(0x70)));
 	}
 
 	#[test]

@@ -13,7 +13,7 @@ use foo_librespot_core::library::{
 };
 use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
-use foo_librespot_core::metadata::TrackInfo;
+use foo_librespot_core::metadata::{ItemLinks, TrackInfo};
 use foo_librespot_core::replaygain::ReplayGain;
 use foo_librespot_core::resolve::{ArtistTracks, Resolved};
 use foo_librespot_core::{CoreError, SpotifyId};
@@ -75,6 +75,13 @@ pub fn track_info(id: SpotifyId, title: &str) -> TrackInfo {
 		barcode: Some("804879057321".to_owned()),
 		release_type: Some("album"),
 		missing_album_details: false,
+		links: ItemLinks {
+			album: Some(SpotifyId::from_base62("4wPtS24asgBAG4VOmYYB9O").unwrap()),
+			artists: ["0I4Bk2s2BUJyykCwtxx8Xx", "2kxP07DLgs4xlWz8YHlvfh"]
+				.map(|id| SpotifyId::from_base62(id).unwrap())
+				.to_vec(),
+			show: None,
+		},
 	}
 }
 
@@ -110,6 +117,7 @@ pub fn episode_info(id: SpotifyId, title: &str) -> TrackInfo {
 		barcode: None,
 		release_type: None,
 		missing_album_details: false,
+		links: ItemLinks::default(),
 	}
 }
 

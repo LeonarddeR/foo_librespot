@@ -22,6 +22,16 @@ pub struct Cover {
 	pub height: i32,
 }
 
+/// The Spotify items a track or episode belongs to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ItemLinks {
+	pub album: Option<SpotifyId>,
+	/// The track's artists, in the order of `TrackInfo::artists`.
+	pub artists: Vec<SpotifyId>,
+	/// An episode's show.
+	pub show: Option<SpotifyId>,
+}
+
 /// What foobar2000 shows for a Spotify track or podcast episode.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackInfo {
@@ -76,6 +86,9 @@ pub struct TrackInfo {
 	pub release_type: Option<&'static str>,
 	/// Its album was read, but Spotify sent none of the album's details.
 	pub missing_album_details: bool,
+	/// The album, artists and show it belongs to. An episode's show is set by whoever fetched the
+	/// metadata.
+	pub links: ItemLinks,
 }
 
 pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
@@ -111,6 +124,15 @@ pub fn track_info(track: &Track) -> Result<TrackInfo, CoreError> {
 		barcode: None,
 		release_type: None,
 		missing_album_details: false,
+		links: ItemLinks {
+			album: Some(SpotifyId::try_from(&album.id)?),
+			artists: track
+				.artists
+				.iter()
+				.map(|artist| SpotifyId::try_from(&artist.id))
+				.collect::<Result<_, _>>()?,
+			show: None,
+		},
 	})
 }
 
@@ -152,6 +174,7 @@ pub fn episode_info(episode: &Episode) -> Result<TrackInfo, CoreError> {
 		barcode: None,
 		release_type: None,
 		missing_album_details: false,
+		links: ItemLinks::default(),
 	})
 }
 
@@ -364,8 +387,8 @@ mod tests {
 	};
 
 	use super::{
-		AlbumDetails, Cover, EXPLICIT_FILTERED, availability, episode_availability, episode_info,
-		explicit_allowed, format_date, largest_cover, track_info,
+		AlbumDetails, Cover, EXPLICIT_FILTERED, ItemLinks, availability, episode_availability,
+		episode_info, explicit_allowed, format_date, largest_cover, track_info,
 	};
 	use crate::link::ItemId;
 	use crate::{FileId, SpotifyId};
@@ -533,6 +556,21 @@ mod tests {
 	fn album_artists_come_from_the_album() {
 		let info = track_info(&parse(&track())).unwrap();
 		assert_eq!(info.album_artists, ["Rick Astley", "Various"]);
+	}
+
+	#[test]
+	fn track_info_links_the_album_and_each_artist_in_order() {
+		let id = |byte| SpotifyId::from_raw(&gid(byte)).unwrap();
+		let links = track_info(&parse(&track())).unwrap().links;
+		assert_eq!(links.album, Some(id(0x20)));
+		assert_eq!(links.artists, [id(0x30), id(0x32)]);
+		assert_eq!(links.show, None);
+	}
+
+	#[test]
+	fn episode_info_has_no_album_or_artist_links() {
+		let info = episode_info(&Episode::try_from(&episode_message()).unwrap()).unwrap();
+		assert_eq!(info.links, ItemLinks::default());
 	}
 
 	#[test]
