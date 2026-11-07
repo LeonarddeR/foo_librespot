@@ -418,6 +418,9 @@ pub struct Change {
 	pub episodes_left_out: usize,
 }
 
+/// Gets what a change did, or why it failed.
+pub type OnChanged = Box<dyn FnOnce(Result<Change, CoreError>) + Send>;
+
 /// `items` as URIs, each once, in order.
 pub(crate) fn distinct_uris(items: &[ItemId]) -> Vec<String> {
 	let mut seen = HashSet::new();

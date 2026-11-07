@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use foo_librespot_core::audio::format::FileFormat;
 use foo_librespot_core::audio::track::SpotifyTrack;
-use foo_librespot_core::library::{Change, Edit, LibraryState, Subscribers, Target};
+use foo_librespot_core::library::{Edit, LibraryState, OnChanged, Subscribers, Target};
 use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
@@ -22,8 +22,8 @@ pub type OnCode = Box<dyn FnOnce(DeviceCode) + Send>;
 /// Gets the Spotify username, or why a login failed.
 pub type OnDone = Box<dyn FnOnce(Result<String, CoreError>) + Send>;
 
-/// Everything the services need from Spotify. Every call blocks and returns
-/// [`CoreError::Aborted`] soon after `is_aborting` turns true.
+/// Everything the services need from Spotify. Every call that takes `is_aborting` blocks and
+/// returns [`CoreError::Aborted`] soon after it turns true.
 pub trait Backend: Send + Sync {
 	fn resolve(
 		&self,
@@ -68,15 +68,11 @@ pub trait Backend: Send + Sync {
 	/// [`unsubscribe_library`](Self::unsubscribe_library) with.
 	fn subscribe_library(&self, notify: Box<dyn Fn() + Send + Sync>) -> u64;
 	fn unsubscribe_library(&self, id: u64);
-	/// Adds `items` to a playlist or Liked Songs, leaving out what is already there, or removes
-	/// them from it, once every change begun before has ended.
-	fn change(
-		&self,
-		edit: Edit,
-		target: Target,
-		items: &[ItemId],
-		is_aborting: &dyn Fn() -> bool,
-	) -> Result<Change, CoreError>;
+	/// Starts adding `items` to a playlist or Liked Songs, leaving out what is already there, or
+	/// removing them from it, once every change begun before has ended, and returns at once.
+	/// `on_done` gets what was done, on another thread; a change still running when foobar2000
+	/// quits is dropped unreported.
+	fn change(&self, edit: Edit, target: Target, items: &[ItemId], on_done: OnChanged);
 }
 
 /// A login running in the background.
@@ -217,14 +213,11 @@ impl Backend for CoreBackend {
 		LIBRARY_SUBSCRIBERS.unsubscribe(id);
 	}
 
-	fn change(
-		&self,
-		edit: Edit,
-		target: Target,
-		items: &[ItemId],
-		is_aborting: &dyn Fn() -> bool,
-	) -> Result<Change, CoreError> {
-		core()?.change(edit, target, items, is_aborting)
+	fn change(&self, edit: Edit, target: Target, items: &[ItemId], on_done: OnChanged) {
+		match core() {
+			Ok(core) => core.change(edit, target, items, on_done),
+			Err(error) => on_done(Err(error)),
+		}
 	}
 }
 

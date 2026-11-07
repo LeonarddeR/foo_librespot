@@ -11,7 +11,7 @@ use crate::audio::keys::AudioKeys;
 use crate::audio::track::{
 	FetchedTrack, KeyOrigin, SpotifyTrack, fetch_track, wrong_remembered_key,
 };
-use crate::library::{Change, Edit, LibraryCache, LibraryState, LibrespotLibrary, Target};
+use crate::library::{Edit, LibraryCache, LibraryState, LibrespotLibrary, OnChanged, Target};
 use crate::link::{ItemId, Link};
 use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
 use crate::metadata::{TrackInfo, largest_cover};
@@ -271,23 +271,23 @@ impl Core {
 		Ok(Some(jpeg.to_vec()))
 	}
 
-	/// Adds `items` to a playlist or Liked Songs, or removes them, every copy of each, once every
-	/// change begun before has ended. Playlists are read first, so an add sends only what they
-	/// lack. Fails when Spotify hasn't answered within a minute of the change's turn.
-	pub fn change(
-		&self,
-		edit: Edit,
-		target: Target,
-		items: &[ItemId],
-		is_aborting: &dyn Fn() -> bool,
-	) -> Result<Change, CoreError> {
-		self.runtime.block_on(
-			self.library.in_turn(async {
-				let session = self.sessions.session().await?;
-				self.library.change(&LibrespotLibrary::new(session), edit, target, items).await
-			}),
-			is_aborting,
-		)?
+	/// Starts adding `items` to a playlist or Liked Songs, or removing them, every copy of each,
+	/// once every change begun before has ended, and returns at once. Playlists are read first,
+	/// so an add sends only what they lack. `on_done` gets what was done, on a runtime thread;
+	/// it fails when Spotify hasn't answered within a minute of the change's turn. A change still
+	/// running at [`shutdown`](Self::shutdown) is dropped, and `on_done` with it.
+	pub fn change(&self, edit: Edit, target: Target, items: &[ItemId], on_done: OnChanged) {
+		let (library, sessions) = (self.library.clone(), Arc::clone(&self.sessions));
+		let items = items.to_vec();
+		self.runtime.spawn(async move {
+			let result = library
+				.in_turn(async {
+					let session = sessions.session().await?;
+					library.change(&LibrespotLibrary::new(session), edit, target, &items).await
+				})
+				.await;
+			on_done(result);
+		});
 	}
 
 	/// Stops the runtime; foobar2000 calls this when it quits.
@@ -439,10 +439,20 @@ mod tests {
 		let dir = tempfile::tempdir().unwrap();
 		let core = Core::new(dir.path()).unwrap();
 		let track = ItemId::Track(SpotifyId::from_base62("4LH4d3cOWNNsVw41Gqt2kv").unwrap());
-		let result = core.change(Edit::Add, Target::LikedSongs, &[track], &|| false);
-		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
-		let result = core.change(Edit::Remove, Target::LikedSongs, &[track], &|| false);
-		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
+		for edit in [Edit::Add, Edit::Remove] {
+			let (done, result) = std::sync::mpsc::channel();
+			core.change(
+				edit,
+				Target::LikedSongs,
+				&[track],
+				Box::new(move |result| {
+					let _ = done.send((result, std::thread::current().id()));
+				}),
+			);
+			let (result, thread) = result.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+			assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
+			assert_ne!(thread, std::thread::current().id());
+		}
 		core.shutdown();
 	}
 

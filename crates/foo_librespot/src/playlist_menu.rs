@@ -3,7 +3,7 @@
 //! holds them all.
 //!
 //! The menu is built from the library as last read and never waits for Spotify. Each change runs
-//! on its own thread and reports in the console; a failure also shows a popup.
+//! in the background and reports in the console; a failure also shows a popup.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -25,7 +25,6 @@ use crate::backend::backend;
 use crate::errors::show_failure;
 use crate::first_use::ask_for_login;
 use crate::links::plural;
-use crate::quitting;
 
 const NAME: &str = "Add to Spotify playlist";
 
@@ -158,22 +157,18 @@ impl Pick {
 		Ok(())
 	}
 
+	/// Starts the change; it reports on the thread it ends on.
 	fn start(&self, edit: Edit) {
 		let pick = self.clone();
-		let spawned = std::thread::Builder::new()
-			.name("foo_librespot playlist change".to_owned())
-			.spawn(move || pick.run(edit));
-		if let Err(error) = spawned {
-			console::print(&format!("foo_librespot: can't change {}: {error}", self.name));
-		}
+		backend().change(
+			edit,
+			self.target,
+			&self.items,
+			Box::new(move |result| pick.end(edit, result)),
+		);
 	}
 
-	/// Makes the change, which foobar2000 quitting aborts. Once it quits, nothing is reported.
-	fn run(&self, edit: Edit) {
-		let result = backend().change(edit, self.target, &self.items, &quitting);
-		if quitting() {
-			return;
-		}
+	fn end(&self, edit: Edit, result: std::result::Result<Change, CoreError>) {
 		match result {
 			Ok(change) => self.report(edit, change),
 			Err(CoreError::Aborted) => {}
@@ -236,7 +231,6 @@ mod tests {
 	use foxide2k::abi::contextmenu::{FLAG_CHECKED, FLAG_DISABLED, FLAG_GRAYED, GROUP_ROOT};
 	use foxide2k::abi::popup::BUTTON_NO;
 	use foxide2k::contextmenu::{ContextMenuItem, context_menu_service};
-	use foxide2k::initquit::InitQuit;
 	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::{ContextMenuHandle, FakeApi, FakeHandleList, NodeHandle};
 
@@ -512,21 +506,6 @@ mod tests {
 	}
 
 	#[test]
-	fn a_change_still_running_when_foobar2000_quits_reports_nothing() {
-		let (api, fake) = setup(library(&[], &[], &[]));
-		fake.change_with(|| Err(CoreError::Unavailable("Spotify said no".to_owned())));
-		fake.hold_changes(true);
-		let (root, data) = open(&[t1()]);
-		pick(&root, &data, "Shared");
-		wait_until(|| fake.changes().len() == 1);
-		pick(&root, &data, "Shared");
-		crate::Startup.on_quit();
-		wait_until(|| fake.changes().len() == 2);
-		std::thread::sleep(std::time::Duration::from_millis(200));
-		assert!(!reported_a_failure(api), "{:?} {:?}", api.popups(), api.console_lines());
-	}
-
-	#[test]
 	fn an_aborted_change_reports_nothing() {
 		let (api, fake) = setup(library(&[], &[], &[]));
 		fake.change_with(|| Err(CoreError::Aborted));
@@ -538,11 +517,12 @@ mod tests {
 	}
 
 	#[test]
-	fn the_change_runs_off_the_main_thread() {
-		let (_, fake) = setup(library(&[], &[], &[]));
+	fn the_change_runs_and_reports_off_the_main_thread() {
+		let (api, fake) = setup(library(&[], &[], &[]));
 		let (root, data) = open(&[t1()]);
 		pick(&root, &data, "Shared");
-		wait_until(|| !fake.changes().is_empty());
+		assert_eq!(fake.changes().len(), 1);
 		assert_ne!(fake.changes()[0].3, std::thread::current().id());
+		wait_until(|| printed(api, "foo_librespot: added 1 track to Shared"));
 	}
 }

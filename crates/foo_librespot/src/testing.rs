@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use foo_librespot_core::audio::decoder::PcmDecoder;
 use foo_librespot_core::audio::format::FileFormat;
 use foo_librespot_core::library::{
-	Change, Edit, Library, LibraryPlaylist, LibraryState, PlaylistContents, Subscribers, Target,
+	Change, Edit, Library, LibraryPlaylist, LibraryState, OnChanged, PlaylistContents, Subscribers,
+	Target,
 };
 use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
@@ -137,14 +138,12 @@ struct State {
 	library_calls: AtomicUsize,
 	changes: Mutex<Vec<RecordedChange>>,
 	change_result: Mutex<Option<ChangeResult>>,
-	/// While set, changes that started block until released or aborted.
-	changes_held: AtomicBool,
 }
 
 /// What a change ends with.
 pub type ChangeResult = fn() -> Result<Change, CoreError>;
 
-/// A change that was asked for, and the thread it ran on.
+/// A change that was asked for, and the thread it ran and reported on.
 pub type RecordedChange = (Edit, Target, Vec<ItemId>, std::thread::ThreadId);
 
 /// A login the test answers itself, with [`FakeBackend::send_code`] and
@@ -252,15 +251,9 @@ impl FakeBackend {
 		self.0.library_calls.load(Ordering::SeqCst)
 	}
 
-	/// The changes asked for so far, each with the thread it ran on.
+	/// The changes asked for so far, each with the thread it ran and reported on.
 	pub fn changes(&self) -> Vec<RecordedChange> {
 		self.0.changes.lock().unwrap_or_else(PoisonError::into_inner).clone()
-	}
-
-	/// Makes changes that started block until `hold_changes(false)`, until they are aborted, or
-	/// for at most 5 s; then they end as [`Self::change_with`] says.
-	pub fn hold_changes(&self, held: bool) {
-		self.0.changes_held.store(held, Ordering::SeqCst);
 	}
 
 	/// Makes later changes end with `result()`; by default every item counts as changed.
@@ -444,32 +437,29 @@ impl Backend for FakeBackend {
 		self.0.library_subscribers.unsubscribe(id);
 	}
 
-	fn change(
-		&self,
-		edit: Edit,
-		target: Target,
-		items: &[ItemId],
-		is_aborting: &dyn Fn() -> bool,
-	) -> Result<Change, CoreError> {
+	/// Runs the change and `on_done` on a thread of its own, which starts once the change is
+	/// recorded.
+	fn change(&self, edit: Edit, target: Target, items: &[ItemId], on_done: OnChanged) {
+		let (fake, count) = (self.clone(), items.len());
+		let (recorded, wait) = std::sync::mpsc::channel::<()>();
+		let thread = std::thread::spawn(move || {
+			let _ = wait.recv();
+			let result = fake.enter(&|| false).and_then(|()| {
+				let result = *fake.0.change_result.lock().unwrap_or_else(PoisonError::into_inner);
+				result.map_or_else(
+					|| Ok(Change { changed: count, ..Change::default() }),
+					|result| result(),
+				)
+			});
+			on_done(result);
+		});
 		self.0.changes.lock().unwrap_or_else(PoisonError::into_inner).push((
 			edit,
 			target,
 			items.to_vec(),
-			std::thread::current().id(),
+			thread.thread().id(),
 		));
-		self.enter(is_aborting)?;
-		let started = std::time::Instant::now();
-		while self.0.changes_held.load(Ordering::SeqCst)
-			&& !is_aborting()
-			&& started.elapsed() < std::time::Duration::from_secs(5)
-		{
-			std::thread::sleep(std::time::Duration::from_millis(5));
-		}
-		let result = *self.0.change_result.lock().unwrap_or_else(PoisonError::into_inner);
-		result.map_or_else(
-			|| Ok(Change { changed: items.len(), ..Change::default() }),
-			|result| result(),
-		)
+		let _ = recorded.send(());
 	}
 }
 

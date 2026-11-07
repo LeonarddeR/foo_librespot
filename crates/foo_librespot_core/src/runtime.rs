@@ -236,6 +236,24 @@ mod tests {
 	}
 
 	#[test]
+	fn shutdown_drops_a_running_task_before_it_reports() {
+		let runtime = CoreRuntime::new().unwrap();
+		let (reported, dropped) =
+			(Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+		let guard = DropFlag(Arc::clone(&dropped));
+		let report = Arc::clone(&reported);
+		let _task = runtime.spawn(async move {
+			let _guard = guard;
+			tokio::time::sleep(Duration::from_millis(300)).await;
+			report.store(true, Ordering::SeqCst);
+		});
+		runtime.shutdown(Duration::from_millis(50));
+		assert!(dropped.load(Ordering::SeqCst));
+		std::thread::sleep(Duration::from_millis(400));
+		assert!(!reported.load(Ordering::SeqCst));
+	}
+
+	#[test]
 	fn shutdown_returns_despite_a_stuck_task() {
 		let runtime = CoreRuntime::new().unwrap();
 		let _task = runtime.spawn(std::future::pending::<()>());
