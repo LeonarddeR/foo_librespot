@@ -596,7 +596,11 @@ pub fn library_with(playlists: Vec<LibraryPlaylist>) -> Arc<Library> {
 		.map(|playlist| {
 			(
 				playlist.id,
-				PlaylistContents { revision: playlist.revision.clone(), rows: Vec::new() },
+				PlaylistContents {
+					revision: playlist.revision.clone(),
+					rows: Vec::new(),
+					truncated: false,
+				},
 			)
 		})
 		.collect();

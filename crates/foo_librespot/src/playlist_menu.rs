@@ -288,6 +288,7 @@ mod tests {
 					item_id: vec![u8::try_from(index).unwrap()],
 				})
 				.collect(),
+			truncated: false,
 		}
 	}
 

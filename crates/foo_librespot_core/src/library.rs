@@ -100,6 +100,8 @@ pub struct PlaylistRow {
 pub struct PlaylistContents {
 	pub revision: Vec<u8>,
 	pub rows: Vec<PlaylistRow>,
+	/// Spotify sent only some of the rows.
+	pub truncated: bool,
 }
 
 /// A playlist's contents with the set of its URIs.
@@ -708,8 +710,9 @@ impl LibraryCache {
 		run(listeners);
 	}
 
-	/// Adds `items` to `target`. A playlist is read first, so only what it lacks is sent; Liked
-	/// Songs takes the tracks among `items` only.
+	/// Adds `items` to `target`. A playlist is read first, so only what it lacks is sent, and
+	/// nothing is sent when Spotify sends only part of it; Liked Songs takes the tracks among
+	/// `items` only.
 	pub async fn add<S: LibrarySource>(
 		&self,
 		source: &S,
@@ -720,7 +723,7 @@ impl LibraryCache {
 		match target {
 			Target::Playlist(id) => {
 				let uris = distinct_uris(items);
-				let fresh = source.contents(id).await?;
+				let fresh = whole_contents(source, id).await?;
 				let (lacking, already) = missing(&uris, &fresh);
 				if !lacking.is_empty() {
 					source.add(id, &fresh.revision, &lacking).await?;
@@ -750,7 +753,8 @@ impl LibraryCache {
 	}
 
 	/// Removes `items` from `target`: every copy of each in a playlist, the tracks among them
-	/// from Liked Songs.
+	/// from Liked Songs. A playlist is read first; nothing is sent when Spotify sends only part
+	/// of it.
 	pub async fn remove<S: LibrarySource>(
 		&self,
 		source: &S,
@@ -760,7 +764,7 @@ impl LibraryCache {
 		let epoch = self.lock().epoch;
 		match target {
 			Target::Playlist(id) => {
-				let fresh = source.contents(id).await?;
+				let fresh = whole_contents(source, id).await?;
 				let rows = rows_holding(&distinct_uris(items), &fresh);
 				if !rows.is_empty() {
 					source.remove(id, &fresh.revision, &rows).await?;
@@ -867,6 +871,21 @@ impl LibraryCache {
 	}
 }
 
+/// Why a change refuses a playlist Spotify sent only part of.
+const TRUNCATED_REASON: &str = "Spotify sent only part of this playlist, so foo_librespot can't tell which tracks it already holds";
+
+/// The rows of playlist `id`, read from `source`; fails when Spotify sent only some of them.
+async fn whole_contents<S: LibrarySource>(
+	source: &S,
+	id: SpotifyId,
+) -> Result<PlaylistContents, CoreError> {
+	let contents = source.contents(id).await?;
+	if contents.truncated {
+		return Err(CoreError::Unavailable(TRUNCATED_REASON.to_owned()));
+	}
+	Ok(contents)
+}
+
 /// The distinct tracks among `items` as URIs, and how many distinct episodes there are.
 fn split_items(items: &[ItemId]) -> (Vec<String>, usize) {
 	let tracks: Vec<ItemId> =
@@ -928,7 +947,11 @@ pub(crate) fn playlist_contents(message: &SelectedListContent) -> PlaylistConten
 				.collect()
 		})
 		.unwrap_or_default();
-	PlaylistContents { revision: message.revision().to_vec(), rows }
+	PlaylistContents {
+		revision: message.revision().to_vec(),
+		rows,
+		truncated: message.contents.truncated(),
+	}
 }
 
 /// The library as Spotify has it, through librespot.
@@ -1076,8 +1099,11 @@ mod tests {
 	#[test]
 	fn a_library_from_parts_holds_what_it_was_given() {
 		let playlists = vec![playlist(1, "Sunday set", true, "r1")];
-		let contents =
-			PlaylistContents { revision: b"r1".to_vec(), rows: rows(&["spotify:track:a"]) };
+		let contents = PlaylistContents {
+			revision: b"r1".to_vec(),
+			rows: rows(&["spotify:track:a"]),
+			truncated: false,
+		};
 		let incomplete = super::Library::from_parts(playlists.clone(), Vec::new(), None);
 		assert!(!incomplete.is_complete());
 		let library = super::Library::from_parts(
@@ -1101,7 +1127,11 @@ mod tests {
 	}
 
 	fn contents(revision: &str, uris: &[&str]) -> PlaylistContents {
-		PlaylistContents { revision: revision.as_bytes().to_vec(), rows: rows(uris) }
+		PlaylistContents {
+			revision: revision.as_bytes().to_vec(),
+			rows: rows(uris),
+			truncated: false,
+		}
 	}
 
 	fn item(uri: &str) -> Item {
@@ -1235,8 +1265,24 @@ mod tests {
 					PlaylistRow { uri: "spotify:track:a".to_owned(), item_id: vec![1; 8] },
 					PlaylistRow { uri: "spotify:track:b".to_owned(), item_id: vec![2; 8] },
 				],
+				truncated: false,
 			}
 		);
+	}
+
+	#[test]
+	fn playlist_contents_say_when_spotify_sent_only_part() {
+		let message = SelectedListContent {
+			revision: Some(b"rev".to_vec()),
+			contents: MessageField::some(ListItems {
+				pos: Some(0),
+				truncated: Some(true),
+				items: vec![item("spotify:track:a")],
+				..Default::default()
+			}),
+			..Default::default()
+		};
+		assert!(playlist_contents(&message).truncated);
 	}
 
 	type IndexedRow = (usize, PlaylistRow);
@@ -1435,6 +1481,7 @@ mod tests {
 				PlaylistRow { uri: "b".to_owned(), item_id: vec![1] },
 				PlaylistRow { uri: "a".to_owned(), item_id: vec![2] },
 			],
+			truncated: false,
 		};
 		let found = rows_holding(&strings(&["a"]), &held);
 		assert_eq!(found, vec![(0, held.rows[0].clone()), (2, held.rows[2].clone())]);
@@ -1580,6 +1627,24 @@ mod tests {
 		let library = ready(cache.held());
 		assert_eq!(library.holds_all(id(1), &[uri_of(track(1))]), Some(false));
 		assert_eq!(library.holds_all(id(1), &[uri_of(track(2))]), Some(true));
+	}
+
+	#[tokio::test]
+	async fn a_change_refuses_a_playlist_spotify_sent_only_part_of() {
+		let source = fake();
+		let cache = loaded(&source).await;
+		let cut = PlaylistContents { truncated: true, ..contents("r1", &[&uri_of(track(1))]) };
+		source.contents.lock().unwrap().insert(id(1), cut);
+		let added = cache.add(&source, Target::Playlist(id(1)), &[track(4)]).await;
+		let removed = cache.remove(&source, Target::Playlist(id(1)), &[track(1)]).await;
+		for result in [added, removed] {
+			assert!(
+				matches!(&result, Err(CoreError::Unavailable(reason)) if reason == "Spotify sent only part of this playlist, so foo_librespot can't tell which tracks it already holds"),
+				"{result:?}"
+			);
+		}
+		assert!(source.adds.lock().unwrap().is_empty());
+		assert!(source.removes.lock().unwrap().is_empty());
 	}
 
 	#[tokio::test]
