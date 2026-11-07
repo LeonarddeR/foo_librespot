@@ -121,7 +121,7 @@ pub fn profile_folder(profile_path: &str) -> PathBuf {
 	Path::new(path.trim_end_matches(['\\', '/'])).join("foo_librespot")
 }
 
-/// How long quitting waits for Spotify calls still running; foobar2000 aborts them as it quits.
+/// How long quitting waits for Spotify calls still running.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
 /// A `Core`, started the first time anything asks Spotify and stopped when foobar2000 quits,
@@ -152,8 +152,10 @@ impl CoreSlot {
 		}
 		let spawned =
 			std::thread::Builder::new().name("foo_librespot start".to_owned()).spawn(move || {
-				let started = self.core();
-				self.starting.store(false, Ordering::SeqCst);
+				let started = {
+					let _ended = StartEnded(self);
+					self.core()
+				};
 				if let Ok(core) = started {
 					core.library();
 				}
@@ -183,6 +185,15 @@ impl CoreSlot {
 			core.subscribe_library(Box::new(|| self.subscribers.notify()));
 			Ok(core)
 		})
+	}
+}
+
+/// Clears [`CoreSlot::starting`] when a background start ends, also when it panics.
+struct StartEnded(&'static CoreSlot);
+
+impl Drop for StartEnded {
+	fn drop(&mut self) {
+		self.0.starting.store(false, Ordering::SeqCst);
 	}
 }
 
@@ -274,12 +285,19 @@ impl Backend for CoreBackend {
 		self.slot.subscribers.unsubscribe(id);
 	}
 
-	/// Before the core runs, waits for it on another thread.
+	/// Before the core runs, waits for it on another thread. Once the core is shut down,
+	/// `on_done` isn't called.
 	fn change(&self, edit: Edit, target: Target, items: &[ItemId], on_done: OnChanged) {
+		let slot = self.slot;
+		let on_done: OnChanged = Box::new(move |result| {
+			if !matches!(slot.core.now(), Phase::ShutDown) {
+				on_done(result);
+			}
+		});
 		if let Phase::Running(core) = self.slot.core.now() {
 			return core.change(edit, target, items, on_done);
 		}
-		let (slot, items) = (self.slot, items.to_vec());
+		let items = items.to_vec();
 		let spawned =
 			std::thread::Builder::new().name("foo_librespot change".to_owned()).spawn(move || {
 				match slot.core() {
@@ -319,6 +337,7 @@ mod tests {
 	use foo_librespot_core::{Core, CoreError};
 
 	use super::{Backend, CoreBackend, CoreSlot, profile_folder};
+	use crate::lifecycle::Phase;
 	use crate::testing::{track_id, wait_until};
 
 	/// Takes a while, then fails as a core whose profile folder is busy does.
@@ -376,6 +395,43 @@ mod tests {
 			"{result:?}"
 		);
 		assert_ne!(thread, std::thread::current().id());
+	}
+
+	#[test]
+	fn a_change_that_ends_after_shutdown_reports_nothing() {
+		static QUITTING: CoreSlot = CoreSlot::new(slow_start);
+		let backend = CoreBackend { slot: &QUITTING };
+		let (done, result) = mpsc::channel();
+		backend.change(
+			Edit::Add,
+			Target::LikedSongs,
+			&[ItemId::Track(track_id())],
+			Box::new(move |result| {
+				let _ = done.send(result);
+			}),
+		);
+		wait_until(|| matches!(QUITTING.core.now(), Phase::Starting));
+		QUITTING.core.shutdown(Duration::ZERO, Core::shutdown);
+		assert!(result.recv_timeout(Duration::from_secs(2)).is_err());
+	}
+
+	static PANICKED_STARTS: AtomicUsize = AtomicUsize::new(0);
+
+	fn panicking_start() -> Result<Core, CoreError> {
+		PANICKED_STARTS.fetch_add(1, Ordering::SeqCst);
+		panic!("the start panicked");
+	}
+
+	#[test]
+	fn a_start_that_panics_lets_the_next_library_call_try_again() {
+		static PANICS: CoreSlot = CoreSlot::new(panicking_start);
+		let backend = CoreBackend { slot: &PANICS };
+		backend.library();
+		wait_until(|| {
+			PANICKED_STARTS.load(Ordering::SeqCst) == 1 && !PANICS.starting.load(Ordering::SeqCst)
+		});
+		backend.library();
+		wait_until(|| PANICKED_STARTS.load(Ordering::SeqCst) == 2);
 	}
 
 	#[test]
