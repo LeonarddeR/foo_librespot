@@ -6,6 +6,7 @@
 //! on its own thread and reports in the console; a failure also shows a popup.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use foo_librespot_core::CoreError;
 use foo_librespot_core::library::{
@@ -21,7 +22,9 @@ use foxide2k::metadb::HandleList;
 use foxide2k::popup::{self, PopupIcon};
 
 use crate::backend::backend;
+use crate::errors::show_failure;
 use crate::first_use::ask_for_login;
+use crate::links::plural;
 use crate::quitting;
 
 const NAME: &str = "Add to Spotify playlist";
@@ -52,18 +55,19 @@ impl ContextMenuItem for AddToSpotifyPlaylist {
 			return None;
 		}
 		let children = match backend().library(None) {
+			LibraryState::Ready(library) if library.is_complete() => {
+				targets(&library, &items.into())
+			}
+			LibraryState::Loading | LibraryState::Ready(_) => {
+				vec![greyed("Loading your playlists…")]
+			}
 			LibraryState::LoggedOut => vec![login_entry()],
-			LibraryState::Loading => vec![greyed("Loading your playlists…")],
 			LibraryState::Failed(reason) => {
 				console::print(&format!(
 					"foo_librespot: couldn't load your Spotify playlists: {reason}"
 				));
 				vec![greyed("Couldn't load your playlists")]
 			}
-			LibraryState::Ready(library) if !library.is_complete() => {
-				vec![greyed("Loading your playlists…")]
-			}
-			LibraryState::Ready(library) => targets(&library, &items),
 		};
 		Some(MenuNode::Popup { name: NAME.to_owned(), children })
 	}
@@ -90,14 +94,15 @@ fn login_entry() -> MenuNode {
 	}
 }
 
-/// Liked Songs, then each playlist the account can change. `items` holds each item once.
-fn targets(library: &Library, items: &[ItemId]) -> Vec<MenuNode> {
+/// Liked Songs, then each playlist the account can change. `items` holds each item once; every
+/// entry shares it.
+fn targets(library: &Library, items: &Arc<[ItemId]>) -> Vec<MenuNode> {
 	let tracks = tracks_of(items).len();
 	let liked = Pick {
 		target: Target::LikedSongs,
 		name: LIKED_SONGS.to_owned(),
 		checked: library.holds(Target::LikedSongs, items) == Some(true),
-		items: items.to_vec(),
+		items: Arc::clone(items),
 		count: tracks,
 	};
 	let mut nodes = vec![liked.node(tracks > 0)];
@@ -107,7 +112,7 @@ fn targets(library: &Library, items: &[ItemId]) -> Vec<MenuNode> {
 			target,
 			name: playlist.display_name(),
 			checked: library.holds(target, items) == Some(true),
-			items: items.to_vec(),
+			items: Arc::clone(items),
 			count: items.len(),
 		}
 		.node(true)
@@ -121,7 +126,7 @@ struct Pick {
 	target: Target,
 	name: String,
 	checked: bool,
-	items: Vec<ItemId>,
+	items: Arc<[ItemId]>,
 	/// How many tracks the question and the report speak of.
 	count: usize,
 }
@@ -177,49 +182,37 @@ impl Pick {
 	}
 
 	fn report(&self, edit: Edit, change: Change) {
-		let liked = self.target == Target::LikedSongs;
 		let tracks = count_tracks(change.changed);
-		match (edit, liked) {
-			(Edit::Remove, _) => {
+		match edit {
+			Edit::Remove => {
 				console::print(&format!("foo_librespot: removed {tracks} from {}", self.name));
 			}
-			(Edit::Add, true) => {
+			Edit::Add => {
+				let verb = if self.target == Target::LikedSongs { "saved" } else { "added" };
 				console::print(&format!(
-					"foo_librespot: saved {tracks} to {}{}",
+					"foo_librespot: {verb} {tracks} to {}{}",
 					self.name,
 					already_there(change.unchanged)
 				));
-				if change.episodes_left_out > 0 {
-					let k = change.episodes_left_out;
-					let noun = if k == 1 { "episode" } else { "episodes" };
+				let left_out = change.episodes_left_out;
+				if left_out > 0 {
 					console::print(&format!(
-						"foo_librespot: left out {k} {noun}: Liked Songs holds songs only"
+						"foo_librespot: left out {left_out} {}: Liked Songs holds songs only",
+						plural(left_out, "episode", "episodes")
 					));
 				}
-			}
-			(Edit::Add, false) => {
-				console::print(&format!(
-					"foo_librespot: added {tracks} to {}{}",
-					self.name,
-					already_there(change.unchanged)
-				));
 			}
 		}
 	}
 
 	fn fail(&self, error: &CoreError) {
 		console::print(&format!("foo_librespot: can't change {}: {error}", self.name));
-		let message = format!("{}\n\n{error}.", self.name);
-		if let Err(shown) =
-			popup::show("Can't change the Spotify playlist", &message, PopupIcon::Error)
-		{
-			console::print(&format!("foo_librespot: can't show a message: {}", shown.message));
-		}
+		show_failure("Can't change the Spotify playlist", PopupIcon::Error, &self.name, error);
 	}
 }
 
 fn count_tracks(n: usize) -> String {
-	format!("{n} {}", if n == 1 { "track" } else { "tracks" })
+	format!("{n} {}", plural(n, "track", "tracks"))
 }
 
 /// `; 2 were already there`, or nothing when none were.
@@ -238,7 +231,7 @@ mod tests {
 	use foo_librespot_core::library::{
 		Change, Edit, Library, LibraryState, PlaylistContents, PlaylistRow, Target,
 	};
-	use foo_librespot_core::link::ItemId;
+	use foo_librespot_core::link::{ItemId, item_path};
 	use foo_librespot_core::{CoreError, SpotifyId};
 	use foxide2k::abi::contextmenu::{FLAG_CHECKED, FLAG_DISABLED, FLAG_GRAYED, GROUP_ROOT};
 	use foxide2k::abi::popup::BUTTON_NO;
@@ -265,10 +258,6 @@ mod tests {
 
 	fn episode() -> ItemId {
 		ItemId::Episode(episode_id())
-	}
-
-	fn path(item: ItemId) -> String {
-		format!("sptf://{}", item.uri().to_uri())
 	}
 
 	fn contents(items: &[ItemId]) -> PlaylistContents {
@@ -305,7 +294,7 @@ mod tests {
 
 	/// Opens the menu for `items`.
 	fn open(items: &[ItemId]) -> (NodeHandle, FakeHandleList) {
-		let data = list(&items.iter().copied().map(path).collect::<Vec<_>>());
+		let data = list(&items.iter().copied().map(item_path).collect::<Vec<_>>());
 		(item().instantiate(&data), data)
 	}
 
@@ -425,7 +414,7 @@ mod tests {
 	#[test]
 	fn local_files_in_the_selection_are_left_out() {
 		let (_, fake) = setup(library(&[], &[], &[]));
-		let data = list(&["file://C:\\a.mp3".to_owned(), path(t1())]);
+		let data = list(&["file://C:\\a.mp3".to_owned(), item_path(t1())]);
 		let root = item().instantiate(&data);
 		pick(&root, &data, "Church / Sunday set");
 		wait_until(|| !fake.changes().is_empty());

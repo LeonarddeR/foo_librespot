@@ -24,7 +24,7 @@ use foxide2k::popup::{self, PopupIcon};
 use foxide2k::strings::strip_prefix_ignore_case;
 
 use crate::backend::backend;
-use crate::errors::host_error;
+use crate::errors::{host_error, show_failure};
 use crate::fields::fill_info;
 use crate::first_use::login_on_first_use;
 use crate::settings;
@@ -37,7 +37,7 @@ fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
 }
 
 /// The one path foobar2000 stores for `link`.
-fn canonical(link: &Link) -> String {
+pub fn canonical(link: &Link) -> String {
 	format!("{PATH_SCHEME}{}", link.uri())
 }
 
@@ -85,7 +85,8 @@ impl Filesystem for SpotifyFilesystem {
 /// How many skipped items one popup lists; the console has them all.
 const MAX_LISTED: usize = 20;
 
-const fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
+/// `one` when `count` is 1, otherwise `many`.
+pub const fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
 	if count == 1 { one } else { many }
 }
 
@@ -128,16 +129,7 @@ impl PlaylistLoader for SpotifyLoader {
 			Err(error) => {
 				let link = as_pasted(path);
 				console::print(&format!("foo_librespot: {link}: {error}"));
-				let message = format!(
-					"{link}
-
-{error}."
-				);
-				if let Err(shown) =
-					popup::show("Can't add this Spotify link", &message, PopupIcon::Information)
-				{
-					console::print(&format!("foo_librespot: {}", shown.message));
-				}
+				show_failure("Can't add this Spotify link", PopupIcon::Information, link, &error);
 				return Ok(());
 			}
 		};

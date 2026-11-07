@@ -7,7 +7,7 @@
 use std::cell::Cell;
 
 use foo_librespot_core::library::{LIKED_SONGS, Library, LibraryState};
-use foo_librespot_core::link::{LIKED_SONGS_URI, PATH_SCHEME};
+use foo_librespot_core::link::Link;
 use foxide2k::abi::mainmenu::{GROUP_FILE, SORT_PRIORITY_BASE};
 use foxide2k::console;
 use foxide2k::dialog::accessibility::{announce, make_live_region};
@@ -26,11 +26,13 @@ use foxide2k::host::host;
 use foxide2k::main_thread::{add_modeless, remove_modeless};
 use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
 use foxide2k::playlist;
-use foxide2k::popup::{self, PopupIcon};
+use foxide2k::popup::PopupIcon;
 
 use crate::account::item;
 use crate::backend::backend;
+use crate::errors::show_failure;
 use crate::first_use::ask_for_login;
+use crate::links::canonical;
 use crate::login::controller;
 
 /// The tab property that keeps the Spotify URI of the playlist a tab was opened from.
@@ -95,7 +97,7 @@ pub fn window_template() -> DialogTemplate {
 }
 
 thread_local! {
-	/// The open window. It lives on foobar2000's main thread, so only that thread sees it.
+	/// The open window; only foobar2000's main thread sets and reads it.
 	static WINDOW: Cell<Option<Dialog>> = const { Cell::new(None) };
 }
 
@@ -129,8 +131,7 @@ pub fn show(owner: isize) -> Result<()> {
 struct Entry {
 	text: String,
 	name: String,
-	uri: String,
-	location: String,
+	link: Link,
 }
 
 impl Entry {
@@ -138,8 +139,7 @@ impl Entry {
 		Self {
 			text: LIKED_SONGS.to_owned(),
 			name: LIKED_SONGS.to_owned(),
-			uri: LIKED_SONGS_URI.to_owned(),
-			location: format!("{PATH_SCHEME}{LIKED_SONGS_URI}"),
+			link: Link::LikedSongs { account: None },
 		}
 	}
 }
@@ -147,14 +147,10 @@ impl Entry {
 /// Liked Songs, then every playlist of `library`.
 fn entries_of(library: &Library) -> Vec<Entry> {
 	std::iter::once(Entry::liked_songs())
-		.chain(library.playlists.iter().map(|playlist| {
-			let uri = playlist.link().uri();
-			Entry {
-				text: playlist.display_name(),
-				name: playlist.name.clone(),
-				location: format!("{PATH_SCHEME}{uri}"),
-				uri,
-			}
+		.chain(library.playlists.iter().map(|playlist| Entry {
+			text: playlist.display_name(),
+			name: playlist.name.clone(),
+			link: playlist.link(),
 		}))
 		.collect()
 }
@@ -170,24 +166,17 @@ struct OpenPlaylistWindow {
 impl OpenPlaylistWindow {
 	/// Shows `state` in the list and the status line; a new status is announced.
 	fn render(&mut self, dialog: Dialog, state: LibraryState) {
-		let status = match state {
-			LibraryState::Ready(library) => {
-				self.fill(dialog, entries_of(&library));
-				String::new()
-			}
-			LibraryState::Loading => {
-				self.fill(dialog, Vec::new());
-				"Loading…".to_owned()
-			}
+		let (entries, status) = match state {
+			LibraryState::Ready(library) => (entries_of(&library), String::new()),
+			LibraryState::Loading => (Vec::new(), "Loading…".to_owned()),
 			LibraryState::Failed(reason) => {
-				self.fill(dialog, Vec::new());
-				format!("Couldn't load your playlists: {reason}.")
+				(Vec::new(), format!("Couldn't load your playlists: {reason}."))
 			}
 			LibraryState::LoggedOut => {
-				self.fill(dialog, Vec::new());
-				"Log in to Spotify to see your playlists.".to_owned()
+				(Vec::new(), "Log in to Spotify to see your playlists.".to_owned())
 			}
 		};
+		self.fill(dialog, entries);
 		dialog.set_text(STATUS, &status);
 		if status != self.status {
 			announce(&dialog, STATUS);
@@ -196,7 +185,7 @@ impl OpenPlaylistWindow {
 	}
 
 	/// Shows `entries` in the list. An unchanged list is left alone; a changed one is refilled
-	/// with the entry of the same URI selected, or the first.
+	/// with the entry of the same link selected, or the first.
 	fn fill(&mut self, dialog: Dialog, entries: Vec<Entry>) {
 		if entries == self.entries {
 			return;
@@ -204,12 +193,12 @@ impl OpenPlaylistWindow {
 		let picked = dialog
 			.list_selection(LIST)
 			.and_then(|row| self.entries.get(row))
-			.map(|entry| entry.uri.clone());
+			.map(|entry| entry.link.clone());
 		dialog.list_clear(LIST);
 		for entry in &entries {
 			dialog.list_add(LIST, &entry.text);
 		}
-		let row = entries.iter().position(|entry| Some(&entry.uri) == picked.as_ref());
+		let row = entries.iter().position(|entry| Some(&entry.link) == picked.as_ref());
 		self.entries = entries;
 		if !self.entries.is_empty() {
 			dialog.list_select(LIST, row.unwrap_or(0));
@@ -231,8 +220,7 @@ impl OpenPlaylistWindow {
 /// Says in the console and a popup that the playlist `name` couldn't be opened, and why.
 fn cant_open(name: &str, why: &str) {
 	console::print(&format!("foo_librespot: can't open {name}: {why}"));
-	let message = format!("{name}\n\n{why}.");
-	let _ = popup::show("Can't open this Spotify playlist", &message, PopupIcon::Error);
+	show_failure("Can't open this Spotify playlist", PopupIcon::Error, name, &why);
 }
 
 impl DialogHandler for OpenPlaylistWindow {
@@ -293,16 +281,15 @@ impl Drop for OpenPlaylistWindow {
 
 /// Brings the tab of `entry` to the front, or makes it and fills it as pasting the link would.
 fn open_entry(entry: &Entry) -> Result<()> {
-	let property = entry.uri.as_bytes();
-	if let Some(index) = playlist::find_by_property(&TAB_PROPERTY, property)? {
+	let uri = entry.link.uri();
+	if let Some(index) = playlist::find_by_property(&TAB_PROPERTY, uri.as_bytes())? {
 		return playlist::activate(index);
 	}
 	let index = playlist::create(&entry.name)?;
-	playlist::set_property(index, &TAB_PROPERTY, property)?;
+	playlist::set_property(index, &TAB_PROPERTY, uri.as_bytes())?;
 	playlist::activate(index)?;
-	let uri = entry.uri.clone();
 	playlist::load_locations(
-		std::slice::from_ref(&entry.location),
+		&[canonical(&entry.link)],
 		Box::new(move |items| match playlist::find_by_property(&TAB_PROPERTY, uri.as_bytes())? {
 			Some(index) => playlist::append(index, items),
 			None => Ok(()),

@@ -1,11 +1,14 @@
-//! Turning Spotify errors into the foobar2000 exceptions that explain them.
+//! Turning Spotify errors into the foobar2000 exceptions that explain them, and telling the user
+//! about a failure.
 
+use std::fmt::Display;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use foo_librespot_core::CoreError;
 use foxide2k::console;
 use foxide2k::cxx::ExceptionKind;
 use foxide2k::error::Error;
+use foxide2k::popup::{self, PopupIcon};
 
 /// What the user reads when nobody is logged in.
 const NOT_LOGGED_IN: &str =
@@ -45,6 +48,15 @@ pub fn host_error(error: CoreError) -> Error {
 	}
 }
 
+/// Shows "`subject`, a blank line, `why`." in a popup titled `title`. When the popup can't be
+/// shown, says so in the console.
+pub fn show_failure(title: &str, icon: PopupIcon, subject: &str, why: &dyn Display) {
+	let message = format!("{subject}\n\n{why}.");
+	if let Err(shown) = popup::show(title, &message, icon) {
+		console::print(&format!("foo_librespot: can't show a message: {}", shown.message));
+	}
+}
+
 /// What to do when `foo_youtube` is loaded: its host filter takes every web link by default,
 /// `open.spotify.com` included, so in some sessions it gets them before foo_librespot does.
 pub fn youtube_hint(components: &[String]) -> Option<String> {
@@ -58,10 +70,25 @@ mod tests {
 	use foo_librespot_core::CoreError;
 	use foo_librespot_core::link::LinkError;
 	use foxide2k::cxx::ExceptionKind;
-
+	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::FakeApi;
 
-	use super::{host_error, youtube_hint};
+	use super::{host_error, show_failure, youtube_hint};
+
+	#[test]
+	fn a_failure_popup_names_the_subject_then_says_why() {
+		let api = FakeApi::new();
+		api.install();
+		show_failure("Can't open this Spotify playlist", PopupIcon::Error, "Sunday set", &"no tab");
+		assert_eq!(
+			api.popups(),
+			[(
+				"Can't open this Spotify playlist".to_owned(),
+				"Sunday set\n\nno tab.".to_owned(),
+				PopupIcon::Error
+			)]
+		);
+	}
 
 	#[test]
 	fn not_logged_in_message_points_to_the_preferences_page() {
