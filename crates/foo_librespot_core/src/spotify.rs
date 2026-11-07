@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::CoreError;
 use crate::art::{CoverCache, fetch_cover};
@@ -11,6 +11,7 @@ use crate::audio::keys::AudioKeys;
 use crate::audio::track::{
 	FetchedTrack, KeyOrigin, SpotifyTrack, fetch_track, wrong_remembered_key,
 };
+use crate::library::{LibraryCache, LibraryState, LibrespotLibrary, OnLibraryChange};
 use crate::link::{ItemId, Link};
 use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
 use crate::metadata::{TrackInfo, largest_cover};
@@ -37,6 +38,7 @@ pub struct Core {
 	albums: AlbumDetailsCache,
 	covers: CoverCache,
 	keys: AudioKeys,
+	library: LibraryCache,
 }
 
 impl Core {
@@ -59,6 +61,7 @@ impl Core {
 			albums: AlbumDetailsCache::default(),
 			covers: CoverCache::default(),
 			keys,
+			library: LibraryCache::default(),
 		})
 	}
 
@@ -83,6 +86,7 @@ impl Core {
 	) -> LoginHandle {
 		let sessions = Arc::clone(&self.sessions);
 		let cache = self.cache.clone();
+		let library = self.library.clone();
 		let gate = LoginGate::default();
 		let finishing = gate.clone();
 		let task = self.runtime.spawn(async move {
@@ -92,6 +96,7 @@ impl Core {
 				let username = sessions.login_with_token(token).await?;
 				// Which tracks are available depends on the account's country.
 				cache.clear();
+				library.clear();
 				Ok(username)
 			}
 			.await;
@@ -107,12 +112,42 @@ impl Core {
 		LoginHandle { task, gate }
 	}
 
-	/// Forgets the login and the remembered audio keys, which show what was played.
+	/// Forgets the login, the account's library and the remembered audio keys, which show what
+	/// was played.
 	pub fn logout(&self) -> Result<(), CoreError> {
-		self.sessions.logout()?;
+		let result = self.sessions.logout();
+		self.library.clear();
+		result?;
 		self.keys.clear();
 		self.profile.save_audio_keys(&self.keys)?;
 		Ok(())
+	}
+
+	/// The account's playlists and Liked Songs as last read, without waiting for Spotify. When
+	/// they are missing or old, a read starts in the background; `on_change` runs once when it
+	/// next publishes, on a runtime thread, and is dropped unrun when no read is running.
+	pub fn library(&self, on_change: Option<OnLibraryChange>) -> LibraryState {
+		if !self.is_logged_in() {
+			return LibraryState::LoggedOut;
+		}
+		let now = Instant::now();
+		let (state, fetch) = self.library.snapshot(now, on_change);
+		if fetch {
+			let sessions = Arc::clone(&self.sessions);
+			let library = self.library.clone();
+			self.runtime.spawn(async move {
+				match sessions.session().await {
+					Ok(session) => library.fetch(&LibrespotLibrary::new(session), now).await,
+					Err(error) => library.fail(&error),
+				}
+			});
+		}
+		state
+	}
+
+	/// What [`Core::library`] would answer, without starting a read.
+	pub fn held_library(&self) -> LibraryState {
+		if self.is_logged_in() { self.library.held() } else { LibraryState::LoggedOut }
 	}
 
 	pub fn resolve(
@@ -299,6 +334,7 @@ mod tests {
 	use super::{Core, LoginGate, LoginHandle};
 	use crate::audio::keys::AudioKeys;
 	use crate::audio::track::SpotifyTrack;
+	use crate::library::LibraryState;
 	use crate::link::{Link, LinkKind};
 	use crate::profile::Profile;
 	use crate::resolve::ArtistTracks;
@@ -361,6 +397,15 @@ mod tests {
 		let core = Core::new(dir.path()).unwrap();
 		let result = core.resolve(&album(), ArtistTracks::Popular, &|| false);
 		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
+		core.shutdown();
+	}
+
+	#[test]
+	fn library_without_login_is_logged_out() {
+		let dir = tempfile::tempdir().unwrap();
+		let core = Core::new(dir.path()).unwrap();
+		assert!(matches!(core.library(None), LibraryState::LoggedOut));
+		assert!(matches!(core.held_library(), LibraryState::LoggedOut));
 		core.shutdown();
 	}
 

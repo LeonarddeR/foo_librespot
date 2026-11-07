@@ -585,6 +585,26 @@ where
 	request().await
 }
 
+/// A further page of a context, through its `hm://` URL.
+async fn context_page(session: &Session, url: String) -> Result<Page, CoreError> {
+	let bytes = retry_rate_limited(|| session.spclient().get_next_page(&url)).await?;
+	Page::from_json(&bytes)
+}
+
+/// The track and episode URIs of the logged-in account's Liked Songs, in Spotify's order.
+pub(crate) async fn liked_song_uris(session: &Session) -> Result<Vec<SpotifyUri>, CoreError> {
+	let uri = format!("spotify:user:{}:collection", session.username());
+	let context = retry_rate_limited(|| session.spclient().get_context(&uri)).await?;
+	let pages = context.pages.iter().map(Page::of).collect();
+	let tracks = context_tracks(pages, |url| context_page(session, url)).await?;
+	if tracks.cut_off {
+		log::warn!(
+			"stopped reading Liked Songs after {MAX_CONTEXT_PAGES} pages; the tracks after them weren't added"
+		);
+	}
+	Ok(tracks.uris)
+}
+
 /// Track and episode metadata already fetched this run, shared by everything that looks them up.
 #[derive(Clone, Debug, Default)]
 pub struct TrackCache(Arc<Mutex<HashMap<ItemId, Arc<TrackInfo>>>>);
@@ -787,12 +807,6 @@ struct Viewer {
 impl LibrespotMetadata {
 	pub fn new(session: Session, albums: AlbumDetailsCache) -> Self {
 		Self { session, albums }
-	}
-
-	/// A further page of a context, through its `hm://` URL.
-	async fn context_page(&self, url: String) -> Result<Page, CoreError> {
-		let bytes = retry_rate_limited(|| self.session.spclient().get_next_page(&url)).await?;
-		Page::from_json(&bytes)
 	}
 
 	/// The extensions to ask for an item: a track's metadata comes with its loudness and its
@@ -1013,16 +1027,7 @@ impl MetadataSource for LibrespotMetadata {
 	}
 
 	async fn liked_songs(&self) -> Result<Vec<SpotifyUri>, CoreError> {
-		let uri = format!("spotify:user:{}:collection", self.session.username());
-		let context = retry_rate_limited(|| self.session.spclient().get_context(&uri)).await?;
-		let pages = context.pages.iter().map(Page::of).collect();
-		let tracks = context_tracks(pages, |url| self.context_page(url)).await?;
-		if tracks.cut_off {
-			log::warn!(
-				"stopped reading Liked Songs after {MAX_CONTEXT_PAGES} pages; the tracks after them weren't added"
-			);
-		}
-		Ok(tracks.uris)
+		liked_song_uris(&self.session).await
 	}
 
 	fn username(&self) -> String {

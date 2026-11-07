@@ -242,7 +242,7 @@ fn search(words: &str) -> Result<Link, LinkError> {
 
 /// Search words as a link carries them: `%XX` decoded, and `+` too when `plus_is_space`, then
 /// trimmed to single spaces.
-fn decode_search(text: &str, plus_is_space: bool) -> String {
+pub(crate) fn decode_search(text: &str, plus_is_space: bool) -> String {
 	let bytes = text.as_bytes();
 	let mut decoded = Vec::with_capacity(bytes.len());
 	let mut index = 0;

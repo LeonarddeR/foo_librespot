@@ -18,6 +18,7 @@ mod bindings;
 mod dpapi;
 pub mod error;
 pub mod genre;
+pub mod library;
 pub mod link;
 pub mod login;
 pub mod metadata;

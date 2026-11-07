@@ -4,9 +4,11 @@
 //! cargo run -p foo_librespot_core --example spotify_dev -- login
 //! cargo run -p foo_librespot_core --example spotify_dev -- resolve <link> [--popular]
 //! cargo run -p foo_librespot_core --example spotify_dev -- decode <track link> <seconds> [--seek <seconds>]
+//! cargo run -p foo_librespot_core --example spotify_dev -- library
 //! cargo run -p foo_librespot_core --example spotify_dev -- logout
 //! ```
 //!
+//! `library` lists the account's playlists, saying which it can change, and the size of Liked Songs.
 //! The login is kept in `.spotify-dev` in the current folder, or in `--profile <folder>`.
 //! An artist link resolves to the artist's whole discography, as in foobar2000, or to their
 //! popular tracks with `--popular`.
@@ -15,14 +17,16 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use foo_librespot_core::audio::decoder::SAMPLE_RATE;
 use foo_librespot_core::audio::format::Bitrate;
+use foo_librespot_core::library::{LIKED_SONGS, LibraryState};
 use foo_librespot_core::link::parse_link;
 use foo_librespot_core::resolve::ArtistTracks;
 use foo_librespot_core::{Core, CoreError};
 
-const USAGE: &str = "usage: spotify_dev [--profile <folder>] login | logout | resolve <link> [--popular] | decode <track link> <seconds> [--seek <seconds>]";
+const USAGE: &str = "usage: spotify_dev [--profile <folder>] login | logout | library | resolve <link> [--popular] | decode <track link> <seconds> [--seek <seconds>]";
 
 fn main() -> ExitCode {
 	init_logger();
@@ -46,6 +50,7 @@ fn main() -> ExitCode {
 	let result = match args.as_slice() {
 		["login"] => login(&core),
 		["logout"] => core.logout().map(|()| println!("Logged out.")),
+		["library"] => library(&core),
 		["resolve", link] => resolve(&core, link, artist_tracks),
 		["decode", link, seconds] => decode(&core, link, seconds, seek.as_deref()),
 		_ => {
@@ -78,6 +83,40 @@ fn login(core: &Core) -> Result<(), CoreError> {
 	let username = finished.recv().map_err(|_| CoreError::Aborted)??;
 	println!("Logged in as {username}.");
 	Ok(())
+}
+
+/// Waits for the library to be read in full, then prints it.
+fn library(core: &Core) -> Result<(), CoreError> {
+	loop {
+		let (changed, wait) = mpsc::channel();
+		let state = core.library(Some(Box::new(move || {
+			let _ = changed.send(());
+		})));
+		match state {
+			LibraryState::LoggedOut => return Err(CoreError::NotLoggedIn),
+			LibraryState::Failed(reason) => return Err(CoreError::Unavailable(reason)),
+			LibraryState::Ready(library) if library.is_complete() => {
+				let liked = library.liked_count().unwrap_or_default();
+				println!("{LIKED_SONGS} ({liked} songs)");
+				for playlist in &library.playlists {
+					let name = playlist.display_name();
+					match library.contents(playlist.id) {
+						Some(contents) if playlist.can_edit => {
+							println!("{name} (can change, {} items)", contents.rows.len());
+						}
+						_ => println!("{name} (followed)"),
+					}
+				}
+				return Ok(());
+			}
+			LibraryState::Loading | LibraryState::Ready(_) => {}
+		}
+		if wait.recv_timeout(Duration::from_secs(60)).is_err() {
+			return Err(CoreError::Unavailable(
+				"Spotify didn't answer within 60 seconds".to_owned(),
+			));
+		}
+	}
 }
 
 fn resolve(core: &Core, link: &str, artist_tracks: ArtistTracks) -> Result<(), CoreError> {
