@@ -480,6 +480,33 @@ mod tests {
 	}
 
 	#[test]
+	fn the_question_for_liked_songs_counts_only_the_tracks() {
+		let (api, _) = setup(library(&[], &[], &[t1(), t2()]));
+		let (root, data) = open(&[t1(), episode(), t2()]);
+		pick(&root, &data, "Liked Songs");
+		assert_eq!(api.questions()[0].1, "Remove the 2 selected tracks from Liked Songs?");
+	}
+
+	#[test]
+	fn a_track_selected_twice_is_counted_once() {
+		let (api, _) = setup(library(&[t1(), t2()], &[], &[]));
+		let (root, data) = open(&[t1(), t2(), t1()]);
+		pick(&root, &data, "Church / Sunday set");
+		assert_eq!(api.questions()[0].1, "Remove the 2 selected tracks from Church / Sunday set?");
+	}
+
+	#[test]
+	fn leaving_out_several_episodes_says_episodes() {
+		let (api, fake) = setup(library(&[], &[], &[]));
+		fake.change_with(|| Ok(Change { changed: 1, unchanged: 0, episodes_left_out: 2 }));
+		let (root, data) = open(&[t1(), episode()]);
+		pick(&root, &data, "Liked Songs");
+		wait_until(|| {
+			printed(api, "foo_librespot: left out 2 episodes: Liked Songs holds songs only")
+		});
+	}
+
+	#[test]
 	fn a_failed_change_shows_a_popup_saying_why() {
 		let (api, fake) = setup(library(&[], &[], &[]));
 		fake.change_with(|| Err(CoreError::Unavailable("Spotify said no".to_owned())));

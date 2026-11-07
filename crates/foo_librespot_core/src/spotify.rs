@@ -456,6 +456,43 @@ mod tests {
 	}
 
 	#[test]
+	fn a_change_still_waiting_at_shutdown_is_dropped_with_its_callback() {
+		let dir = tempfile::tempdir().unwrap();
+		let core = Core::new(dir.path()).unwrap();
+		let (held, turn_taken) = std::sync::mpsc::channel();
+		let library = core.library.clone();
+		core.runtime.spawn(async move {
+			library
+				.in_turn(async move {
+					let _ = held.send(());
+					std::future::pending::<Result<(), CoreError>>().await
+				})
+				.await
+		});
+		turn_taken.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+		let track = ItemId::Track(SpotifyId::from_base62("4LH4d3cOWNNsVw41Gqt2kv").unwrap());
+		let (done, result) = std::sync::mpsc::channel();
+		core.change(
+			Edit::Add,
+			Target::LikedSongs,
+			&[track],
+			Box::new(move |result| {
+				let _ = done.send(result);
+			}),
+		);
+		// Logged out, a change that ran would fail at once; this one waits for its turn.
+		assert_eq!(
+			result.recv_timeout(std::time::Duration::from_millis(500)).map(|_| ()),
+			Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+		);
+		core.shutdown();
+		assert_eq!(
+			result.recv_timeout(std::time::Duration::from_secs(5)).map(|_| ()),
+			Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+		);
+	}
+
+	#[test]
 	fn aborted_call_is_aborted() {
 		let dir = tempfile::tempdir().unwrap();
 		let core = Core::new(dir.path()).unwrap();

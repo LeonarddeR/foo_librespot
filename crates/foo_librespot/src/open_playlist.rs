@@ -319,6 +319,7 @@ fn fill(name: &str, uri: &str, items: &HandleList<'_>) -> Result<()> {
 mod tests {
 	use foo_librespot_core::library::LibraryState;
 	use foxide2k::abi::mainmenu::{COMMANDS_IID, GROUP_FILE, GROUP_IID, SORT_PRIORITY_BASE};
+	use foxide2k::abi::playlist;
 	use foxide2k::dialog::host::{destroy, refresh_poster};
 	use foxide2k::dialog::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
 	use foxide2k::dialog::template::ControlClass;
@@ -331,8 +332,7 @@ mod tests {
 	};
 
 	use super::{
-		LABEL, LIST, OpenPlaylist, STATUS, SpotifyMenu, TAB_PROPERTY, WINDOW, cant_open,
-		window_template,
+		LABEL, LIST, OpenPlaylist, STATUS, SpotifyMenu, TAB_PROPERTY, WINDOW, window_template,
 	};
 	use crate::login::controller;
 	use crate::testing::{
@@ -431,27 +431,6 @@ mod tests {
 	}
 
 	#[test]
-	fn a_playlist_that_cant_be_opened_shows_a_popup_saying_why() {
-		let api = FakeApi::new();
-		api.install();
-		cant_open("Sunday set", "foobar2000 did not create the playlist");
-		assert_eq!(
-			api.popups(),
-			[(
-				"Can't open this Spotify playlist".to_owned(),
-				"Sunday set\n\nfoobar2000 did not create the playlist.".to_owned(),
-				PopupIcon::Error
-			)]
-		);
-		assert!(
-			api.console_lines().contains(
-				&"foo_librespot: can't open Sunday set: foobar2000 did not create the playlist"
-					.to_owned()
-			)
-		);
-	}
-
-	#[test]
 	fn logged_out_the_window_asks_for_a_login_and_loads_after_it() {
 		FakeApi::new().install();
 		let fake = installed_backend();
@@ -543,6 +522,22 @@ mod tests {
 	}
 
 	#[test]
+	fn a_refresh_with_the_same_playlists_leaves_the_list_alone() {
+		FakeApi::new().install();
+		let fake = installed_backend();
+		fake.set_library(ready());
+		let dialog = WINDOW.open(hidden_window()).unwrap();
+		// A refill would clear this row.
+		dialog.list_add(LIST, "Marker");
+		fake.publish_library(ready());
+		refresh_poster(&dialog).post();
+		pump_messages();
+		assert_eq!(dialog.list_count(LIST), 4);
+		assert_eq!(dialog.list_text(LIST, 3), "Marker");
+		destroy(dialog);
+	}
+
+	#[test]
 	fn a_refresh_that_moves_the_picked_playlist_selects_it_again() {
 		FakeApi::new().install();
 		let fake = installed_backend();
@@ -593,6 +588,25 @@ mod tests {
 		assert_eq!(tabs[1].properties, [(TAB_PROPERTY, sunday_uri().into_bytes())]);
 		assert_eq!(tabs[1].paths, [GETTY_TRACK]);
 		assert_eq!(api.active_tab(), Some(1));
+	}
+
+	#[test]
+	fn a_pick_that_cant_be_opened_shows_a_popup_saying_why() {
+		let api = ready_api();
+		api.remove_services(playlist::MANAGER_IID);
+		pick_row(1);
+		assert_eq!(
+			api.popups(),
+			[(
+				"Can't open this Spotify playlist".to_owned(),
+				"Sunday set\n\nfoobar2000 has no playlist_manager.".to_owned(),
+				PopupIcon::Error
+			)]
+		);
+		assert!(api.console_lines().contains(
+			&"foo_librespot: can't open Sunday set: foobar2000 has no playlist_manager".to_owned()
+		));
+		assert!(api.location_requests().is_empty());
 	}
 
 	#[test]

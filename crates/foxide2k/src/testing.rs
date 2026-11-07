@@ -105,6 +105,12 @@ impl FakeApi {
 		}
 	}
 
+	/// Unregisters every service of class `iid`, as on a foobar2000 without it.
+	pub fn remove_services(&self, iid: Guid) {
+		let mut classes = self.classes.lock().unwrap_or_else(PoisonError::into_inner);
+		classes.retain(|(class, _)| *class != iid);
+	}
+
 	/// Every line printed to the console so far.
 	pub fn console_lines(&self) -> Vec<String> {
 		self.console.lock().unwrap_or_else(PoisonError::into_inner).clone()

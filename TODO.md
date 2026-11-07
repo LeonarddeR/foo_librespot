@@ -123,13 +123,10 @@ Checked by hand on 7 November 2026. The new work they showed is under "Later rou
 - [ ] Check whether a playlist change can land twice
   - librespot's spclient sends a request again when Spotify answers with a 5xx status, 504 included. An add that Spotify made but answered with an error could then be added twice.
   - The check: try it with the test playlist. If a change can land twice, the fix is to compare the playlist read back with what was sent before trying again.
-- [ ] Close the test gaps the menus round left
-  - A change aborted in the core has no test of its own: a `Core::change` still running at shutdown is covered only by a test of the runtime.
-  - The remove question has no test that it counts only the tracks for Liked Songs, or that it counts a track selected twice once.
-  - The console line about episodes left out of Liked Songs has no test of its plural, "episodes".
-  - The "Open playlist…" window has no test that a refresh with the same playlists leaves its list untouched; one test checks only that the selection stays.
-  - `OpenPlaylist::execute` isn't run through `MainMenuHandle` in a test.
-  - The window's error path has no test: a playlist whose link foobar2000 can't load shows the "Can't open this Spotify playlist" popup.
+- [x] Close the test gaps the menus round left
+  - The menus round left six behaviours without a test of their own.
+  - Each now has one, and each test fails when its behaviour is broken: a `Core::change` still waiting for its turn at shutdown is dropped with its callback; the remove question counts only the tracks for Liked Songs, and a track selected twice once; the console says "episodes" for more than one; a refresh with the same playlists leaves the "Open playlist…" list alone; and a pick the window can't open shows the "Can't open this Spotify playlist" popup. foxide2k's fake host can now unregister a service (`FakeApi::remove_services`) to cause that failure.
+  - `OpenPlaylist::execute` stays without a test through `MainMenuHandle`: running it shows the window and takes the keyboard focus, which the tests avoid, and foxide2k's own tests cover how a main-menu command runs.
 - [ ] Show the artist's picture as album art
   - foo_spotify answered foobar2000's request for an artist picture with the Spotify picture of the track's first artist.
   - foo_librespot only has a front cover. `SpotifyArt::query` in `crates/foo_librespot/src/art.rs` returns nothing for any other kind of art.
