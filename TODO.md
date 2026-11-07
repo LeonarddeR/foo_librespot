@@ -119,10 +119,10 @@ Checked by hand on 7 November 2026. The new work they showed is under "Later rou
 - [x] Keep each right-click menu entry's name once
   - Each entry of the "Add to Spotify playlist" submenu held its name twice. foxide2k's `MenuNode::Command` owned the text the menu shows as a `String`, and the entry's change kept its own copy for the question, the console report and the failure popup (`Pick` in `crates/foo_librespot/src/playlist_menu.rs`).
   - `MenuNode` names are now `Arc<str>` (`crates/foxide2k/src/contextmenu.rs`), and each entry's change shares its name with the menu. On a large library that saves a few hundred short strings.
-- [ ] Read only what changed in Liked Songs
-  - Every library refresh reads Liked Songs whole. A playlist is read again only when its revision has changed.
-  - Spotify's collection service has sync tokens: `collection2v2.proto` describes a `DeltaRequest` and a `DeltaResponse`.
-  - Still to check: whether `/collection/v2/delta` answers through librespot. If it does, a refresh can ask for what changed since the last read.
+- [x] Read only what changed in Liked Songs
+  - Every library refresh read Liked Songs whole, through the same `get_context` read that adds a Liked Songs link. A playlist was read again only when its revision had changed.
+  - Spotify's collection service gives a sync token with each read and answers what changed since a token. A refresh now sends `/collection/v2/delta` the token of the last read and applies the songs saved and taken out since. The first read after foobar2000 starts or a login, and a refresh Spotify can't answer with changes, read every page of `/collection/v2/paging` instead (`read_liked` and `Library::store_liked` in `crates/foo_librespot_core/src/library.rs`). librespot has no Rust types for `collection2v2.proto`, so the requests and answers are encoded by hand. Adding a Liked Songs link still reads it through `get_context`, which keeps Spotify's order.
+  - Checked on 2026-11-07: the first read found the same 6 songs as before. Two refreshes after it, a minute apart in the same run, each asked for the changes since the read before and found none. Not yet checked: that a song saved and then taken out in the Spotify app shows up in the next refresh's changes.
 - [ ] Check whether a playlist change can land twice
   - librespot's spclient sends a request again when Spotify answers with a 5xx status, 504 included. An add that Spotify made but answered with an error could then be added twice.
   - The check: try it with the test playlist. If a change can land twice, the fix is to compare the playlist read back with what was sent before trying again.
