@@ -19,6 +19,7 @@ mod playlist_menu;
 mod prefs;
 mod settings;
 mod status_line;
+mod tabs;
 #[cfg(test)]
 mod testing;
 mod window;
