@@ -135,21 +135,26 @@ impl Core {
 			return LibraryState::LoggedOut;
 		}
 		let now = Instant::now();
-		let (state, fetch) = self.library.snapshot(now, on_change);
-		if fetch {
+		let (state, ticket) = self.library.snapshot_ticket(now, on_change);
+		if let Some(ticket) = ticket {
 			let sessions = Arc::clone(&self.sessions);
 			let library = self.library.clone();
 			self.runtime.spawn(async move {
 				let read = async {
 					match sessions.session().await {
-						Ok(session) => library.fetch(&LibrespotLibrary::new(session), now).await,
-						Err(error) => library.fail(&error),
+						Ok(session) => {
+							library.fetch_of(ticket, &LibrespotLibrary::new(session), now).await;
+						}
+						Err(error) => library.fail_of(ticket, &error),
 					}
 				};
 				if tokio::time::timeout(LIBRARY_FETCH_TIMEOUT, read).await.is_err() {
-					library.fail(&CoreError::Unavailable(
-						"Spotify took too long to send your playlists".to_owned(),
-					));
+					library.fail_of(
+						ticket,
+						&CoreError::Unavailable(
+							"Spotify took too long to send your playlists".to_owned(),
+						),
+					);
 				}
 			});
 		}

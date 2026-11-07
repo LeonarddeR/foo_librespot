@@ -194,11 +194,12 @@ pub trait LibrarySource: Send + Sync {
 
 #[derive(Default)]
 struct Inner {
-	/// Raised by every `clear`; a fetch that began under an older one publishes nothing.
-	generation: u64,
+	/// The token of the next fetch to start; never reset, so a token names one fetch ever.
+	next_token: u64,
 	library: Option<Arc<Library>>,
 	failed: Option<String>,
-	fetching: bool,
+	/// The token of the running fetch.
+	running: Option<u64>,
 	started: Option<Instant>,
 	listeners: Vec<OnLibraryChange>,
 }
@@ -220,18 +221,22 @@ impl Inner {
 	}
 }
 
-/// Marks the fetch of its generation as ended when dropped, whether it finished, was dropped
-/// part-way or panicked. A fetch of an older generation leaves the flag alone.
+/// Names one running fetch: only the fetch holding the current ticket may publish, fail or end it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FetchTicket(u64);
+
+/// Marks the fetch of its ticket as ended when dropped, whether it finished, was dropped
+/// part-way or panicked. It leaves alone a fetch that has another ticket.
 struct Running<'a> {
 	cache: &'a LibraryCache,
-	generation: u64,
+	ticket: FetchTicket,
 }
 
 impl Drop for Running<'_> {
 	fn drop(&mut self) {
 		let mut inner = self.cache.lock();
-		if inner.generation == self.generation {
-			inner.fetching = false;
+		if inner.running == Some(self.ticket.0) {
+			inner.running = None;
 		}
 	}
 }
@@ -255,25 +260,38 @@ impl LibraryCache {
 		now: Instant,
 		on_change: Option<OnLibraryChange>,
 	) -> (LibraryState, bool) {
+		let (state, ticket) = self.snapshot_ticket(now, on_change);
+		(state, ticket.is_some())
+	}
+
+	/// [`snapshot`](Self::snapshot) that hands out the ticket of the fetch it starts.
+	pub(crate) fn snapshot_ticket(
+		&self,
+		now: Instant,
+		on_change: Option<OnLibraryChange>,
+	) -> (LibraryState, Option<FetchTicket>) {
 		let mut inner = self.lock();
 		let state = inner.state();
-		let start = !inner.fetching
+		let start = inner.running.is_none()
 			&& (inner.library.is_none()
 				|| !inner.is_complete()
 				|| inner.failed.is_some()
 				|| inner.started.is_none_or(|started| {
 					now.saturating_duration_since(started) > LIBRARY_REFRESH
 				}));
-		if start {
-			inner.fetching = true;
+		let ticket = start.then(|| {
+			let ticket = FetchTicket(inner.next_token);
+			inner.next_token += 1;
+			inner.running = Some(ticket.0);
 			inner.started = Some(now);
-		}
-		if inner.fetching
+			ticket
+		});
+		if inner.running.is_some()
 			&& let Some(on_change) = on_change
 		{
 			inner.listeners.push(on_change);
 		}
-		(state, start)
+		(state, ticket)
 	}
 
 	/// What is held, without starting anything.
@@ -283,25 +301,48 @@ impl LibraryCache {
 
 	/// Reads the playlist list and publishes it. Then it reads the items of each playlist the
 	/// account can change whose revision is new, and Liked Songs, and publishes again. Items whose
-	/// revision didn't change are kept.
+	/// revision didn't change are kept, and a playlist whose revision changed keeps its old rows
+	/// until the new ones arrive; if they can't be read, the old ones stay.
 	pub async fn fetch<S: LibrarySource>(&self, source: &S, now: Instant) {
-		let generation = {
-			let mut inner = self.lock();
-			inner.fetching = true;
-			inner.started = Some(now);
-			inner.generation
-		};
-		let _running = Running { cache: self, generation };
+		let ticket = self.current_ticket(now);
+		self.fetch_of(ticket, source, now).await;
+	}
+
+	/// The ticket of the running fetch, or of a new one when none runs.
+	fn current_ticket(&self, now: Instant) -> FetchTicket {
+		let mut inner = self.lock();
+		if let Some(token) = inner.running {
+			return FetchTicket(token);
+		}
+		let ticket = FetchTicket(inner.next_token);
+		inner.next_token += 1;
+		inner.running = Some(ticket.0);
+		inner.started = Some(now);
+		ticket
+	}
+
+	/// [`fetch`](Self::fetch) for the fetch `ticket` names; it does nothing, and changes nothing,
+	/// once another ticket is current.
+	pub(crate) async fn fetch_of<S: LibrarySource>(
+		&self,
+		ticket: FetchTicket,
+		source: &S,
+		_now: Instant,
+	) {
+		if self.lock().running != Some(ticket.0) {
+			return;
+		}
+		let _running = Running { cache: self, ticket };
 		let playlists = match source.rootlist().await {
 			Ok(playlists) => playlists,
 			Err(error) => {
-				self.fetch_failed(generation, &error);
+				self.fetch_failed(ticket, &error);
 				return;
 			}
 		};
 		let unread = {
 			let mut inner = self.lock();
-			if inner.generation != generation {
+			if inner.running != Some(ticket.0) {
 				return;
 			}
 			let library = Library::new(playlists, inner.library.as_deref());
@@ -310,7 +351,7 @@ impl LibraryCache {
 			inner.failed = None;
 			unread
 		};
-		self.notify(generation);
+		self.notify(ticket);
 
 		let read = async {
 			stream::iter(unread)
@@ -323,7 +364,7 @@ impl LibraryCache {
 
 		let listeners = {
 			let mut inner = self.lock();
-			if inner.generation != generation {
+			if inner.running != Some(ticket.0) {
 				return;
 			}
 			let mut library =
@@ -350,7 +391,7 @@ impl LibraryCache {
 			}
 			inner.failed = first_error.filter(|_| !library.is_complete());
 			inner.library = Some(Arc::new(library));
-			inner.fetching = false;
+			inner.running = None;
 			std::mem::take(&mut inner.listeners)
 		};
 		run(listeners);
@@ -358,8 +399,14 @@ impl LibraryCache {
 
 	/// A fetch that couldn't start, for example because there is no session.
 	pub fn fail(&self, error: &CoreError) {
-		let generation = self.lock().generation;
-		self.fetch_failed(generation, error);
+		let ticket = self.current_ticket(Instant::now());
+		self.fetch_failed(ticket, error);
+	}
+
+	/// [`fail`](Self::fail) for the fetch `ticket` names; it does nothing once another ticket is
+	/// current.
+	pub(crate) fn fail_of(&self, ticket: FetchTicket, error: &CoreError) {
+		self.fetch_failed(ticket, error);
 	}
 
 	/// Forgets everything, including what a running fetch would publish. Listeners waiting for
@@ -368,21 +415,21 @@ impl LibraryCache {
 		let listeners = {
 			let mut inner = self.lock();
 			let listeners = std::mem::take(&mut inner.listeners);
-			let generation = inner.generation + 1;
-			*inner = Inner { generation, ..Inner::default() };
+			let next_token = inner.next_token;
+			*inner = Inner { next_token, ..Inner::default() };
 			listeners
 		};
 		run(listeners);
 	}
 
-	/// Ends the fetch of `generation` with `error`: a complete library stays as it is.
-	fn fetch_failed(&self, generation: u64, error: &CoreError) {
+	/// Ends the fetch of `ticket` with `error`: a complete library stays as it is.
+	fn fetch_failed(&self, ticket: FetchTicket, error: &CoreError) {
 		let listeners = {
 			let mut inner = self.lock();
-			if inner.generation != generation {
+			if inner.running != Some(ticket.0) {
 				return;
 			}
-			inner.fetching = false;
+			inner.running = None;
 			if inner.is_complete() {
 				log::warn!("couldn't refresh the Spotify library: {error}");
 			} else {
@@ -393,11 +440,11 @@ impl LibraryCache {
 		run(listeners);
 	}
 
-	/// Runs the listeners waiting for a publish of `generation`.
-	fn notify(&self, generation: u64) {
+	/// Runs the listeners waiting for a publish of `ticket`'s fetch.
+	fn notify(&self, ticket: FetchTicket) {
 		let listeners = {
 			let mut inner = self.lock();
-			if inner.generation != generation {
+			if inner.running != Some(ticket.0) {
 				return;
 			}
 			std::mem::take(&mut inner.listeners)
@@ -1069,5 +1116,49 @@ mod tests {
 		cache.clear();
 		cache.clear();
 		assert_eq!(calls.load(Ordering::SeqCst), 1);
+	}
+
+	#[tokio::test]
+	async fn a_failure_with_an_old_ticket_leaves_a_newer_fetch_alone() {
+		let cache = LibraryCache::default();
+		let now = Instant::now();
+		let (_, old) = cache.snapshot_ticket(now, None);
+		let old = old.unwrap();
+		cache.clear();
+		let (_, new) = cache.snapshot_ticket(now, None);
+		assert!(new.is_some());
+		cache.fail_of(old, &CoreError::Unavailable("too slow".to_owned()));
+		assert!(matches!(cache.held(), LibraryState::Loading));
+		assert!(cache.snapshot_ticket(now, None).1.is_none());
+	}
+
+	#[tokio::test]
+	async fn a_finished_fetch_leaves_the_mark_of_a_fetch_its_listener_started() {
+		let gate = Arc::new(Notify::new());
+		let source = Arc::new(FakeLibrary { gate: Some(Arc::clone(&gate)), ..fake() });
+		let cache = LibraryCache::default();
+		let now = Instant::now();
+		let (_, ticket) = cache.snapshot_ticket(now, None);
+		let ticket = ticket.unwrap();
+		let task = tokio::spawn({
+			let (cache, source) = (cache.clone(), Arc::clone(&source));
+			async move { cache.fetch_of(ticket, &*source, now).await }
+		});
+		until(|| is_ready(&cache.held())).await;
+		let later = now + LIBRARY_REFRESH + Duration::from_secs(1);
+		let started = Arc::new(AtomicUsize::new(0));
+		let listener = {
+			let (cache, started) = (cache.clone(), Arc::clone(&started));
+			Box::new(move || {
+				if cache.snapshot_ticket(later, None).1.is_some() {
+					started.fetch_add(1, Ordering::SeqCst);
+				}
+			})
+		};
+		assert!(cache.snapshot_ticket(later, Some(listener)).1.is_none());
+		gate.notify_one();
+		task.await.unwrap();
+		assert_eq!(started.load(Ordering::SeqCst), 1);
+		assert!(cache.snapshot_ticket(later, None).1.is_none());
 	}
 }
