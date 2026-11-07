@@ -8,7 +8,58 @@ use std::ptr::NonNull;
 use crate::abi::metadb_handle::{HandleListRaw, MetadbHandleVtbl};
 use crate::cxx::try_host;
 use crate::error::Result;
+use crate::file_info_impl::FileInfoImpl;
 use crate::service::ServicePtr;
+
+/// One track foobar2000 handed over, a `metadb_handle_ptr`. Holds a reference of its own.
+pub struct Track(ServicePtr);
+
+impl Track {
+	/// # Safety
+	/// `handle` must be a `metadb_handle`.
+	pub(crate) unsafe fn from_handle(handle: ServicePtr) -> Self {
+		Self(handle)
+	}
+
+	fn vtbl(&self) -> &MetadbHandleVtbl {
+		// SAFETY: `from_handle` requires a `metadb_handle`.
+		unsafe { &*(*self.0.as_raw()).vtbl.cast::<MetadbHandleVtbl>() }
+	}
+
+	/// Calls `f` with the track's path, borrowed from the track. Invalid UTF-8 in the path is
+	/// replaced; a track without a path gives an empty one.
+	fn with_path<R>(&self, f: impl FnOnce(&str) -> R) -> Result<R> {
+		let raw = self.0.as_raw();
+		let get_location = self.vtbl().get_location;
+		let path = try_host(|| unsafe {
+			let location = get_location(raw);
+			((*(*location).vtbl).get_path)(location)
+		})?;
+		// The handle owns the path, and `self` keeps the handle alive until `f` returns.
+		let path = if path.is_null() {
+			Cow::Borrowed("")
+		} else {
+			unsafe { CStr::from_ptr(path) }.to_string_lossy()
+		};
+		Ok(f(&path))
+	}
+
+	/// The track's path, such as `sptf://spotify:track:<id>`.
+	pub fn path(&self) -> Result<String> {
+		self.with_path(str::to_owned)
+	}
+
+	/// Every value of field `name`, such as ARTIST, matched case-insensitively. Empty when the
+	/// track has none, or when foobar2000 doesn't know the track's info yet.
+	pub fn meta(&self, name: &str) -> Result<Vec<String>> {
+		let raw = self.0.as_raw();
+		let get_info = self.vtbl().get_info;
+		let mut info = FileInfoImpl::new();
+		let target = info.as_raw();
+		let known = try_host(|| unsafe { get_info(raw, target) })?;
+		Ok(if known { info.meta(name) } else { Vec::new() })
+	}
+}
 
 /// A `metadb_handle_list_cref` foobar2000 passed in, borrowed for the call.
 pub struct HandleList<'a> {
@@ -36,28 +87,26 @@ impl HandleList<'_> {
 		Ok(self.len()? == 0)
 	}
 
+	/// The item at `index`, holding a reference of its own; `None` for a null item.
+	fn item(&self, index: usize) -> Result<Option<Track>> {
+		let raw = self.as_raw();
+		let handle = try_host(|| unsafe {
+			let mut handle = std::ptr::null_mut();
+			((*(*raw).vtbl).get_item_ex)(raw, &raw mut handle, index);
+			ServicePtr::from_raw_owned(handle)
+		})?;
+		// SAFETY: a `metadb_handle_list` holds `metadb_handle`s.
+		Ok(handle.map(|handle| unsafe { Track::from_handle(handle) }))
+	}
+
 	/// Calls `f` with each item's path, in order, borrowed from the item. Invalid UTF-8 in a path
 	/// is replaced; an item without a path gives an empty one.
 	pub fn for_each_path(&self, mut f: impl FnMut(&str)) -> Result<()> {
-		let raw = self.as_raw();
 		for index in 0..self.len()? {
-			let item = try_host(|| unsafe {
-				let mut handle = std::ptr::null_mut();
-				((*(*raw).vtbl).get_item_ex)(raw, &raw mut handle, index);
-				let handle = ServicePtr::from_raw_owned(handle)?;
-				let vtbl = &*(*handle.as_raw()).vtbl.cast::<MetadbHandleVtbl>();
-				let location = (vtbl.get_location)(handle.as_raw());
-				let path = ((*(*location).vtbl).get_path)(location);
-				Some((handle, path))
-			})?;
-			// `item` keeps the handle, which owns the path, alive until `f` returns.
-			let path = match &item {
-				Some((_, path)) if !path.is_null() => {
-					unsafe { CStr::from_ptr(*path) }.to_string_lossy()
-				}
-				_ => Cow::Borrowed(""),
-			};
-			f(&path);
+			match self.item(index)? {
+				Some(track) => track.with_path(&mut f)?,
+				None => f(""),
+			}
 		}
 		Ok(())
 	}
@@ -67,6 +116,11 @@ impl HandleList<'_> {
 		let mut paths = Vec::new();
 		self.for_each_path(|path| paths.push(path.to_owned()))?;
 		Ok(paths)
+	}
+
+	/// Each item, in order, holding a reference of its own. Null items are left out.
+	pub fn tracks(&self) -> Result<Vec<Track>> {
+		(0..self.len()?).filter_map(|index| self.item(index).transpose()).collect()
 	}
 }
 
@@ -97,6 +151,39 @@ mod tests {
 		let mut seen = Vec::new();
 		handles.for_each_path(|path| seen.push(path.len())).unwrap();
 		assert_eq!(seen, [43, 0]);
+	}
+
+	const PATH: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
+
+	#[test]
+	fn a_tracks_fields_come_through_get_info() {
+		let list = FakeHandleList::with_meta(&[(
+			PATH,
+			&[("ARTIST", &["Keith Getty", "Kristyn Getty"]), ("TITLE", &["In Christ Alone"])],
+		)]);
+		let handles = unsafe { HandleList::from_raw(list.as_raw()) };
+		let tracks = handles.tracks().unwrap();
+		assert_eq!(tracks.len(), 1);
+		assert_eq!(tracks[0].meta("ARTIST").unwrap(), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(tracks[0].meta("title").unwrap(), ["In Christ Alone"]);
+		assert_eq!(tracks[0].path().unwrap(), PATH);
+	}
+
+	#[test]
+	fn a_missing_field_is_empty() {
+		let list = FakeHandleList::with_meta(&[(PATH, &[("ARTIST", &["Keith Getty"])])]);
+		let handles = unsafe { HandleList::from_raw(list.as_raw()) };
+		assert!(handles.tracks().unwrap()[0].meta("ALBUM").unwrap().is_empty());
+	}
+
+	#[test]
+	fn a_track_without_info_has_no_fields() {
+		let list = FakeHandleList::new(&[PATH, "file://C:\\a.mp3"]);
+		let handles = unsafe { HandleList::from_raw(list.as_raw()) };
+		let tracks = handles.tracks().unwrap();
+		let paths: Vec<String> = tracks.iter().map(|track| track.path().unwrap()).collect();
+		assert_eq!(paths, [PATH, "file://C:\\a.mp3"]);
+		assert!(tracks[0].meta("ARTIST").unwrap().is_empty());
 	}
 
 	#[test]

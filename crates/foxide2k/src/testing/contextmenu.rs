@@ -1,26 +1,36 @@
 //! Driving a right-click menu item and its nodes through their vtables, as foobar2000's menu
 //! does, and a list of tracks to pass them.
 
-use std::ffi::CString;
+use std::ffi::{CString, c_void};
 use std::marker::PhantomData;
 
 use super::FakeString;
 use crate::abi::contextmenu::{CALLER_KEYBOARD_SHORTCUT_LIST, ItemVtbl, Node};
+use crate::abi::file::FileStats;
+use crate::abi::file_info::FileInfo as RawFileInfo;
 use crate::abi::metadb_handle::{HandleListRaw, MetadbHandleVtbl};
 use crate::abi::pfc_list::{ListBaseConst, ListBaseConstVtbl};
 use crate::abi::playlist_loader::PlayableLocation;
 use crate::abi::service::ServiceBase;
+use crate::abi::string_base::StringBase;
+use crate::boundary::guard;
 use crate::cxx::{HostException, try_host};
+use crate::file_info::FileInfo;
 use crate::guid::Guid;
 use crate::playlist_loader::LOCATION_VTBL;
 use crate::service::{ServiceImpl, ServiceObject, ServicePtr, new_service};
 
 static CALLER: Guid = CALLER_KEYBOARD_SHORTCUT_LIST;
 
-/// A `metadb_handle` that knows only its location.
+/// A fake track's fields, each a name and its values.
+pub type FakeFields<'a> = &'a [(&'a str, &'a [&'a str])];
+
+/// A `metadb_handle` that knows its location and, when it was given them, its fields.
 struct LocationHandle {
 	location: PlayableLocation,
 	_path: CString,
+	/// `None` when the info isn't known.
+	meta: Option<Vec<(String, Vec<String>)>>,
 }
 
 // The location points into `_path`, which the handle owns and never changes.
@@ -34,11 +44,80 @@ unsafe impl ServiceImpl for LocationHandle {
 	const VTBL: &'static MetadbHandleVtbl = &MetadbHandleVtbl {
 		base: crate::abi::service::ServiceBaseVtbl::new::<Self>(),
 		get_location: handle_location,
+		format_title: handle_format_title,
+		metadb_lock: handle_lock,
+		metadb_unlock: handle_lock,
+		get_filestats: handle_filestats,
+		is_info_loaded: handle_info_loaded,
+		get_info: handle_info,
 	};
 }
 
+/// A `metadb_handle` for `path`, whose info holds `fields`; with `None`, its info isn't known.
+pub(super) fn fake_handle(path: &str, fields: Option<FakeFields<'_>>) -> ServicePtr {
+	let path = CString::new(path).expect("no NUL in a path");
+	let location =
+		PlayableLocation { vtbl: &raw const LOCATION_VTBL, path: path.as_ptr(), subsong: 0 };
+	let meta = fields.map(|fields| {
+		fields
+			.iter()
+			.map(|(name, values)| {
+				((*name).to_owned(), values.iter().map(|value| (*value).to_owned()).collect())
+			})
+			.collect()
+	});
+	new_service(LocationHandle { location, _path: path, meta })
+}
+
+fn handle<'a>(this: *mut ServiceBase) -> &'a LocationHandle {
+	unsafe { ServiceObject::<LocationHandle>::value(this) }
+}
+
 unsafe extern "C-unwind" fn handle_location(this: *mut ServiceBase) -> *const PlayableLocation {
-	&raw const unsafe { ServiceObject::<LocationHandle>::value(this) }.location
+	&raw const handle(this).location
+}
+
+/// Renders nothing and reports the dummy info, as for a track whose info isn't known.
+unsafe extern "C-unwind" fn handle_format_title(
+	_this: *mut ServiceBase,
+	_hook: *mut c_void,
+	_out: *mut StringBase,
+	_script: *const *mut ServiceBase,
+	_filter: *mut c_void,
+) -> bool {
+	false
+}
+
+unsafe extern "C-unwind" fn handle_lock(_this: *mut ServiceBase) {}
+
+unsafe extern "C-unwind" fn handle_filestats(
+	_this: *mut ServiceBase,
+	ret: *mut FileStats,
+) -> *mut FileStats {
+	unsafe { ret.write(FileStats::INVALID) };
+	ret
+}
+
+unsafe extern "C-unwind" fn handle_info_loaded(this: *mut ServiceBase) -> bool {
+	handle(this).meta.is_some()
+}
+
+/// Adds the handle's fields to `info` through its vtable.
+unsafe extern "C-unwind" fn handle_info(this: *mut ServiceBase, info: *mut RawFileInfo) -> bool {
+	unsafe {
+		guard(|| {
+			let Some(meta) = &handle(this).meta else {
+				return Ok(false);
+			};
+			let mut info = FileInfo::from_raw(info);
+			for (name, values) in meta {
+				for value in values {
+					info.meta_add(name, value)?;
+				}
+			}
+			Ok(true)
+		})
+	}
 }
 
 /// A `metadb_handle_list_cref` of fake handles.
@@ -49,20 +128,16 @@ pub struct FakeHandleList {
 }
 
 impl FakeHandleList {
+	/// Handles for `paths`, whose info isn't known.
 	#[allow(clippy::new_ret_no_self)]
 	pub fn new(paths: &[&str]) -> Box<Self> {
-		let items = paths
-			.iter()
-			.map(|path| {
-				let path = CString::new(*path).expect("no NUL in a path");
-				let location = PlayableLocation {
-					vtbl: &raw const LOCATION_VTBL,
-					path: path.as_ptr(),
-					subsong: 0,
-				};
-				new_service(LocationHandle { location, _path: path })
-			})
-			.collect();
+		let items = paths.iter().map(|path| fake_handle(path, None)).collect();
+		Box::new(Self { vtbl: &raw const LIST_VTBL, items })
+	}
+
+	/// Handles for `tracks`, each a path and the fields its info holds.
+	pub fn with_meta(tracks: &[(&str, FakeFields<'_>)]) -> Box<Self> {
+		let items = tracks.iter().map(|(path, fields)| fake_handle(path, Some(fields))).collect();
 		Box::new(Self { vtbl: &raw const LIST_VTBL, items })
 	}
 

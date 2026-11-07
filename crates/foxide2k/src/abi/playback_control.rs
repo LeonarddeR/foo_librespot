@@ -32,7 +32,8 @@ pub const IID: Guid = Guid::from_u128(0xbf803668_2977_4c71_b9ab_5c77c338c970);
 #[repr(C)]
 pub struct PlaybackControlVtbl {
 	pub base: ServiceBaseVtbl,
-	/// `bool get_now_playing(metadb_handle_ptr & p_out)`. Not called.
+	/// `bool get_now_playing(metadb_handle_ptr & p_out)`: assigns the playing track to `out`, as
+	/// `service_ptr_t`'s copy assignment does. Returns false when nothing plays.
 	pub get_now_playing:
 		unsafe extern "C-unwind" fn(this: *mut ServiceBase, out: *mut *mut ServiceBase) -> bool,
 	/// `void start(t_track_command p_command, bool p_paused)`. Not called.

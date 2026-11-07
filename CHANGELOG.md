@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - For developers: foxide2k's `MenuNode` names are `Arc<str>`, so a menu and the command behind it share one copy.
 - For developers: foxide2k can create and switch playlist tabs, keep a value with a playlist across restarts, and load links into a tab the way pasting them does (`foxide2k::playlist`).
 - For developers: foxide2k can ask a yes/no question in foobar2000's own message window (`foxide2k::popup::ask`), and dialogs can hold list boxes (`ControlClass::ListBox` and the `Dialog::list_*` methods).
+- For developers: foxide2k reads a track's stored fields (`metadb::Track::meta`) and the playing track (`playback::now_playing`).
 
 ### Changed
 

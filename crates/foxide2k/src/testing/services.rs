@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::FakeApi;
+use super::contextmenu::{FakeFields, fake_handle};
 use super::playlists::{FakeIncoming, FakeManager};
 use crate::abi::config_store::{self, ConfigStoreVtbl};
 use crate::abi::input::ByValueServicePtr;
@@ -35,6 +36,7 @@ pub(super) struct FakeState {
 	modeless: Mutex<Vec<isize>>,
 	pub(super) playlists: super::playlists::PlaylistsState,
 	playback_stops: AtomicUsize,
+	now_playing: Mutex<Option<ServicePtr>>,
 }
 
 pub(super) fn register(api: &FakeApi, state: &Arc<FakeState>) {
@@ -102,6 +104,13 @@ impl FakeApi {
 	/// How many times playback was stopped.
 	pub fn playback_stops(&self) -> usize {
 		self.state.playback_stops.load(Ordering::SeqCst)
+	}
+
+	/// Makes `track`, a path and the fields its info holds, the playing track; `None` means nothing
+	/// plays.
+	pub fn set_now_playing(&self, track: Option<(&str, FakeFields<'_>)>) {
+		let handle = track.map(|(path, fields)| fake_handle(path, Some(fields)));
+		*self.state.now_playing.lock().unwrap_or_else(PoisonError::into_inner) = handle;
 	}
 }
 
@@ -260,11 +269,22 @@ unsafe impl ServiceImpl for FakePlayback {
 	};
 }
 
+/// Copy assignment, as `service_ptr_t`'s is: `out` takes a reference to the playing track and
+/// releases the one it held. With nothing playing, `out` is left as it was.
 unsafe extern "C-unwind" fn playback_get_now_playing(
-	_this: *mut ServiceBase,
-	_out: *mut *mut ServiceBase,
+	this: *mut ServiceBase,
+	out: *mut *mut ServiceBase,
 ) -> bool {
-	false
+	let state = &unsafe { ServiceObject::<FakePlayback>::value(this) }.0;
+	let Some(playing) = state.now_playing.lock().unwrap_or_else(PoisonError::into_inner).clone()
+	else {
+		return false;
+	};
+	unsafe {
+		drop(ServicePtr::from_raw_owned(*out));
+		*out = playing.into_raw();
+	}
+	true
 }
 
 unsafe extern "C-unwind" fn playback_start(_this: *mut ServiceBase, _command: i32, _paused: bool) {}
