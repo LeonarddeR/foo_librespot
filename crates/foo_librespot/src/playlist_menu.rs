@@ -163,10 +163,12 @@ impl Pick {
 	}
 
 	fn run(&self, kind: Kind) {
-		let _one_at_a_time = CHANGING.lock().unwrap_or_else(PoisonError::into_inner);
-		let result = match kind {
-			Kind::Add => backend().add_to(self.target, &self.items, &|| false),
-			Kind::Remove => backend().remove_from(self.target, &self.items, &|| false),
+		let result = {
+			let _one_at_a_time = CHANGING.lock().unwrap_or_else(PoisonError::into_inner);
+			match kind {
+				Kind::Add => backend().add_to(self.target, &self.items, &|| false),
+				Kind::Remove => backend().remove_from(self.target, &self.items, &|| false),
+			}
 		};
 		match result {
 			Ok(change) => self.report(kind, change),
