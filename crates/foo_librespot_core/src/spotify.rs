@@ -12,8 +12,8 @@ use crate::audio::track::{
 	FetchedTrack, KeyOrigin, SpotifyTrack, fetch_track, wrong_remembered_key,
 };
 use crate::library::{
-	Change, LIBRARY_FETCH_TIMEOUT, LibraryCache, LibraryState, LibrespotLibrary, OnLibraryChange,
-	Target, within_change_limit,
+	Change, Edit, LIBRARY_FETCH_TIMEOUT, LibraryCache, LibraryState, LibrespotLibrary,
+	OnLibraryChange, Target,
 };
 use crate::link::{ItemId, Link};
 use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
@@ -275,37 +275,20 @@ impl Core {
 		Ok(Some(jpeg.to_vec()))
 	}
 
-	/// Adds `items` to a playlist or Liked Songs. Playlists are read first, so only what they
-	/// lack is sent. Fails when Spotify hasn't answered within
-	/// [`LIBRARY_CHANGE_TIMEOUT`](crate::library::LIBRARY_CHANGE_TIMEOUT).
-	pub fn add_to(
+	/// Adds `items` to a playlist or Liked Songs, or removes them, every copy of each, once every
+	/// change begun before has ended. Playlists are read first, so an add sends only what they
+	/// lack. Fails when Spotify hasn't answered within a minute of the change's turn.
+	pub fn change(
 		&self,
+		edit: Edit,
 		target: Target,
 		items: &[ItemId],
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Change, CoreError> {
 		self.runtime.block_on(
-			within_change_limit(async {
+			self.library.in_turn(async {
 				let session = self.sessions.session().await?;
-				self.library.add(&LibrespotLibrary::new(session), target, items).await
-			}),
-			is_aborting,
-		)?
-	}
-
-	/// Removes `items` from a playlist, every copy of each, or from Liked Songs. Fails when
-	/// Spotify hasn't answered within
-	/// [`LIBRARY_CHANGE_TIMEOUT`](crate::library::LIBRARY_CHANGE_TIMEOUT).
-	pub fn remove_from(
-		&self,
-		target: Target,
-		items: &[ItemId],
-		is_aborting: &dyn Fn() -> bool,
-	) -> Result<Change, CoreError> {
-		self.runtime.block_on(
-			within_change_limit(async {
-				let session = self.sessions.session().await?;
-				self.library.remove(&LibrespotLibrary::new(session), target, items).await
+				self.library.change(&LibrespotLibrary::new(session), edit, target, items).await
 			}),
 			is_aborting,
 		)?
@@ -380,7 +363,7 @@ mod tests {
 	use super::{Core, LoginGate, LoginHandle};
 	use crate::audio::keys::AudioKeys;
 	use crate::audio::track::SpotifyTrack;
-	use crate::library::{LibraryState, Target};
+	use crate::library::{Edit, LibraryState, Target};
 	use crate::link::{ItemId, Link, LinkKind};
 	use crate::profile::Profile;
 	use crate::resolve::ArtistTracks;
@@ -456,13 +439,13 @@ mod tests {
 	}
 
 	#[test]
-	fn add_to_without_login_is_not_logged_in() {
+	fn a_change_without_login_is_not_logged_in() {
 		let dir = tempfile::tempdir().unwrap();
 		let core = Core::new(dir.path()).unwrap();
 		let track = ItemId::Track(SpotifyId::from_base62("4LH4d3cOWNNsVw41Gqt2kv").unwrap());
-		let result = core.add_to(Target::LikedSongs, &[track], &|| false);
+		let result = core.change(Edit::Add, Target::LikedSongs, &[track], &|| false);
 		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
-		let result = core.remove_from(Target::LikedSongs, &[track], &|| false);
+		let result = core.change(Edit::Remove, Target::LikedSongs, &[track], &|| false);
 		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
 		core.shutdown();
 	}

@@ -43,7 +43,7 @@ const CHANGE_SLOW_REASON: &str = "Spotify didn't answer in time";
 
 /// Runs `change` for at most [`LIBRARY_CHANGE_TIMEOUT`]; when the time runs out, `change` is
 /// dropped and the answer is [`CoreError::Unavailable`] with [`CHANGE_SLOW_REASON`].
-pub(crate) async fn within_change_limit<T>(
+async fn within_change_limit<T>(
 	change: impl Future<Output = Result<T, CoreError>>,
 ) -> Result<T, CoreError> {
 	tokio::time::timeout(LIBRARY_CHANGE_TIMEOUT, change)
@@ -289,6 +289,13 @@ pub(crate) trait LibrarySource: Send + Sync {
 		uris: &[String],
 		liked: bool,
 	) -> impl Future<Output = Result<(), CoreError>> + Send;
+}
+
+/// What a change does with the items it is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edit {
+	Add,
+	Remove,
 }
 
 /// Where a change goes.
@@ -554,11 +561,41 @@ impl Drop for Running<'_> {
 
 /// The library as last read, shared by everything that shows it.
 #[derive(Clone, Default)]
-pub(crate) struct LibraryCache(Arc<Mutex<Inner>>);
+pub(crate) struct LibraryCache {
+	inner: Arc<Mutex<Inner>>,
+	/// Held by a change from its first read of Spotify to its last.
+	changing: Arc<tokio::sync::Mutex<()>>,
+}
 
 impl LibraryCache {
 	fn lock(&self) -> MutexGuard<'_, Inner> {
-		self.0.lock().unwrap_or_else(PoisonError::into_inner)
+		self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+	}
+
+	/// Runs `change` once every change begun before it has ended. When `change` runs longer than
+	/// [`LIBRARY_CHANGE_TIMEOUT`], it is dropped and fails with [`CHANGE_SLOW_REASON`]; the
+	/// wait for its turn doesn't count.
+	pub(crate) async fn in_turn<T>(
+		&self,
+		change: impl Future<Output = Result<T, CoreError>>,
+	) -> Result<T, CoreError> {
+		let _turn = self.changing.lock().await;
+		within_change_limit(change).await
+	}
+
+	/// Makes `edit` with `items` to `target`, as [`add`](Self::add) and [`remove`](Self::remove)
+	/// describe. Run it through [`in_turn`](Self::in_turn).
+	pub(crate) async fn change<S: LibrarySource>(
+		&self,
+		source: &S,
+		edit: Edit,
+		target: Target,
+		items: &[ItemId],
+	) -> Result<Change, CoreError> {
+		match edit {
+			Edit::Add => self.add(source, target, items).await,
+			Edit::Remove => self.remove(source, target, items).await,
+		}
 	}
 
 	/// What is held, and the ticket of the fetch the caller must now run with
@@ -759,7 +796,7 @@ impl LibraryCache {
 	/// Adds `items` to `target`. A playlist is read first, so only what it lacks is sent, and
 	/// nothing is sent when Spotify sends only part of it; Liked Songs takes the tracks among
 	/// `items` only.
-	pub(crate) async fn add<S: LibrarySource>(
+	async fn add<S: LibrarySource>(
 		&self,
 		source: &S,
 		target: Target,
@@ -809,7 +846,7 @@ impl LibraryCache {
 	/// Removes `items` from `target`: every copy of each in a playlist, the tracks among them
 	/// from Liked Songs. A playlist is read first; nothing is sent when Spotify sends only part
 	/// of it.
-	pub(crate) async fn remove<S: LibrarySource>(
+	async fn remove<S: LibrarySource>(
 		&self,
 		source: &S,
 		target: Target,
@@ -1114,11 +1151,11 @@ mod tests {
 	use tokio::sync::Notify;
 
 	use super::{
-		Change, FetchTicket, LIBRARY_CHANGE_TIMEOUT, LIBRARY_FETCH_TIMEOUT, LIBRARY_REFRESH,
+		Change, Edit, FetchTicket, LIBRARY_CHANGE_TIMEOUT, LIBRARY_FETCH_TIMEOUT, LIBRARY_REFRESH,
 		LIKED_CONTENT_TYPE, LibraryCache, LibraryPlaylist, LibrarySource, LibraryState,
 		PlaylistContents, PlaylistRow, SLOW_REASON, SourceClient, Target, add_changes,
 		distinct_uris, liked_headers, liked_write, missing, playlist_contents, remove_changes,
-		rootlist_playlists, rows_holding, tracks_of, within_change_limit,
+		rootlist_playlists, rows_holding, tracks_of,
 	};
 	use crate::link::{ItemId, Link, LinkKind, parse_item};
 	use crate::{CoreError, SpotifyId};
@@ -2389,16 +2426,71 @@ mod tests {
 		source.held.lock().unwrap().insert(id(1));
 		let started = tokio::time::Instant::now();
 		let items = [track(4)];
-		let change = within_change_limit(cache.add(&source, Target::Playlist(id(1)), &items));
+		let change =
+			cache.in_turn(cache.change(&source, Edit::Add, Target::Playlist(id(1)), &items));
 		let result = tokio::time::timeout(LIBRARY_CHANGE_TIMEOUT + Duration::from_secs(1), change)
 			.await
 			.expect("the change outlived its limit");
-		assert!(
-			matches!(&result, Err(CoreError::Unavailable(reason)) if reason == "Spotify didn't answer in time"),
-			"{result:?}"
-		);
+		assert!(is_too_slow(&result), "{result:?}");
 		assert_eq!(started.elapsed(), LIBRARY_CHANGE_TIMEOUT);
 		assert!(source.adds.lock().unwrap().is_empty());
+	}
+
+	fn is_too_slow(result: &Result<Change, CoreError>) -> bool {
+		matches!(result, Err(CoreError::Unavailable(reason)) if reason == "Spotify didn't answer in time")
+	}
+
+	/// Starts `edit` with `items` to `target` on another task, as `Core::change` makes it.
+	fn spawn_change(
+		cache: &LibraryCache,
+		source: &Arc<FakeLibrary>,
+		edit: Edit,
+		target: Target,
+		items: Vec<ItemId>,
+	) -> tokio::task::JoinHandle<Result<Change, CoreError>> {
+		let (cache, source) = (cache.clone(), Arc::clone(source));
+		tokio::spawn(
+			async move { cache.in_turn(cache.change(&*source, edit, target, &items)).await },
+		)
+	}
+
+	#[tokio::test]
+	async fn a_second_change_waits_for_the_first_and_sees_its_rows() {
+		let source = Arc::new(fake());
+		let cache = loaded(&source).await;
+		source.hold_contents_once.store(true, Ordering::SeqCst);
+		let a = Target::Playlist(id(1));
+		let first = spawn_change(&cache, &source, Edit::Add, a, vec![track(4)]);
+		until(|| !source.hold_contents_once.load(Ordering::SeqCst)).await;
+		let reads = source.contents_calls.load(Ordering::SeqCst);
+		let second = spawn_change(&cache, &source, Edit::Add, a, vec![track(4)]);
+		for _ in 0..20 {
+			tokio::task::yield_now().await;
+		}
+		assert_eq!(source.contents_calls.load(Ordering::SeqCst), reads);
+		source.contents_gate.notify_one();
+		assert_eq!(first.await.unwrap().unwrap().changed, 1);
+		assert_eq!(
+			second.await.unwrap().unwrap(),
+			Change { changed: 0, unchanged: 1, episodes_left_out: 0 }
+		);
+		assert_eq!(source.adds.lock().unwrap().len(), 1);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn the_wait_for_a_turn_doesnt_count_against_the_limit() {
+		let source = Arc::new(fake());
+		let cache = loaded(&source).await;
+		source.held.lock().unwrap().insert(id(1));
+		source.hold_set_liked.store(true, Ordering::SeqCst);
+		let first =
+			spawn_change(&cache, &source, Edit::Add, Target::Playlist(id(1)), vec![track(4)]);
+		let second = spawn_change(&cache, &source, Edit::Add, Target::LikedSongs, vec![track(5)]);
+		tokio::time::sleep(LIBRARY_CHANGE_TIMEOUT + Duration::from_secs(30)).await;
+		source.set_liked_gate.notify_one();
+		let first = first.await.unwrap();
+		assert!(is_too_slow(&first), "{first:?}");
+		assert_eq!(second.await.unwrap().unwrap().changed, 1);
 	}
 
 	/// Adds playlist C, which the account can change, holding `t3`.

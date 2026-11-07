@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use foo_librespot_core::audio::decoder::PcmDecoder;
 use foo_librespot_core::audio::format::FileFormat;
 use foo_librespot_core::library::{
-	Change, Library, LibraryPlaylist, LibraryState, OnLibraryChange, PlaylistContents, Target,
+	Change, Edit, Library, LibraryPlaylist, LibraryState, OnLibraryChange, PlaylistContents, Target,
 };
 use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
@@ -141,18 +141,11 @@ struct State {
 	changes_held: AtomicBool,
 }
 
-/// Which way a change went.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChangeKind {
-	Add,
-	Remove,
-}
-
 /// What a change ends with.
 pub type ChangeResult = fn() -> Result<Change, CoreError>;
 
 /// A change that was asked for, and the thread it ran on.
-pub type RecordedChange = (ChangeKind, Target, Vec<ItemId>, std::thread::ThreadId);
+pub type RecordedChange = (Edit, Target, Vec<ItemId>, std::thread::ThreadId);
 
 /// A login the test answers itself, with [`FakeBackend::send_code`] and
 /// [`FakeBackend::finish_login`].
@@ -273,34 +266,6 @@ impl FakeBackend {
 	/// Makes later changes end with `result()`; by default every item counts as changed.
 	pub fn change_with(&self, result: ChangeResult) {
 		*self.0.change_result.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
-	}
-
-	fn change(
-		&self,
-		kind: ChangeKind,
-		target: Target,
-		items: &[ItemId],
-		is_aborting: &dyn Fn() -> bool,
-	) -> Result<Change, CoreError> {
-		self.0.changes.lock().unwrap_or_else(PoisonError::into_inner).push((
-			kind,
-			target,
-			items.to_vec(),
-			std::thread::current().id(),
-		));
-		self.enter(is_aborting)?;
-		let started = std::time::Instant::now();
-		while self.0.changes_held.load(Ordering::SeqCst)
-			&& !is_aborting()
-			&& started.elapsed() < std::time::Duration::from_secs(5)
-		{
-			std::thread::sleep(std::time::Duration::from_millis(5));
-		}
-		let result = *self.0.change_result.lock().unwrap_or_else(PoisonError::into_inner);
-		result.map_or_else(
-			|| Ok(Change { changed: items.len(), ..Change::default() }),
-			|result| result(),
-		)
 	}
 
 	fn library_state(&self) -> LibraryState {
@@ -474,22 +439,32 @@ impl Backend for FakeBackend {
 		self.library_state()
 	}
 
-	fn add_to(
+	fn change(
 		&self,
+		edit: Edit,
 		target: Target,
 		items: &[ItemId],
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Change, CoreError> {
-		self.change(ChangeKind::Add, target, items, is_aborting)
-	}
-
-	fn remove_from(
-		&self,
-		target: Target,
-		items: &[ItemId],
-		is_aborting: &dyn Fn() -> bool,
-	) -> Result<Change, CoreError> {
-		self.change(ChangeKind::Remove, target, items, is_aborting)
+		self.0.changes.lock().unwrap_or_else(PoisonError::into_inner).push((
+			edit,
+			target,
+			items.to_vec(),
+			std::thread::current().id(),
+		));
+		self.enter(is_aborting)?;
+		let started = std::time::Instant::now();
+		while self.0.changes_held.load(Ordering::SeqCst)
+			&& !is_aborting()
+			&& started.elapsed() < std::time::Duration::from_secs(5)
+		{
+			std::thread::sleep(std::time::Duration::from_millis(5));
+		}
+		let result = *self.0.change_result.lock().unwrap_or_else(PoisonError::into_inner);
+		result.map_or_else(
+			|| Ok(Change { changed: items.len(), ..Change::default() }),
+			|result| result(),
+		)
 	}
 }
 

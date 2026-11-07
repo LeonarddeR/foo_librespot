@@ -6,10 +6,11 @@
 //! on its own thread and reports in the console; a failure also shows a popup.
 
 use std::collections::HashSet;
-use std::sync::{Mutex, PoisonError};
 
 use foo_librespot_core::CoreError;
-use foo_librespot_core::library::{Change, LIKED_SONGS, Library, LibraryState, Target, tracks_of};
+use foo_librespot_core::library::{
+	Change, Edit, LIKED_SONGS, Library, LibraryState, Target, tracks_of,
+};
 use foo_librespot_core::link::{ItemId, parse_item};
 use foxide2k::abi::contextmenu::GROUP_ROOT;
 use foxide2k::console;
@@ -21,9 +22,6 @@ use foxide2k::popup::{self, PopupIcon};
 use crate::backend::backend;
 use crate::first_use::ask_for_login;
 use crate::quitting;
-
-/// Held by the change thread while it talks to Spotify, so changes run one after another.
-static CHANGING: Mutex<()> = Mutex::new(());
 
 const NAME: &str = "Add to Spotify playlist";
 
@@ -122,12 +120,6 @@ struct Pick {
 	count: usize,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
-	Add,
-	Remove,
-}
-
 impl Pick {
 	fn node(self, enabled: bool) -> MenuNode {
 		MenuNode::Command {
@@ -141,7 +133,7 @@ impl Pick {
 	/// Adds the selection, or after a yes removes it from an entry that holds it all.
 	fn choose(&self) -> Result<()> {
 		if !self.checked {
-			self.start(Kind::Add);
+			self.start(Edit::Add);
 			return Ok(());
 		}
 		let question = if self.count == 1 {
@@ -150,48 +142,42 @@ impl Pick {
 			format!("Remove the {} selected tracks from {}?", self.count, self.name)
 		};
 		if popup::ask("Remove from Spotify playlist", &question)? {
-			self.start(Kind::Remove);
+			self.start(Edit::Remove);
 		}
 		Ok(())
 	}
 
-	fn start(&self, kind: Kind) {
+	fn start(&self, edit: Edit) {
 		let pick = self.clone();
 		let spawned = std::thread::Builder::new()
 			.name("foo_librespot playlist change".to_owned())
-			.spawn(move || pick.run(kind));
+			.spawn(move || pick.run(edit));
 		if let Err(error) = spawned {
 			console::print(&format!("foo_librespot: can't change {}: {error}", self.name));
 		}
 	}
 
 	/// Makes the change, which foobar2000 quitting aborts. Once it quits, nothing is reported.
-	fn run(&self, kind: Kind) {
-		let result = {
-			let _one_at_a_time = CHANGING.lock().unwrap_or_else(PoisonError::into_inner);
-			match kind {
-				Kind::Add => backend().add_to(self.target, &self.items, &quitting),
-				Kind::Remove => backend().remove_from(self.target, &self.items, &quitting),
-			}
-		};
+	fn run(&self, edit: Edit) {
+		let result = backend().change(edit, self.target, &self.items, &quitting);
 		if quitting() {
 			return;
 		}
 		match result {
-			Ok(change) => self.report(kind, change),
+			Ok(change) => self.report(edit, change),
 			Err(CoreError::Aborted) => {}
 			Err(error) => self.fail(&error),
 		}
 	}
 
-	fn report(&self, kind: Kind, change: Change) {
+	fn report(&self, edit: Edit, change: Change) {
 		let liked = self.target == Target::LikedSongs;
 		let tracks = count_tracks(change.changed);
-		match (kind, liked) {
-			(Kind::Remove, _) => {
+		match (edit, liked) {
+			(Edit::Remove, _) => {
 				console::print(&format!("foo_librespot: removed {tracks} from {}", self.name));
 			}
-			(Kind::Add, true) => {
+			(Edit::Add, true) => {
 				console::print(&format!(
 					"foo_librespot: saved {tracks} to {}{}",
 					self.name,
@@ -205,7 +191,7 @@ impl Pick {
 					));
 				}
 			}
-			(Kind::Add, false) => {
+			(Edit::Add, false) => {
 				console::print(&format!(
 					"foo_librespot: added {tracks} to {}{}",
 					self.name,
@@ -244,7 +230,7 @@ mod tests {
 	use std::collections::HashSet;
 
 	use foo_librespot_core::library::{
-		Change, Library, LibraryState, PlaylistContents, PlaylistRow, Target,
+		Change, Edit, Library, LibraryState, PlaylistContents, PlaylistRow, Target,
 	};
 	use foo_librespot_core::link::ItemId;
 	use foo_librespot_core::{CoreError, SpotifyId};
@@ -257,7 +243,7 @@ mod tests {
 
 	use super::AddToSpotifyPlaylist;
 	use crate::testing::{
-		ChangeKind, FakeBackend, episode_id, getty_favourites, installed_backend, installed_prompt,
+		FakeBackend, episode_id, getty_favourites, installed_backend, installed_prompt,
 		shared_playlist, sunday_set, sunday_set_id, track_id, wait_until,
 	};
 
@@ -441,7 +427,7 @@ mod tests {
 		assert_eq!(changes.len(), 1);
 		assert_eq!(
 			(changes[0].0, changes[0].1, changes[0].2.clone()),
-			(ChangeKind::Add, Target::Playlist(sunday_set_id()), vec![t1()])
+			(Edit::Add, Target::Playlist(sunday_set_id()), vec![t1()])
 		);
 	}
 
@@ -493,7 +479,7 @@ mod tests {
 		wait_until(|| printed(api, "foo_librespot: removed 2 tracks from Church / Sunday set"));
 		let changes = fake.changes();
 		assert_eq!(changes.len(), 1);
-		assert_eq!(changes[0].0, ChangeKind::Remove);
+		assert_eq!(changes[0].0, Edit::Remove);
 	}
 
 	#[test]
@@ -520,20 +506,6 @@ mod tests {
 			)]
 		);
 		assert!(printed(api, "foo_librespot: can't change Church / Sunday set: Spotify said no"));
-	}
-
-	#[test]
-	fn a_second_pick_waits_for_the_first_change_to_end() {
-		let (_, fake) = setup(library(&[], &[], &[]));
-		fake.hold_changes(true);
-		let (root, data) = open(&[t1()]);
-		pick(&root, &data, "Shared");
-		wait_until(|| fake.changes().len() == 1);
-		pick(&root, &data, "Shared");
-		std::thread::sleep(std::time::Duration::from_millis(200));
-		assert_eq!(fake.changes().len(), 1);
-		fake.hold_changes(false);
-		wait_until(|| fake.changes().len() == 2);
 	}
 
 	fn reported_a_failure(api: &FakeApi) -> bool {
