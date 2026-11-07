@@ -158,21 +158,24 @@ impl CoreSlot {
 		if self.starting.swap(true, Ordering::SeqCst) {
 			return;
 		}
-		let spawned =
-			std::thread::Builder::new().name("foo_librespot start".to_owned()).spawn(move || {
-				let started = {
-					let _ended = StartEnded(self);
-					self.core()
-				};
-				if let Ok(core) = started {
-					core.library();
-				}
-				self.subscribers.notify();
-			});
-		if let Err(error) = spawned {
+		let started = spawn("start", "start Spotify's core", move || {
+			let started = {
+				let _ended = StartEnded(self);
+				self.core()
+			};
+			if let Ok(core) = started {
+				core.library();
+			}
+			self.subscribers.notify();
+		});
+		if !started {
 			self.starting.store(false, Ordering::SeqCst);
-			log::warn!("couldn't start Spotify's core: {error}");
 		}
+	}
+
+	/// Whether the core was stopped for good, as foobar2000 quits.
+	fn is_shut_down(&self) -> bool {
+		matches!(self.core.now(), Phase::ShutDown)
 	}
 
 	/// What the library holds when the core is at `phase`: `Loading` until it runs, or why it
@@ -194,6 +197,16 @@ impl CoreSlot {
 			Ok(core)
 		})
 	}
+}
+
+/// Runs `work` on a new thread named "foo_librespot `name`". When the thread can't start, logs
+/// that it couldn't `what`; returns whether it started.
+fn spawn(name: &str, what: &str, work: impl FnOnce() + Send + 'static) -> bool {
+	let spawned = std::thread::Builder::new().name(format!("foo_librespot {name}")).spawn(work);
+	if let Err(error) = &spawned {
+		log::warn!("couldn't {what}: {error}");
+	}
+	spawned.is_ok()
 }
 
 /// Clears [`CoreSlot::starting`] when a background start ends, also when it panics.
@@ -298,7 +311,7 @@ impl Backend for CoreBackend {
 	fn change(&self, edit: Edit, target: Target, items: &[ItemId], on_done: OnChanged) {
 		let slot = self.slot;
 		let on_done: OnChanged = Box::new(move |result| {
-			if !matches!(slot.core.now(), Phase::ShutDown) {
+			if !slot.is_shut_down() {
 				on_done(result);
 			}
 		});
@@ -306,33 +319,23 @@ impl Backend for CoreBackend {
 			return core.change(edit, target, items, on_done);
 		}
 		let items = items.to_vec();
-		let spawned =
-			std::thread::Builder::new().name("foo_librespot change".to_owned()).spawn(move || {
-				match slot.core() {
-					Ok(core) => core.change(edit, target, &items, on_done),
-					Err(error) => on_done(Err(error)),
-				}
-			});
-		if let Err(error) = spawned {
-			log::warn!("couldn't start a Spotify playlist change: {error}");
-		}
+		spawn("change", "start a Spotify playlist change", move || match slot.core() {
+			Ok(core) => core.change(edit, target, &items, on_done),
+			Err(error) => on_done(Err(error)),
+		});
 	}
 
 	/// Looks up on a thread of its own, which starts the core when it doesn't run yet. Once the
 	/// core is shut down, the lookup stops and `on_done` isn't called.
 	fn related(&self, item: ItemId, what: Related, on_done: OnRelated) {
 		let slot = self.slot;
-		let spawned =
-			std::thread::Builder::new().name("foo_librespot related".to_owned()).spawn(move || {
-				let shut_down = || matches!(slot.core.now(), Phase::ShutDown);
-				let result = slot.core().and_then(|core| core.related(item, &what, &shut_down));
-				if !shut_down() {
-					on_done(result);
-				}
-			});
-		if let Err(error) = spawned {
-			log::warn!("couldn't start a Spotify lookup: {error}");
-		}
+		spawn("related", "start a Spotify lookup", move || {
+			let shut_down = || slot.is_shut_down();
+			let result = slot.core().and_then(|core| core.related(item, &what, &shut_down));
+			if !shut_down() {
+				on_done(result);
+			}
+		});
 	}
 }
 
@@ -362,7 +365,7 @@ mod tests {
 	use foo_librespot_core::related::Related;
 	use foo_librespot_core::{Core, CoreError};
 
-	use super::{Backend, CoreBackend, CoreSlot, profile_folder};
+	use super::{Backend, CoreBackend, CoreSlot, profile_folder, spawn};
 	use crate::lifecycle::Phase;
 	use crate::testing::{track_id, wait_until};
 
@@ -508,6 +511,25 @@ mod tests {
 		assert!(matches!(state, LibraryState::Failed(_)), "{state:?}");
 		let state = backend.held_library();
 		assert!(matches!(state, LibraryState::Failed(_)), "{state:?}");
+	}
+
+	#[test]
+	fn work_runs_on_a_thread_named_after_it() {
+		let (done, name) = mpsc::channel();
+		let started = spawn("test", "start a test", move || {
+			let _ = done.send(std::thread::current().name().map(str::to_owned));
+		});
+		assert!(started);
+		let name = name.recv_timeout(Duration::from_secs(5)).unwrap();
+		assert_eq!(name.as_deref(), Some("foo_librespot test"));
+	}
+
+	#[test]
+	fn a_slot_is_shut_down_only_once_shutdown_ran() {
+		static STOPPING: CoreSlot = CoreSlot::new(slow_start);
+		assert!(!STOPPING.is_shut_down());
+		STOPPING.core.shutdown(Duration::ZERO, Core::shutdown);
+		assert!(STOPPING.is_shut_down());
 	}
 
 	#[test]
