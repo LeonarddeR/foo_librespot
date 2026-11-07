@@ -44,6 +44,7 @@ While a track plays, the status bar shows the codec and bitrate of the file Spot
 ## Podcasts
 
 Episode and show links work like track and album links: an episode adds one entry, and a show adds all its episodes. A show meant to be heard from the start, such as a Bible-in-a-year podcast, starts with its first episode; others start with the newest.
+An audiobook link adds its chapters from the first, without Spotify's 5-minute sample.
 Episodes in playlists are added too.
 Each episode gets its show as artist and album, its publication date, the genre Podcast, and its description as the comment.
 

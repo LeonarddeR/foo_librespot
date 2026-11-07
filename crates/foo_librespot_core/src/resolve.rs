@@ -434,9 +434,9 @@ async fn discography_entries<S: MetadataSource>(
 	(entries, first_error)
 }
 
-/// `newest_first`, the order Spotify lists a show's episodes in, put in the order the show is
-/// meant to be heard: from the first episode for a sequential show, such as a Bible-in-a-year
-/// podcast, and from the newest for the rest.
+/// `newest_first`, the order Spotify lists a podcast's episodes in, put in the order the podcast
+/// is meant to be heard: from the first episode for a sequential podcast, such as a
+/// Bible-in-a-year podcast, and from the newest for the rest.
 pub fn listening_order(
 	mut newest_first: Vec<SpotifyId>,
 	order: ShowConsumptionOrder,
@@ -445,6 +445,14 @@ pub fn listening_order(
 		newest_first.reverse();
 	}
 	newest_first
+}
+
+/// An audiobook's chapters as Spotify lists them, without `sample`. Spotify lists an
+/// audiobook's chapters in book order, with its sample last, and the sample is the show's
+/// trailer.
+pub fn book_order(mut listed: Vec<SpotifyId>, sample: Option<SpotifyId>) -> Vec<SpotifyId> {
+	listed.retain(|&chapter| Some(chapter) != sample);
+	listed
 }
 
 /// The releases a discography adds: each album, then each single and EP, then each compilation,
@@ -1009,7 +1017,13 @@ impl MetadataSource for LibrespotMetadata {
 		let uri = SpotifyUri::Show { id };
 		let show = retry_rate_limited(|| Show::get(&self.session, &uri)).await?;
 		let ids = show.episodes.0.iter().map(SpotifyId::try_from).collect::<Result<Vec<_>, _>>()?;
-		Ok((show.name, listening_order(ids, show.consumption_order)))
+		let ids = if show.is_audiobook {
+			let sample = show.trailer_uri.as_ref().and_then(|uri| SpotifyId::try_from(uri).ok());
+			book_order(ids, sample)
+		} else {
+			listening_order(ids, show.consumption_order)
+		};
+		Ok((show.name, ids))
 	}
 
 	async fn artist(&self, id: SpotifyId) -> Result<(String, Vec<SpotifyId>), CoreError> {
@@ -1124,8 +1138,8 @@ mod tests {
 
 	use super::{
 		AlbumDetailsCache, ArtistTracks, CachedSource, ExtensionValues, LibrespotMetadata,
-		MAX_CONTEXT_PAGES, MetadataSource, Page, SkipReason, TrackCache, Viewer, context_tracks,
-		extension_values, listening_order, releases, resolve, retry_rate_limited,
+		MAX_CONTEXT_PAGES, MetadataSource, Page, SkipReason, TrackCache, Viewer, book_order,
+		context_tracks, extension_values, listening_order, releases, resolve, retry_rate_limited,
 	};
 	use crate::link::{ItemId, Link, LinkError, LinkKind};
 	use crate::metadata::{AlbumDetails, EXPLICIT_FILTERED, TrackInfo};
@@ -1708,7 +1722,7 @@ mod tests {
 
 	#[test]
 	fn a_show_meant_to_be_heard_from_the_start_lists_its_first_episode_first() {
-		// Spotify lists every show's episodes newest first.
+		// Spotify lists a podcast's episodes newest first.
 		let newest_first = vec![id(3), id(2), id(1)];
 		assert_eq!(
 			listening_order(newest_first.clone(), ShowConsumptionOrder::SEQUENTIAL),
@@ -1722,6 +1736,21 @@ mod tests {
 			listening_order(newest_first.clone(), ShowConsumptionOrder::EPISODIC),
 			newest_first
 		);
+	}
+
+	#[test]
+	fn a_book_keeps_spotifys_order() {
+		assert_eq!(book_order(vec![id(1), id(2), id(3)], None), [id(1), id(2), id(3)]);
+	}
+
+	#[test]
+	fn a_book_leaves_out_its_sample() {
+		assert_eq!(book_order(vec![id(1), id(2), id(9)], Some(id(9))), [id(1), id(2)]);
+	}
+
+	#[test]
+	fn a_sample_that_isnt_listed_changes_nothing() {
+		assert_eq!(book_order(vec![id(1), id(2)], Some(id(9))), [id(1), id(2)]);
 	}
 
 	#[tokio::test]

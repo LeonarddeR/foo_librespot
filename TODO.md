@@ -101,11 +101,12 @@ Checked by hand on 7 November 2026. The new work they showed is under "Later rou
 - [ ] Open the current track's artist or album
   - Commands under File > Spotify, such as "Open current artist" and "Open current album", would open the current Spotify track's artist or album as a foobar2000 playlist, the way an artist or album link does. Music you like would then be one command away, without copying a link from Spotify.
   - Still to decide: whether "current" means the playing track or the selected one.
-- [ ] Put an audiobook's chapters in book order
-  - An audiobook link adds its chapters newest first, like a podcast's episodes. "Mere Christianity" (C.S. Lewis) starts with a 5-minute sample and the ending credits, and ends with the opening credits.
-  - Spotify marks an audiobook as one (`Show::is_audiobook`), so foo_librespot could add its chapters from the first, as it does for a show meant to be heard from the start.
+- [x] Put an audiobook's chapters in book order
+  - An audiobook link added its chapters backwards. "Mere Christianity" (C.S. Lewis) started with a 5-minute sample and the ending credits, and ended with the opening credits. Spotify marks an audiobook as meant to be heard from the start, like a Bible-in-a-year podcast, but lists its chapters in book order with the sample last, so turning the list around as for such a podcast put the book backwards.
+  - An audiobook (`Show::is_audiobook`) now keeps Spotify's order and leaves out the sample, which is the episode the show names as its trailer, `Show::trailer_uri` (`book_order` and `LibrespotMetadata::show` in `crates/foo_librespot_core/src/resolve.rs`). Other shows are ordered as before.
+  - Checked on 2026-11-07 with three books: "Mere Christianity", "Anxious People" and "Everything Is Tuberculosis". In each, Spotify lists the chapters in book order, then the sample. The sample is the show's trailer and the only episode Spotify types as a trailer.
 - [ ] Say when the account can't play an audiobook
-  - When the account doesn't have an audiobook, the Spotify app says "This content is unavailable", but its link still adds every chapter. Each chapter then fails when played: Spotify refuses the key that decrypts it (code 1). Only the 5-minute sample plays.
+  - When the account doesn't have an audiobook, the Spotify app says "This content is unavailable", but its link still adds every chapter. Each chapter then fails when played: Spotify refuses the key that decrypts it (code 1). Only the 5-minute sample played, and an audiobook link now leaves it out.
   - foo_librespot could find this out while adding, and skip the chapters with a plain reason. How to tell beforehand is still to find out, perhaps from a field in the episode's or the show's metadata.
 - [ ] Play from the Spotify app on foobar2000 (Spotify Connect)
   - The `librespot-connect` crate makes a program show up as a Spotify Connect speaker, so the Spotify app on a phone can play on it.
