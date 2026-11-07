@@ -2,6 +2,7 @@
 //! services can be tested with a fake.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -13,8 +14,9 @@ use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::resolve::{ArtistTracks, Resolved};
 use foo_librespot_core::{Core, CoreError, LoginHandle};
+use foxide2k::host::host;
 
-use crate::lifecycle::Lifecycle;
+use crate::lifecycle::{Lifecycle, Phase};
 use crate::settings;
 
 /// Gets the code a login shows the user.
@@ -58,8 +60,9 @@ pub trait Backend: Send + Sync {
 	/// stored login can't be read, for example because Spotify's core couldn't start.
 	fn username(&self) -> Result<Option<String>, CoreError>;
 	/// The account's playlists as last read, without waiting for Spotify. Starts a read when none
-	/// runs and the held one is missing, incomplete or old, or the last read failed. When
-	/// Spotify's core can't start, the answer is `Failed`.
+	/// runs and the held one is missing, incomplete or old, or the last read failed. Before
+	/// Spotify's core runs, a thread starts it and the answer is `Loading`; the subscribers hear
+	/// once it is up, or couldn't start, which makes the answer `Failed`.
 	fn library(&self) -> LibraryState;
 	/// What [`Backend::library`] would answer, without starting a read.
 	fn held_library(&self) -> LibraryState;
@@ -70,8 +73,9 @@ pub trait Backend: Send + Sync {
 	fn unsubscribe_library(&self, id: u64);
 	/// Starts adding `items` to a playlist or Liked Songs, leaving out what is already there, or
 	/// removing them from it, once every change begun before has ended, and returns at once.
-	/// `on_done` gets what was done, on another thread; a change still running when foobar2000
-	/// quits is dropped unreported.
+	/// `on_done` gets what was done, on another thread, which waits for Spotify's core to start
+	/// when it doesn't run yet; a change still running when foobar2000 quits is dropped
+	/// unreported.
 	fn change(&self, edit: Edit, target: Target, items: &[ItemId], on_done: OnChanged);
 }
 
@@ -117,29 +121,84 @@ pub fn profile_folder(profile_path: &str) -> PathBuf {
 	Path::new(path.trim_end_matches(['\\', '/'])).join("foo_librespot")
 }
 
-/// `Core`, started the first time anything asks Spotify, and stopped when foobar2000 quits.
-static CORE: Lifecycle<Core> = Lifecycle::new();
-
 /// How long quitting waits for Spotify calls still running; foobar2000 aborts them as it quits.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 
-/// The subscribers of [`Backend::subscribe_library`]; every started core tells them.
-static LIBRARY_SUBSCRIBERS: Subscribers = Subscribers::new();
-
-fn core() -> Result<Arc<Core>, CoreError> {
-	CORE.get_or_start(|| {
-		let core = Core::new(profile_folder(&foxide2k::host::host().profile_path()))?;
-		core.subscribe_library(Box::new(|| LIBRARY_SUBSCRIBERS.notify()));
-		Ok(core)
-	})
+/// A `Core`, started the first time anything asks Spotify and stopped when foobar2000 quits,
+/// with the subscribers of its library, which every core it starts tells.
+struct CoreSlot {
+	core: Lifecycle<Core>,
+	start: fn() -> Result<Core, CoreError>,
+	subscribers: Subscribers,
+	/// A thread is bringing the core up for the library.
+	starting: AtomicBool,
 }
+
+impl CoreSlot {
+	const fn new(start: fn() -> Result<Core, CoreError>) -> Self {
+		Self {
+			core: Lifecycle::new(),
+			start,
+			subscribers: Subscribers::new(),
+			starting: AtomicBool::new(false),
+		}
+	}
+
+	/// Brings the core up on a new thread, unless one is doing so already. Once it is up, that
+	/// thread reads the library; either way it then tells the subscribers.
+	fn start_in_background(&'static self) {
+		if self.starting.swap(true, Ordering::SeqCst) {
+			return;
+		}
+		let spawned =
+			std::thread::Builder::new().name("foo_librespot start".to_owned()).spawn(move || {
+				let started = self.core();
+				self.starting.store(false, Ordering::SeqCst);
+				if let Ok(core) = started {
+					core.library();
+				}
+				self.subscribers.notify();
+			});
+		if let Err(error) = spawned {
+			self.starting.store(false, Ordering::SeqCst);
+			log::warn!("couldn't start Spotify's core: {error}");
+		}
+	}
+
+	/// What the library holds when the core is at `phase`: `Loading` until it runs, or why it
+	/// couldn't start.
+	fn held(phase: Phase<Core>) -> LibraryState {
+		match phase {
+			Phase::Running(core) => core.held_library(),
+			Phase::NotStarted | Phase::Starting => LibraryState::Loading,
+			Phase::Failed(reason) => LibraryState::Failed(reason),
+			Phase::ShutDown => LibraryState::Failed(CoreError::Aborted.to_string()),
+		}
+	}
+
+	/// The running core, started on this thread when none runs.
+	fn core(&'static self) -> Result<Arc<Core>, CoreError> {
+		self.core.get_or_start(|| {
+			let core = (self.start)()?;
+			core.subscribe_library(Box::new(|| self.subscribers.notify()));
+			Ok(core)
+		})
+	}
+}
+
+/// The `Core` of foobar2000's profile.
+static SPOTIFY: CoreSlot = CoreSlot::new(|| Core::new(profile_folder(&host().profile_path())));
 
 /// Stops `Core` for good, if it was started; later calls fail instead of starting it again.
 pub fn shutdown() {
-	CORE.shutdown(SHUTDOWN_WAIT, Core::shutdown);
+	SPOTIFY.core.shutdown(SHUTDOWN_WAIT, Core::shutdown);
 }
 
-struct CoreBackend;
+/// Spotify through the core in `slot`.
+#[derive(Clone, Copy)]
+struct CoreBackend {
+	slot: &'static CoreSlot,
+}
 
 impl Backend for CoreBackend {
 	fn resolve(
@@ -148,7 +207,7 @@ impl Backend for CoreBackend {
 		artist_tracks: ArtistTracks,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Resolved, CoreError> {
-		core()?.resolve(link, artist_tracks, is_aborting)
+		self.slot.core()?.resolve(link, artist_tracks, is_aborting)
 	}
 
 	fn track_info(
@@ -156,7 +215,7 @@ impl Backend for CoreBackend {
 		id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Arc<TrackInfo>, CoreError> {
-		core()?.track_info(id, is_aborting)
+		self.slot.core()?.track_info(id, is_aborting)
 	}
 
 	fn open_track(
@@ -164,7 +223,7 @@ impl Backend for CoreBackend {
 		id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Box<dyn PcmTrack>, CoreError> {
-		Ok(Box::new(core()?.open_track(id, settings::bitrate(), is_aborting)?))
+		Ok(Box::new(self.slot.core()?.open_track(id, settings::bitrate(), is_aborting)?))
 	}
 
 	fn cover(
@@ -172,7 +231,7 @@ impl Backend for CoreBackend {
 		id: ItemId,
 		is_aborting: &dyn Fn() -> bool,
 	) -> Result<Option<Vec<u8>>, CoreError> {
-		core()?.cover(id, is_aborting)
+		self.slot.core()?.cover(id, is_aborting)
 	}
 
 	fn start_login(
@@ -180,43 +239,56 @@ impl Backend for CoreBackend {
 		on_code: OnCode,
 		on_done: OnDone,
 	) -> Result<Box<dyn LoginTask>, CoreError> {
-		Ok(Box::new(core()?.start_login(move |code| on_code(code.clone()), on_done)))
+		Ok(Box::new(self.slot.core()?.start_login(move |code| on_code(code.clone()), on_done)))
 	}
 
 	fn logout(&self) -> Result<(), CoreError> {
-		core()?.logout()
+		self.slot.core()?.logout()
 	}
 
 	fn username(&self) -> Result<Option<String>, CoreError> {
-		Ok(core()?.username())
+		Ok(self.slot.core()?.username())
 	}
 
+	/// Before the core runs, starts it on another thread and answers what it holds.
 	fn library(&self) -> LibraryState {
-		match core() {
-			Ok(core) => core.library(),
-			Err(error) => LibraryState::Failed(error.to_string()),
+		let phase = self.slot.core.now();
+		if let Phase::Running(core) = &phase {
+			return core.library();
 		}
+		if !matches!(phase, Phase::ShutDown) {
+			self.slot.start_in_background();
+		}
+		CoreSlot::held(phase)
 	}
 
 	fn held_library(&self) -> LibraryState {
-		match core() {
-			Ok(core) => core.held_library(),
-			Err(error) => LibraryState::Failed(error.to_string()),
-		}
+		CoreSlot::held(self.slot.core.now())
 	}
 
 	fn subscribe_library(&self, notify: Box<dyn Fn() + Send + Sync>) -> u64 {
-		LIBRARY_SUBSCRIBERS.subscribe(notify)
+		self.slot.subscribers.subscribe(notify)
 	}
 
 	fn unsubscribe_library(&self, id: u64) {
-		LIBRARY_SUBSCRIBERS.unsubscribe(id);
+		self.slot.subscribers.unsubscribe(id);
 	}
 
+	/// Before the core runs, waits for it on another thread.
 	fn change(&self, edit: Edit, target: Target, items: &[ItemId], on_done: OnChanged) {
-		match core() {
-			Ok(core) => core.change(edit, target, items, on_done),
-			Err(error) => on_done(Err(error)),
+		if let Phase::Running(core) = self.slot.core.now() {
+			return core.change(edit, target, items, on_done);
+		}
+		let (slot, items) = (self.slot, items.to_vec());
+		let spawned =
+			std::thread::Builder::new().name("foo_librespot change".to_owned()).spawn(move || {
+				match slot.core() {
+					Ok(core) => core.change(edit, target, &items, on_done),
+					Err(error) => on_done(Err(error)),
+				}
+			});
+		if let Err(error) = spawned {
+			log::warn!("couldn't start a Spotify playlist change: {error}");
 		}
 	}
 }
@@ -225,7 +297,7 @@ static BACKEND: OnceLock<Box<dyn Backend>> = OnceLock::new();
 
 /// The backend the services use: Spotify, or the one a test installed.
 pub fn backend() -> &'static dyn Backend {
-	BACKEND.get_or_init(|| Box::new(CoreBackend)).as_ref()
+	BACKEND.get_or_init(|| Box::new(CoreBackend { slot: &SPOTIFY })).as_ref()
 }
 
 /// Makes `backend()` return `fake` in this test process.
@@ -237,17 +309,83 @@ pub fn install(fake: Box<dyn Backend>) {
 #[cfg(test)]
 mod tests {
 	use std::path::PathBuf;
+	use std::sync::Arc;
+	use std::sync::atomic::{AtomicUsize, Ordering};
+	use std::sync::mpsc;
+	use std::time::{Duration, Instant};
 
-	use foo_librespot_core::library::LibraryState;
+	use foo_librespot_core::library::{Edit, LibraryState, Target};
+	use foo_librespot_core::link::ItemId;
+	use foo_librespot_core::{Core, CoreError};
 
-	use super::{Backend, CoreBackend, profile_folder, shutdown};
+	use super::{Backend, CoreBackend, CoreSlot, profile_folder};
+	use crate::testing::{track_id, wait_until};
+
+	/// Takes a while, then fails as a core whose profile folder is busy does.
+	fn slow_start() -> Result<Core, CoreError> {
+		std::thread::sleep(Duration::from_millis(500));
+		Err(CoreError::Unavailable("the profile folder is busy".to_owned()))
+	}
+
+	/// How many times the slot's library subscribers were told.
+	fn heard(backend: CoreBackend) -> Arc<AtomicUsize> {
+		let heard = Arc::new(AtomicUsize::new(0));
+		let count = Arc::clone(&heard);
+		backend.subscribe_library(Box::new(move || {
+			count.fetch_add(1, Ordering::SeqCst);
+		}));
+		heard
+	}
+
+	fn is_busy(state: &LibraryState) -> bool {
+		matches!(state, LibraryState::Failed(reason) if reason == "the profile folder is busy")
+	}
 
 	#[test]
-	fn a_library_read_that_cant_start_says_why() {
-		shutdown();
-		let state = CoreBackend.library();
+	fn before_the_core_starts_a_library_call_answers_loading_at_once() {
+		static SLOW: CoreSlot = CoreSlot::new(slow_start);
+		let backend = CoreBackend { slot: &SLOW };
+		let heard = heard(backend);
+		let asked = Instant::now();
+		assert!(matches!(backend.held_library(), LibraryState::Loading));
+		assert!(matches!(backend.library(), LibraryState::Loading));
+		assert!(matches!(backend.held_library(), LibraryState::Loading));
+		assert!(asked.elapsed() < Duration::from_millis(250), "{:?}", asked.elapsed());
+		wait_until(|| heard.load(Ordering::SeqCst) == 1);
+		assert!(is_busy(&backend.held_library()), "{:?}", backend.held_library());
+	}
+
+	#[test]
+	fn a_change_before_the_core_starts_waits_for_it_off_the_calling_thread() {
+		static SLOW: CoreSlot = CoreSlot::new(slow_start);
+		let backend = CoreBackend { slot: &SLOW };
+		let (done, result) = mpsc::channel();
+		let asked = Instant::now();
+		backend.change(
+			Edit::Add,
+			Target::LikedSongs,
+			&[ItemId::Track(track_id())],
+			Box::new(move |result| {
+				let _ = done.send((result, std::thread::current().id()));
+			}),
+		);
+		assert!(asked.elapsed() < Duration::from_millis(250), "{:?}", asked.elapsed());
+		let (result, thread) = result.recv_timeout(Duration::from_secs(5)).unwrap();
+		assert!(
+			matches!(&result, Err(CoreError::Unavailable(reason)) if reason == "the profile folder is busy"),
+			"{result:?}"
+		);
+		assert_ne!(thread, std::thread::current().id());
+	}
+
+	#[test]
+	fn a_library_read_after_shutdown_says_why() {
+		static GONE: CoreSlot = CoreSlot::new(slow_start);
+		GONE.core.shutdown(Duration::ZERO, Core::shutdown);
+		let backend = CoreBackend { slot: &GONE };
+		let state = backend.library();
 		assert!(matches!(state, LibraryState::Failed(_)), "{state:?}");
-		let state = CoreBackend.held_library();
+		let state = backend.held_library();
 		assert!(matches!(state, LibraryState::Failed(_)), "{state:?}");
 	}
 

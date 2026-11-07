@@ -5,6 +5,8 @@
 //! a tab property, so choosing the same playlist again brings that tab to the front.
 
 use std::cell::Cell;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use foo_librespot_core::library::{LIKED_SONGS, Library, LibraryState};
 use foo_librespot_core::link::Link;
@@ -162,6 +164,10 @@ struct OpenPlaylistWindow {
 	status: String,
 	login_subscription: Option<u64>,
 	library_subscription: Option<u64>,
+	/// Set while the window hasn't learnt whether the account is logged in and the login hasn't
+	/// changed since it opened: a logged-out answer then asks for a login, as opening logged out
+	/// does.
+	ask_when_logged_out: Arc<AtomicBool>,
 }
 
 impl OpenPlaylistWindow {
@@ -230,8 +236,11 @@ impl DialogHandler for OpenPlaylistWindow {
 		if let Err(error) = make_live_region(dialog, STATUS) {
 			console::print(&format!("foo_librespot: {}", error.message));
 		}
-		let poster = refresh_poster(dialog);
-		self.login_subscription = Some(controller().subscribe(Box::new(move || poster.post())));
+		let (poster, ask) = (refresh_poster(dialog), Arc::clone(&self.ask_when_logged_out));
+		self.login_subscription = Some(controller().subscribe(Box::new(move || {
+			ask.store(false, Ordering::SeqCst);
+			poster.post();
+		})));
 		let poster = refresh_poster(dialog);
 		self.library_subscription =
 			Some(backend().subscribe_library(Box::new(move || poster.post())));
@@ -240,8 +249,11 @@ impl DialogHandler for OpenPlaylistWindow {
 				ask_for_login();
 				LibraryState::LoggedOut
 			}
-			LibraryState::Failed(_) => LibraryState::Loading,
-			state => state,
+			LibraryState::Loading | LibraryState::Failed(_) => {
+				self.ask_when_logged_out.store(true, Ordering::SeqCst);
+				LibraryState::Loading
+			}
+			state @ LibraryState::Ready(_) => state,
 		};
 		self.render(*dialog, state);
 		Some(LIST)
@@ -260,6 +272,13 @@ impl DialogHandler for OpenPlaylistWindow {
 			LibraryState::Loading => backend().library(),
 			state => state,
 		};
+		match state {
+			LibraryState::Loading => {}
+			LibraryState::LoggedOut if self.ask_when_logged_out.swap(false, Ordering::SeqCst) => {
+				ask_for_login();
+			}
+			_ => self.ask_when_logged_out.store(false, Ordering::SeqCst),
+		}
 		self.render(*dialog, state);
 	}
 }
@@ -319,6 +338,7 @@ mod tests {
 		LABEL, LIST, OpenPlaylist, STATUS, SpotifyMenu, TAB_PROPERTY, cant_open, current, open,
 		window_template,
 	};
+	use crate::login::controller;
 	use crate::testing::{
 		confirm_login_when_started, getty_favourites, installed_backend, installed_prompt,
 		library_with, sunday_set, sunday_set_id,
@@ -453,6 +473,44 @@ mod tests {
 		pump_messages();
 		assert_eq!(dialog.list_count(LIST), 3);
 		assert_eq!(prompt.shown(), 1);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn logged_out_found_while_loading_asks_for_a_login_once() {
+		FakeApi::new().install();
+		let fake = installed_backend();
+		let prompt = installed_prompt();
+		fake.set_library(LibraryState::Loading);
+		let dialog = open(hidden_window()).unwrap();
+		assert_eq!(prompt.shown(), 0);
+		fake.publish_library(LibraryState::LoggedOut);
+		pump_messages();
+		assert_eq!(dialog.text(STATUS), "Log in to Spotify to see your playlists.");
+		assert_eq!(prompt.shown(), 1);
+		assert_eq!(fake.logins_started(), 1);
+		refresh_poster(&dialog).post();
+		pump_messages();
+		assert_eq!(prompt.shown(), 1);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_logout_while_the_window_loads_asks_for_no_login() {
+		FakeApi::new().install();
+		let fake = installed_backend();
+		let prompt = installed_prompt();
+		fake.set_username(Some("Keith Getty"));
+		fake.set_library(LibraryState::Loading);
+		let dialog = open(hidden_window()).unwrap();
+		controller().refresh();
+		controller().press();
+		assert_eq!(fake.logouts(), 1);
+		fake.publish_library(LibraryState::LoggedOut);
+		pump_messages();
+		assert_eq!(dialog.text(STATUS), "Log in to Spotify to see your playlists.");
+		assert_eq!(prompt.shown(), 0);
+		assert_eq!(fake.logins_started(), 0);
 		destroy(dialog);
 	}
 
