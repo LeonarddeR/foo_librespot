@@ -1,8 +1,9 @@
 //! Opening what a Spotify track belongs to, its album, an artist, its radio or its show, in a
 //! playlist tab of its own.
 //!
-//! The lookup runs in the background; the tab opens on the main thread once it ends. Every
-//! failure is told in the console and a popup; none reaches foobar2000.
+//! The lookup runs in the background; the tab opens on the main thread once it ends. When a
+//! track's artists are asked for and it has several, the artist window lists them instead.
+//! Every failure is told in the console and a popup; none reaches foobar2000.
 
 use std::fmt::Display;
 
@@ -13,6 +14,7 @@ use foxide2k::console;
 use foxide2k::main_thread;
 use foxide2k::popup::PopupIcon;
 
+use crate::artist_window;
 use crate::backend::backend;
 use crate::errors::show_failure;
 use crate::first_use::ask_for_login;
@@ -36,21 +38,20 @@ const fn noun(what: &Related) -> &'static str {
 	}
 }
 
-/// Opens what the lookup found on the main thread, asks for a login, or says why it failed.
+/// On the main thread, opens what the lookup found, or lists the artists to pick from when it
+/// found several. Otherwise asks for a login, or says why it failed.
 fn end(result: Result<Found, CoreError>, noun: &'static str, title: &str) {
-	let opened = match result {
-		Ok(Found::One(opened)) => opened,
-		// Task 10's artist window replaces this: until then, the first artist opens.
-		Ok(Found::Artists(artists)) => {
-			let Some(first) = artists.into_iter().next() else { return };
-			first
-		}
+	let found = match result {
+		Ok(found) => found,
 		Err(CoreError::NotLoggedIn) => return ask_for_login(),
 		Err(CoreError::Aborted) => return,
 		Err(error) => return fail(noun, title, &error),
 	};
 	let queued_title = title.to_owned();
-	let queued = main_thread::run(Box::new(move || open(&opened, noun, &queued_title)));
+	let queued = main_thread::run(Box::new(move || match found {
+		Found::One(opened) => open(&opened, noun, &queued_title),
+		Found::Artists(artists) => artist_window::show_choices(artists),
+	}));
 	if let Err(error) = queued {
 		fail(noun, title, &error.message);
 	}
@@ -76,11 +77,15 @@ mod tests {
 	use foo_librespot_core::link::ItemId;
 	use foo_librespot_core::related::Related;
 	use foxide2k::abi::{main_thread, playlist};
+	use foxide2k::dialog::host::destroy;
 	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::FakeApi;
 
 	use super::open_related;
-	use crate::testing::{installed_backend, installed_prompt, track_id, wait_until};
+	use crate::artist_window;
+	use crate::testing::{
+		installed_backend, installed_prompt, installed_screen, track_id, wait_until,
+	};
 
 	const GETTY_TRACK: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
 
@@ -115,6 +120,25 @@ mod tests {
 		assert_eq!(api.location_requests(), [["sptf://spotify:album:4wPtS24asgBAG4VOmYYB9O"]]);
 		api.finish_locations(0, &[GETTY_TRACK]).unwrap();
 		assert_eq!(api.tabs()[0].name, "In Christ Alone");
+	}
+
+	#[test]
+	fn several_artists_open_the_artist_window() {
+		let api = installed_api();
+		let fake = installed_backend();
+		let screen = installed_screen();
+		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned());
+		run_main_thread_work(api);
+		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist(None))]);
+		let dialog = artist_window::WINDOW.current().expect("the artist window is open");
+		let texts: Vec<String> = (0..dialog.list_count(artist_window::LIST))
+			.map(|row| dialog.list_text(artist_window::LIST, row))
+			.collect();
+		assert_eq!(texts, ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(screen.brought_up(), 1);
+		assert!(api.location_requests().is_empty());
+		assert!(!reported_a_failure(api), "{:?} {:?}", api.popups(), api.console_lines());
+		destroy(dialog);
 	}
 
 	#[test]

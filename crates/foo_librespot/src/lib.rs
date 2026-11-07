@@ -4,6 +4,7 @@
 mod account;
 mod advanced;
 mod art;
+mod artist_window;
 mod backend;
 mod errors;
 mod fields;

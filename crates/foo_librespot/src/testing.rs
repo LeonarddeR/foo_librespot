@@ -653,7 +653,47 @@ impl crate::first_use::LoginPrompt for FakePrompt {
 	}
 }
 
-/// Installs a [`FakePrompt`] for this test process.
+/// A screen that keeps the artist window hidden, owned by a hidden window, and counts how often
+/// it was brought up.
+#[derive(Clone, Default)]
+pub struct FakeScreen {
+	brought_up: Arc<AtomicUsize>,
+	owner_gone: Arc<AtomicBool>,
+}
+
+impl FakeScreen {
+	/// How often the window would have been made visible and brought to the front.
+	pub fn brought_up(&self) -> usize {
+		self.brought_up.load(Ordering::SeqCst)
+	}
+
+	/// Gives the window an owner that is gone from now on, so it can't open.
+	pub fn lose_owner(&self) {
+		self.owner_gone.store(true, Ordering::SeqCst);
+	}
+}
+
+impl crate::artist_window::Screen for FakeScreen {
+	fn owner(&self) -> isize {
+		let owner = foxide2k::testing::hidden_window();
+		if self.owner_gone.load(Ordering::SeqCst) {
+			foxide2k::dialog::host::destroy(foxide2k::dialog::host::Dialog::from_hwnd(owner));
+		}
+		owner
+	}
+
+	fn bring_up(&self, _dialog: foxide2k::dialog::host::Dialog) {
+		self.brought_up.fetch_add(1, Ordering::SeqCst);
+	}
+}
+
+/// A [`FakeScreen`], installed as the artist window's screen in this test process.
+pub fn installed_screen() -> FakeScreen {
+	let screen = FakeScreen::default();
+	crate::artist_window::install_screen(Box::new(screen.clone()));
+	screen
+}
+
 /// A [`FakeBackend`], installed as the backend of this test process.
 pub fn installed_backend() -> FakeBackend {
 	let fake = FakeBackend::default();
@@ -661,6 +701,7 @@ pub fn installed_backend() -> FakeBackend {
 	fake
 }
 
+/// Installs a [`FakePrompt`] for this test process.
 pub fn installed_prompt() -> FakePrompt {
 	let prompt = FakePrompt::default();
 	crate::first_use::install_prompt(Box::new(prompt.clone()));
