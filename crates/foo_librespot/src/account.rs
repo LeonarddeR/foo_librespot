@@ -2,8 +2,6 @@
 //! account button, the code and page fields and "Open browser". They show the login
 //! controller's state and follow it as it changes.
 
-use foxide2k::console;
-use foxide2k::dialog::accessibility::{announce, make_live_region};
 use foxide2k::dialog::host::{Dialog, refresh_poster};
 use foxide2k::dialog::notify::{BN_CLICKED, BN_SETFOCUS, EN_SETFOCUS};
 use foxide2k::dialog::style::{
@@ -12,6 +10,7 @@ use foxide2k::dialog::style::{
 use foxide2k::dialog::template::{ControlClass, DialogItem};
 
 use crate::login::{controller, view};
+use crate::status_line::StatusLine;
 
 /// The status line, a polite live region.
 pub const STATUS: u16 = 101;
@@ -79,7 +78,7 @@ pub fn items(x: i16, y: i16, width: i16) -> Vec<DialogItem> {
 /// The account controls of one open dialog, subscribed to the login for as long as it lives.
 pub struct AccountPanel {
 	subscription: u64,
-	status: String,
+	status: StatusLine,
 	controls: LoginControls,
 }
 
@@ -88,12 +87,10 @@ impl AccountPanel {
 	pub fn init(dialog: Dialog, controls: LoginControls) -> Self {
 		let poster = refresh_poster(&dialog);
 		let subscription = controller().subscribe(Box::new(move || poster.post()));
-		if let Err(error) = make_live_region(&dialog, STATUS) {
-			console::print(&format!("foo_librespot: {}", error.message));
-		}
-		let mut panel = Self { subscription, status: String::new(), controls };
 		controller().refresh();
-		panel.render(dialog);
+		let status = StatusLine::new(dialog, STATUS, view(&controller().state()).status);
+		let mut panel = Self { subscription, status, controls };
+		panel.refresh(dialog);
 		panel
 	}
 
@@ -115,14 +112,6 @@ impl AccountPanel {
 
 	/// Shows the login's current state; a new status is announced.
 	pub fn refresh(&mut self, dialog: Dialog) {
-		let status = self.status.clone();
-		self.render(dialog);
-		if self.status != status {
-			announce(&dialog, STATUS);
-		}
-	}
-
-	fn render(&mut self, dialog: Dialog) {
 		let shown = view(&controller().state());
 		let fields = self.controls == LoginControls::Always || shown.confirming;
 		let visible = |id| match id {
@@ -134,14 +123,13 @@ impl AccountPanel {
 		if dialog.focused().is_some_and(|id| !visible(id)) {
 			dialog.focus(ACCOUNT);
 		}
-		dialog.set_text(STATUS, &shown.status);
 		dialog.set_text(ACCOUNT, shown.button);
 		dialog.set_text(CODE, &shown.code);
 		dialog.set_text(PAGE, &shown.page);
 		for id in LOGIN_CONTROLS {
 			dialog.set_visible(id, visible(id));
 		}
-		self.status = shown.status;
+		self.status.show(dialog, shown.status);
 	}
 }
 

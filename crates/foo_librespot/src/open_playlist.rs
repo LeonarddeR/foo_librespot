@@ -12,7 +12,6 @@ use foo_librespot_core::library::{LIKED_SONGS, Library, LibraryState};
 use foo_librespot_core::link::Link;
 use foxide2k::abi::mainmenu::{GROUP_FILE, SORT_PRIORITY_BASE};
 use foxide2k::console;
-use foxide2k::dialog::accessibility::{announce, make_live_region};
 use foxide2k::dialog::host::{Dialog, DialogHandler, destroy, refresh_poster};
 use foxide2k::dialog::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
 use foxide2k::dialog::style::{
@@ -34,6 +33,7 @@ use crate::errors::show_failure;
 use crate::first_use::ask_for_login;
 use crate::links::canonical;
 use crate::login::controller;
+use crate::status_line::StatusLine;
 use crate::window::SingleWindow;
 
 /// The tab property that keeps the Spotify URI of the playlist a tab was opened from.
@@ -132,7 +132,7 @@ fn entries_of(library: &Library) -> Vec<Entry> {
 #[derive(Default)]
 pub struct OpenPlaylistWindow {
 	entries: Vec<Entry>,
-	status: String,
+	status: Option<StatusLine>,
 	login_subscription: Option<u64>,
 	library_subscription: Option<u64>,
 	/// Set while the window hasn't learnt whether the account is logged in and the login hasn't
@@ -155,11 +155,9 @@ impl OpenPlaylistWindow {
 			}
 		};
 		self.fill(dialog, entries);
-		dialog.set_text(STATUS, &status);
-		if status != self.status {
-			announce(&dialog, STATUS);
+		if let Some(line) = &mut self.status {
+			line.show(dialog, status);
 		}
-		self.status = status;
 	}
 
 	/// Shows `entries` in the list. An unchanged list is left alone; a changed one is refilled
@@ -203,9 +201,7 @@ fn cant_open(name: &str, why: &str) {
 
 impl DialogHandler for OpenPlaylistWindow {
 	fn init(&mut self, dialog: &Dialog) -> Option<u16> {
-		if let Err(error) = make_live_region(dialog, STATUS) {
-			console::print(&format!("foo_librespot: {}", error.message));
-		}
+		self.status = Some(StatusLine::new(*dialog, STATUS, String::new()));
 		let (poster, ask) = (refresh_poster(dialog), Arc::clone(&self.ask_when_logged_out));
 		self.login_subscription = Some(controller().subscribe(Box::new(move || {
 			ask.store(false, Ordering::SeqCst);
