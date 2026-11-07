@@ -3,9 +3,10 @@
 //! link.
 //!
 //! What the window lists lives in a main-thread [`CHOICES`]: showing the window sets it, and the
-//! window's handler reads it when the window opens and on each refresh.
+//! window's handler reads it when the window opens and on each refresh. A window that says
+//! "Loading…" waits for one lookup: its artists fill the window, and any other result closes it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::OnceLock;
 
 use foo_librespot_core::related::Opened;
@@ -68,6 +69,9 @@ thread_local! {
 	/// The artists the window lists, in the track's order, or `None` while Spotify is asked for
 	/// them. Only foobar2000's main thread sets and reads it.
 	static CHOICES: RefCell<Option<Vec<Opened>>> = const { RefCell::new(None) };
+	/// Set when the user closes the window while it says "Loading…", so the artists that lookup
+	/// finds don't open it again. Only foobar2000's main thread sets and reads it.
+	static CLOSED_WHILE_LOADING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Where the artist window appears. Called on foobar2000's main thread.
@@ -114,12 +118,32 @@ pub fn install_screen(screen: Box<dyn Screen>) {
 	)
 )]
 pub fn show_loading() {
+	CLOSED_WHILE_LOADING.set(false);
 	show(None);
 }
 
-/// Shows the window listing `artists`, opening it if it is closed. Main thread only.
+/// Shows the window listing `artists`, opening it if it is closed. When the user closed the
+/// window while it said "Loading…", it stays closed this once. Main thread only.
 pub fn show_choices(artists: Vec<Opened>) {
+	if CLOSED_WHILE_LOADING.replace(false) {
+		return;
+	}
 	show(Some(artists));
+}
+
+/// Closes the window if it says "Loading…", for a lookup that ended with no artists to list,
+/// and forgets that the user closed it while it did. A window listing artists stays. Main
+/// thread only.
+pub fn close_loading() {
+	CLOSED_WHILE_LOADING.set(false);
+	if let Some(dialog) = WINDOW.current().filter(|_| is_loading()) {
+		destroy(dialog);
+	}
+}
+
+/// Whether the window says "Loading…" rather than listing artists.
+fn is_loading() -> bool {
+	CHOICES.with_borrow(Option::is_none)
 }
 
 /// Makes the window list `choices`, opening it if it is closed, and brings it up. Says in the
@@ -208,7 +232,12 @@ impl DialogHandler for ArtistWindow {
 	fn command(&mut self, dialog: &Dialog, id: u16, notification: u16) {
 		match (id, notification) {
 			(IDOK, BN_CLICKED) | (LIST, LBN_DBLCLK) => self.pick(*dialog),
-			(IDCANCEL, _) => destroy(*dialog),
+			(IDCANCEL, _) => {
+				if is_loading() {
+					CLOSED_WHILE_LOADING.set(true);
+				}
+				destroy(*dialog);
+			}
 			_ => {}
 		}
 	}
@@ -231,7 +260,9 @@ mod tests {
 	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::{FakeApi, pump_messages, send_close, send_command};
 
-	use super::{LABEL, LIST, STATUS, WINDOW, show_choices, show_loading, window_template};
+	use super::{
+		LABEL, LIST, STATUS, WINDOW, close_loading, show_choices, show_loading, window_template,
+	};
 	use crate::testing::{FakeScreen, installed_screen};
 
 	const GETTY_TRACK: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
@@ -397,6 +428,78 @@ mod tests {
 		pump_messages();
 		assert!(!again.is_alive());
 		assert!(api.location_requests().is_empty());
+	}
+
+	#[test]
+	fn closing_while_loading_keeps_that_lookups_artists_from_opening_it() {
+		let (_, screen) = installed();
+		show_loading();
+		send_command(&WINDOW.current().unwrap(), IDCANCEL, BN_CLICKED);
+		show_choices(getty_artists());
+		assert!(WINDOW.current().is_none());
+		assert_eq!(screen.brought_up(), 1);
+		show_choices(getty_artists());
+		let dialog = WINDOW.current().expect("the next artists open the window");
+		assert_eq!(texts(dialog), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(screen.brought_up(), 2);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn artists_open_the_window_when_no_loading_window_was_closed() {
+		let (_, screen) = installed();
+		show_choices(getty_artists());
+		send_command(&WINDOW.current().unwrap(), IDCANCEL, BN_CLICKED);
+		assert_eq!(screen.brought_up(), 1);
+		show_choices(getty_artists());
+		let dialog = WINDOW.current().expect("closing a list doesn't stop the next one");
+		assert_eq!(texts(dialog), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(screen.brought_up(), 2);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn loading_again_forgets_a_loading_window_the_user_closed() {
+		let (_, screen) = installed();
+		show_loading();
+		send_command(&WINDOW.current().unwrap(), IDCANCEL, BN_CLICKED);
+		show_loading();
+		let dialog = WINDOW.current().unwrap();
+		show_choices(getty_artists());
+		pump_messages();
+		assert_eq!(WINDOW.current(), Some(dialog));
+		assert_eq!(texts(dialog), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(screen.brought_up(), 3);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn close_loading_closes_only_a_window_that_says_loading() {
+		let (_, screen) = installed();
+		show_loading();
+		let loading = WINDOW.current().unwrap();
+		close_loading();
+		assert!(!loading.is_alive());
+		assert!(WINDOW.current().is_none());
+		show_choices(getty_artists());
+		let listing = WINDOW.current().expect("a window closed by close_loading opens again");
+		close_loading();
+		assert!(listing.is_alive());
+		assert_eq!(texts(listing), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(screen.brought_up(), 2);
+		destroy(listing);
+	}
+
+	#[test]
+	fn close_loading_forgets_a_loading_window_the_user_closed() {
+		let (_, screen) = installed();
+		show_loading();
+		send_command(&WINDOW.current().unwrap(), IDCANCEL, BN_CLICKED);
+		close_loading();
+		show_choices(getty_artists());
+		let dialog = WINDOW.current().expect("a later lookup's artists open the window");
+		assert_eq!(screen.brought_up(), 2);
+		destroy(dialog);
 	}
 
 	#[test]
