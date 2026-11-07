@@ -54,7 +54,7 @@ pub use contextmenu::{
 	ContextMenuGroupHandle, ContextMenuHandle, FakeFields, FakeHandleList, NodeHandle, NodeRef,
 };
 pub use live_info::FakeLiveInfoList;
-pub use mainmenu::MainMenuHandle;
+pub use mainmenu::{MainMenuHandle, MainMenuNodeHandle};
 pub use playlists::FakeTab;
 pub use preferences::{FakePageCallback, PageInstanceHandle, PreferencesHandle};
 pub use windows::{hidden_window, pump_messages, send_close, send_command, wants_all_keys};
