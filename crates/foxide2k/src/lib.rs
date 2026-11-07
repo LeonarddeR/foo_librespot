@@ -33,6 +33,7 @@ pub mod initquit;
 pub mod input;
 pub mod live_info;
 pub mod main_thread;
+pub mod mainmenu;
 pub mod playback;
 pub mod playlist_loader;
 pub mod popup;

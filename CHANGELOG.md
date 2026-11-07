@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A checkbox under File > Preferences > Advanced > Tools > Spotify, "Log details to the console, for bug reports", shows foo_librespot's and librespot's debug messages in the console, for a bug report. It's off by default and takes effect at once. It never shows your login or other secrets, and links to Spotify's audio servers in any console line leave out their signed part.
 - For developers: foxide2k can add branches and checkboxes to Advanced preferences (`foxide2k::advconfig`).
+- For developers: foxide2k can add popups and commands to foobar2000's main menu (`foxide2k::mainmenu`).
 
 ### Changed
 
