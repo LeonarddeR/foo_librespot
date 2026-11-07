@@ -112,10 +112,9 @@ Checked by hand on 7 November 2026. The new work they showed is under "Later rou
   - In foobar2000 this would mean letting the Spotify app drive foobar2000's playback. That is a big feature and a different way of using foobar2000; consider it last.
   - It is feasible, but awkward. librespot's Connect code (`Spirc::new`) only works with librespot's own player, which decodes the audio itself and hands it to an output. foo_librespot would supply that output and pass the audio to foobar2000 as one endless stream of whatever the Spotify app picks, with the track info changing as tracks change. The Spotify tracks wouldn't be separate playlist entries.
   - Logging in comes with it. The `librespot-discovery` crate is what makes foobar2000 show up in the Spotify app's device list on the same network. Picking foobar2000 there hands it the app's login, without a browser or a code. Windows Firewall will ask once whether foobar2000 may accept network connections.
-- [ ] Keep each right-click menu entry's name once
-  - Each entry of the "Add to Spotify playlist" submenu holds its name twice. foxide2k's `MenuNode::Command` owns the text the menu shows as a `String`, and the entry's change keeps its own copy for the question, the console report and the failure popup (`Pick` in `crates/foo_librespot/src/playlist_menu.rs`).
-  - Keeping one copy needs a change to foxide2k's `MenuNode` API, such as a name the menu and the change can share.
-  - It saves a few hundred short strings on a large library.
+- [x] Keep each right-click menu entry's name once
+  - Each entry of the "Add to Spotify playlist" submenu held its name twice. foxide2k's `MenuNode::Command` owned the text the menu shows as a `String`, and the entry's change kept its own copy for the question, the console report and the failure popup (`Pick` in `crates/foo_librespot/src/playlist_menu.rs`).
+  - `MenuNode` names are now `Arc<str>` (`crates/foxide2k/src/contextmenu.rs`), and each entry's change shares its name with the menu. On a large library that saves a few hundred short strings.
 - [ ] Read only what changed in Liked Songs
   - Every library refresh reads Liked Songs whole. A playlist is read again only when its revision has changed.
   - Spotify's collection service has sync tokens: `collection2v2.proto` describes a `DeltaRequest` and a `DeltaResponse`.

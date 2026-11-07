@@ -68,13 +68,13 @@ impl ContextMenuItem for AddToSpotifyPlaylist {
 				vec![greyed("Couldn't load your playlists")]
 			}
 		};
-		Some(MenuNode::Popup { name: NAME.to_owned(), children })
+		Some(MenuNode::Popup { name: NAME.into(), children })
 	}
 }
 
 fn greyed(name: &str) -> MenuNode {
 	MenuNode::Command {
-		name: name.to_owned(),
+		name: name.into(),
 		checked: false,
 		enabled: false,
 		run: Box::new(|| Ok(())),
@@ -83,7 +83,7 @@ fn greyed(name: &str) -> MenuNode {
 
 fn login_entry() -> MenuNode {
 	MenuNode::Command {
-		name: "Log in to Spotify…".to_owned(),
+		name: "Log in to Spotify…".into(),
 		checked: false,
 		enabled: true,
 		run: Box::new(|| {
@@ -99,7 +99,7 @@ fn targets(library: &Library, items: &Arc<[ItemId]>) -> Vec<MenuNode> {
 	let tracks = tracks_of(items).len();
 	let liked = Pick {
 		target: Target::LikedSongs,
-		name: LIKED_SONGS.to_owned(),
+		name: LIKED_SONGS.into(),
 		checked: library.holds(Target::LikedSongs, items) == Some(true),
 		items: Arc::clone(items),
 		count: tracks,
@@ -109,7 +109,7 @@ fn targets(library: &Library, items: &Arc<[ItemId]>) -> Vec<MenuNode> {
 		let target = Target::Playlist(playlist.id);
 		Pick {
 			target,
-			name: playlist.display_name(),
+			name: playlist.display_name().into(),
 			checked: library.holds(target, items) == Some(true),
 			items: Arc::clone(items),
 			count: items.len(),
@@ -123,7 +123,7 @@ fn targets(library: &Library, items: &Arc<[ItemId]>) -> Vec<MenuNode> {
 #[derive(Clone)]
 struct Pick {
 	target: Target,
-	name: String,
+	name: Arc<str>,
 	checked: bool,
 	items: Arc<[ItemId]>,
 	/// How many tracks the question and the report speak of.
@@ -133,7 +133,7 @@ struct Pick {
 impl Pick {
 	fn node(self, enabled: bool) -> MenuNode {
 		MenuNode::Command {
-			name: self.name.clone(),
+			name: Arc::clone(&self.name),
 			checked: self.checked,
 			enabled,
 			run: Box::new(move || self.choose()),

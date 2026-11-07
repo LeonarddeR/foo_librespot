@@ -2,6 +2,7 @@
 
 use std::ffi::c_void;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use crate::abi::contextmenu::{
 	ENABLED_DEFAULT_ON, FLAG_CHECKED, FLAG_DISABLED, FLAG_GRAYED, GROUP_ROOT, ITEM_IID,
@@ -21,17 +22,18 @@ use crate::strings::set_string;
 /// What a command does: runs on the main thread when the command is picked.
 pub type RunFn = Box<dyn Fn() -> Result<()> + Send + Sync>;
 
-/// What a right-click menu item shows, built each time the menu opens.
+/// What a right-click menu item shows, built each time the menu opens. Each name is an `Arc<str>`
+/// that the command behind it can share; `&str` and `String` convert with `.into()`.
 pub enum MenuNode {
 	Command {
-		name: String,
+		name: Arc<str>,
 		checked: bool,
 		/// False shows it greyed out, and it can't be picked.
 		enabled: bool,
 		run: RunFn,
 	},
 	Popup {
-		name: String,
+		name: Arc<str>,
 		children: Vec<Self>,
 	},
 }
@@ -173,12 +175,12 @@ enum NodeKind {
 	/// An item with nothing to show.
 	Hidden,
 	Command {
-		name: String,
+		name: Arc<str>,
 		flags: u32,
 		run: RunFn,
 	},
 	Popup {
-		name: String,
+		name: Arc<str>,
 		children: Vec<NodeObject>,
 	},
 }
@@ -339,6 +341,7 @@ mod tests {
 		static RAN_WITH: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 		static RUNS: Cell<usize> = const { Cell::new(0) };
 		static FLAG: RefCell<Arc<AtomicBool>> = RefCell::new(Arc::new(AtomicBool::new(false)));
+		static SHARED: RefCell<Arc<str>> = RefCell::new(Arc::from(""));
 	}
 
 	/// A command that keeps `paths` to record when it runs.
@@ -426,6 +429,23 @@ mod tests {
 						Ok(())
 					}),
 				}],
+			})
+		}
+	}
+
+	struct SharedItem;
+
+	impl ContextMenuItem for SharedItem {
+		const GUID: Guid = Guid::from_u128(0x7d2c91a4_3b58_4e06_9f13_c8a5e0b64d75);
+		const NAME: &'static str = "Shared";
+		const DESCRIPTION: &'static str = "Shows the name in `SHARED`.";
+
+		fn build(_selection: &HandleList<'_>) -> Option<MenuNode> {
+			Some(MenuNode::Command {
+				name: SHARED.with_borrow(Arc::clone),
+				checked: false,
+				enabled: true,
+				run: Box::new(|| Ok(())),
 			})
 		}
 	}
@@ -528,6 +548,18 @@ mod tests {
 		assert!(!dropped.load(Ordering::SeqCst));
 		drop(root);
 		assert!(dropped.load(Ordering::SeqCst));
+	}
+
+	#[test]
+	fn a_menu_shares_its_names_instead_of_copying_them() {
+		let name: Arc<str> = Arc::from("Shared");
+		SHARED.with_borrow_mut(|shared| *shared = Arc::clone(&name));
+		let list = FakeHandleList::new(&[PATH]);
+		let root = ContextMenuHandle::new(context_menu_service::<SharedItem>()).instantiate(&list);
+		assert_eq!(root.node().display(&list), Some(("Shared".into(), 0)));
+		assert_eq!(Arc::strong_count(&name), 3); // `name`, SHARED and the menu
+		drop(root);
+		assert_eq!(Arc::strong_count(&name), 2);
 	}
 
 	#[test]
