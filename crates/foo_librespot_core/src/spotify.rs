@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::CoreError;
 use crate::art::{CoverCache, fetch_cover};
 use crate::audio::format::Bitrate;
 use crate::audio::keys::AudioKeys;
@@ -12,16 +11,18 @@ use crate::audio::track::{
 	FetchedTrack, KeyOrigin, SpotifyTrack, fetch_track, wrong_remembered_key,
 };
 use crate::library::{Edit, LibraryCache, LibraryState, LibrespotLibrary, OnChanged, Target};
-use crate::link::{ItemId, Link};
+use crate::link::{ItemId, Link, LinkKind};
 use crate::login::{DeviceCode, LibrespotAuthorizer, device_login};
 use crate::metadata::{TrackInfo, largest_cover};
 use crate::profile::Profile;
+use crate::related::{Found, Opened, Related, radio_playlist, radio_seed, related_in};
 use crate::resolve::{
-	AlbumDetailsCache, ArtistTracks, CachedSource, LibrespotMetadata, Resolved, TrackCache, item,
-	resolve,
+	AlbumDetailsCache, ArtistTracks, CachedSource, LibrespotMetadata, MetadataSource, Resolved,
+	TrackCache, item, resolve, retry_rate_limited,
 };
 use crate::runtime::CoreRuntime;
 use crate::session::{LibrespotConnector, SessionManager};
+use crate::{CoreError, SpotifyUri};
 
 /// How long [`Core::shutdown`] gives running Spotify calls to finish.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -196,6 +197,32 @@ impl Core {
 		)?
 	}
 
+	/// The album, artist or show `item` belongs to, from its metadata, or the radio playlist
+	/// Spotify makes from a track, named as Spotify names it.
+	pub fn related(
+		&self,
+		item: ItemId,
+		what: &Related,
+		is_aborting: &dyn Fn() -> bool,
+	) -> Result<Found, CoreError> {
+		if *what != Related::Radio {
+			return related_in(&*self.track_info(item, is_aborting)?, what);
+		}
+		let seed = SpotifyUri::Track { id: radio_seed(item)? };
+		self.runtime.block_on(
+			async {
+				let session = self.sessions.session().await?;
+				let answer =
+					retry_rate_limited(|| session.spclient().get_radio_for_track(&seed)).await?;
+				let id = radio_playlist(&answer)?;
+				let (name, _) =
+					LibrespotMetadata::new(session, self.albums.clone()).playlist(id).await?;
+				Ok(Found::One(Opened { name, link: Link::Id { kind: LinkKind::Playlist, id } }))
+			},
+			is_aborting,
+		)?
+	}
+
 	/// Opens a track or episode for decoding. The download starts in the background; reading
 	/// blocks the caller until the data it needs has arrived. A track played before uses its
 	/// remembered key instead of asking Spotify.
@@ -361,6 +388,7 @@ mod tests {
 	use crate::library::{Edit, LibraryState, Target};
 	use crate::link::{ItemId, Link, LinkKind};
 	use crate::profile::Profile;
+	use crate::related::Related;
 	use crate::resolve::ArtistTracks;
 	use crate::{CoreError, FileId, SpotifyId};
 
@@ -421,6 +449,31 @@ mod tests {
 		let core = Core::new(dir.path()).unwrap();
 		let result = core.resolve(&album(), ArtistTracks::Popular, &|| false);
 		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
+		core.shutdown();
+	}
+
+	#[test]
+	fn related_without_login_is_not_logged_in() {
+		let dir = tempfile::tempdir().unwrap();
+		let core = Core::new(dir.path()).unwrap();
+		let track = ItemId::Track(SpotifyId::from_base62("2hQxLiI93xdjqENJuKeXjO").unwrap());
+		for what in [Related::Album, Related::Artist(None), Related::Radio] {
+			let result = core.related(track, &what, &|| false);
+			assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{what:?}: {result:?}");
+		}
+		core.shutdown();
+	}
+
+	#[test]
+	fn an_episode_has_no_radio_to_ask_spotify_for() {
+		let dir = tempfile::tempdir().unwrap();
+		let core = Core::new(dir.path()).unwrap();
+		let episode = ItemId::Episode(SpotifyId::from_base62("4QomYTPgZ1mpVbUmxBsUpz").unwrap());
+		let result = core.related(episode, &Related::Radio, &|| false);
+		assert!(
+			matches!(&result, Err(CoreError::Unavailable(reason)) if reason == "this is an episode, not a track"),
+			"{result:?}"
+		);
 		core.shutdown();
 	}
 

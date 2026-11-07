@@ -11,14 +11,15 @@ use foo_librespot_core::library::{
 	Change, Edit, Library, LibraryPlaylist, LibraryState, OnChanged, PlaylistContents, Subscribers,
 	Target,
 };
-use foo_librespot_core::link::{ItemId, Link};
+use foo_librespot_core::link::{ItemId, Link, LinkKind};
 use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::{ItemLinks, TrackInfo};
+use foo_librespot_core::related::{Found, Opened, Related, related_in};
 use foo_librespot_core::replaygain::ReplayGain;
 use foo_librespot_core::resolve::{ArtistTracks, Resolved};
 use foo_librespot_core::{CoreError, SpotifyId};
 
-use crate::backend::{Backend, LoginTask, OnCode, OnDone, PcmTrack};
+use crate::backend::{Backend, LoginTask, OnCode, OnDone, OnRelated, PcmTrack};
 
 pub const CHIRP: &[u8] = include_bytes!("../../foo_librespot_core/tests/fixtures/chirp.ogg");
 
@@ -146,6 +147,8 @@ struct State {
 	library_calls: AtomicUsize,
 	changes: Mutex<Vec<RecordedChange>>,
 	change_result: Mutex<Option<ChangeResult>>,
+	related_calls: Mutex<Vec<(ItemId, Related)>>,
+	related_result: Mutex<Option<RelatedResult>>,
 }
 
 /// What a change ends with.
@@ -153,6 +156,28 @@ pub type ChangeResult = fn() -> Result<Change, CoreError>;
 
 /// A change that was asked for, and the thread it ran and reported on.
 pub type RecordedChange = (Edit, Target, Vec<ItemId>, std::thread::ThreadId);
+
+/// What a lookup of an item ends with.
+pub type RelatedResult = fn(ItemId, &Related) -> Result<Found, CoreError>;
+
+/// "In Christ Alone Radio", the radio Spotify makes from "In Christ Alone".
+pub const RADIO_ID: &str = "37i9dQZF1E8O9hzsgLi5jr";
+
+/// What a lookup ends with unless [`FakeBackend::related_with`] says otherwise: the album, artists
+/// or show of the info [`Backend::track_info`] gives, and "In Christ Alone Radio" for a track.
+fn related_by_default(item: ItemId, what: &Related) -> Result<Found, CoreError> {
+	match (item, what) {
+		(ItemId::Track(_), Related::Radio) => Ok(Found::One(Opened {
+			name: "In Christ Alone Radio".to_owned(),
+			link: Link::Id {
+				kind: LinkKind::Playlist,
+				id: SpotifyId::from_base62(RADIO_ID).unwrap(),
+			},
+		})),
+		(ItemId::Track(id), what) => related_in(&track_info(id, "In Christ Alone"), what),
+		(ItemId::Episode(id), what) => related_in(&episode_info(id, "Singing the Psalms"), what),
+	}
+}
 
 /// A login the test answers itself, with [`FakeBackend::send_code`] and
 /// [`FakeBackend::finish_login`].
@@ -267,6 +292,16 @@ impl FakeBackend {
 	/// Makes later changes end with `result()`; by default every item counts as changed.
 	pub fn change_with(&self, result: ChangeResult) {
 		*self.0.change_result.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
+	}
+
+	/// Makes later lookups end with `result(item, what)`.
+	pub fn related_with(&self, result: RelatedResult) {
+		*self.0.related_result.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
+	}
+
+	/// The lookups asked for so far, in order.
+	pub fn related_calls(&self) -> Vec<(ItemId, Related)> {
+		self.0.related_calls.lock().unwrap_or_else(PoisonError::into_inner).clone()
 	}
 
 	fn library_state(&self) -> LibraryState {
@@ -468,6 +503,23 @@ impl Backend for FakeBackend {
 			thread.thread().id(),
 		));
 		let _ = recorded.send(());
+	}
+
+	/// Records the lookup, then runs it and `on_done` on a thread of its own.
+	fn related(&self, item: ItemId, what: Related, on_done: OnRelated) {
+		self.0
+			.related_calls
+			.lock()
+			.unwrap_or_else(PoisonError::into_inner)
+			.push((item, what.clone()));
+		let fake = self.clone();
+		std::thread::spawn(move || {
+			let result = fake.enter(&|| false).and_then(|()| {
+				let result = *fake.0.related_result.lock().unwrap_or_else(PoisonError::into_inner);
+				result.unwrap_or(related_by_default)(item, &what)
+			});
+			on_done(result);
+		});
 	}
 }
 
@@ -688,4 +740,64 @@ pub fn stop_after(
 pub fn lock_shared_state() -> std::sync::MutexGuard<'static, ()> {
 	static SHARED: Mutex<()> = Mutex::new(());
 	SHARED.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+	use std::sync::mpsc;
+	use std::time::Duration;
+
+	use foo_librespot_core::CoreError;
+	use foo_librespot_core::link::{ItemId, Link, LinkKind};
+	use foo_librespot_core::related::{Found, Opened, Related};
+
+	use super::{FakeBackend, track_id};
+	use crate::backend::Backend;
+
+	/// Looks `what` up for the Getty track and waits for the answer and the thread it came on.
+	fn look_up(
+		fake: &FakeBackend,
+		what: Related,
+	) -> (Result<Found, CoreError>, std::thread::ThreadId) {
+		let (done, answer) = mpsc::channel();
+		fake.related(
+			ItemId::Track(track_id()),
+			what,
+			Box::new(move |result| {
+				let _ = done.send((result, std::thread::current().id()));
+			}),
+		);
+		answer.recv_timeout(Duration::from_secs(5)).unwrap()
+	}
+
+	#[test]
+	fn a_lookup_is_recorded_and_answered_from_the_tracks_info_on_another_thread() {
+		let fake = FakeBackend::default();
+		let (result, thread) = look_up(&fake, Related::Album);
+		assert_eq!(fake.related_calls(), [(ItemId::Track(track_id()), Related::Album)]);
+		let album = super::track_info(track_id(), "In Christ Alone").links.album.unwrap();
+		assert_eq!(
+			result.unwrap(),
+			Found::One(Opened {
+				name: "In Christ Alone".to_owned(),
+				link: Link::Id { kind: LinkKind::Album, id: album },
+			})
+		);
+		assert_ne!(thread, std::thread::current().id());
+	}
+
+	#[test]
+	fn a_lookup_ends_as_related_with_says() {
+		let fake = FakeBackend::default();
+		fake.related_with(|_, _| Err(CoreError::Unavailable("gone".to_owned())));
+		let (result, _) = look_up(&fake, Related::Artist(Some("Kristyn Getty".to_owned())));
+		assert!(
+			matches!(&result, Err(CoreError::Unavailable(reason)) if reason == "gone"),
+			"{result:?}"
+		);
+		assert_eq!(
+			fake.related_calls(),
+			[(ItemId::Track(track_id()), Related::Artist(Some("Kristyn Getty".to_owned())))]
+		);
+	}
 }

@@ -12,6 +12,7 @@ use foo_librespot_core::library::{Edit, LibraryState, OnChanged, Subscribers, Ta
 use foo_librespot_core::link::{ItemId, Link};
 use foo_librespot_core::login::DeviceCode;
 use foo_librespot_core::metadata::TrackInfo;
+use foo_librespot_core::related::{Found, Related};
 use foo_librespot_core::resolve::{ArtistTracks, Resolved};
 use foo_librespot_core::{Core, CoreError, LoginHandle};
 use foxide2k::host::host;
@@ -23,6 +24,9 @@ use crate::settings;
 pub type OnCode = Box<dyn FnOnce(DeviceCode) + Send>;
 /// Gets the Spotify username, or why a login failed.
 pub type OnDone = Box<dyn FnOnce(Result<String, CoreError>) + Send>;
+/// Gets what a lookup found, or why it failed.
+#[cfg_attr(not(test), expect(dead_code, reason = "the Spotify menus will look items up"))]
+pub type OnRelated = Box<dyn FnOnce(Result<Found, CoreError>) + Send>;
 
 /// Everything the services need from Spotify. Every call that takes `is_aborting` blocks and
 /// returns [`CoreError::Aborted`] soon after it turns true.
@@ -77,6 +81,12 @@ pub trait Backend: Send + Sync {
 	/// when it doesn't run yet; a change still running when foobar2000 quits is dropped
 	/// unreported.
 	fn change(&self, edit: Edit, target: Target, items: &[ItemId], on_done: OnChanged);
+	/// Starts finding the album, artist or show `item` belongs to, or a track's radio, and
+	/// returns at once. `on_done` gets what was found, on another thread, which waits for
+	/// Spotify's core to start when it doesn't run yet; a lookup still running when foobar2000
+	/// quits is dropped unreported.
+	#[cfg_attr(not(test), expect(dead_code, reason = "the Spotify menus will look items up"))]
+	fn related(&self, item: ItemId, what: Related, on_done: OnRelated);
 }
 
 /// A login running in the background.
@@ -309,6 +319,23 @@ impl Backend for CoreBackend {
 			log::warn!("couldn't start a Spotify playlist change: {error}");
 		}
 	}
+
+	/// Looks up on a thread of its own, which starts the core when it doesn't run yet. Once the
+	/// core is shut down, the lookup stops and `on_done` isn't called.
+	fn related(&self, item: ItemId, what: Related, on_done: OnRelated) {
+		let slot = self.slot;
+		let spawned =
+			std::thread::Builder::new().name("foo_librespot related".to_owned()).spawn(move || {
+				let shut_down = || matches!(slot.core.now(), Phase::ShutDown);
+				let result = slot.core().and_then(|core| core.related(item, &what, &shut_down));
+				if !shut_down() {
+					on_done(result);
+				}
+			});
+		if let Err(error) = spawned {
+			log::warn!("couldn't start a Spotify lookup: {error}");
+		}
+	}
 }
 
 static BACKEND: OnceLock<Box<dyn Backend>> = OnceLock::new();
@@ -334,6 +361,7 @@ mod tests {
 
 	use foo_librespot_core::library::{Edit, LibraryState, Target};
 	use foo_librespot_core::link::ItemId;
+	use foo_librespot_core::related::Related;
 	use foo_librespot_core::{Core, CoreError};
 
 	use super::{Backend, CoreBackend, CoreSlot, profile_folder};
@@ -406,6 +434,45 @@ mod tests {
 			Edit::Add,
 			Target::LikedSongs,
 			&[ItemId::Track(track_id())],
+			Box::new(move |result| {
+				let _ = done.send(result);
+			}),
+		);
+		wait_until(|| matches!(QUITTING.core.now(), Phase::Starting));
+		QUITTING.core.shutdown(Duration::ZERO, Core::shutdown);
+		assert!(result.recv_timeout(Duration::from_secs(2)).is_err());
+	}
+
+	#[test]
+	fn a_lookup_before_the_core_starts_waits_for_it_off_the_calling_thread() {
+		static SLOW: CoreSlot = CoreSlot::new(slow_start);
+		let backend = CoreBackend { slot: &SLOW };
+		let (done, result) = mpsc::channel();
+		let asked = Instant::now();
+		backend.related(
+			ItemId::Track(track_id()),
+			Related::Album,
+			Box::new(move |result| {
+				let _ = done.send((result, std::thread::current().id()));
+			}),
+		);
+		assert!(asked.elapsed() < Duration::from_millis(250), "{:?}", asked.elapsed());
+		let (result, thread) = result.recv_timeout(Duration::from_secs(5)).unwrap();
+		assert!(
+			matches!(&result, Err(CoreError::Unavailable(reason)) if reason == "the profile folder is busy"),
+			"{result:?}"
+		);
+		assert_ne!(thread, std::thread::current().id());
+	}
+
+	#[test]
+	fn a_lookup_that_ends_after_shutdown_reports_nothing() {
+		static QUITTING: CoreSlot = CoreSlot::new(slow_start);
+		let backend = CoreBackend { slot: &QUITTING };
+		let (done, result) = mpsc::channel();
+		backend.related(
+			ItemId::Track(track_id()),
+			Related::Radio,
 			Box::new(move |result| {
 				let _ = done.send(result);
 			}),

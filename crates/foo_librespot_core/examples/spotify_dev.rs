@@ -5,10 +5,14 @@
 //! cargo run -p foo_librespot_core --example spotify_dev -- resolve <link> [--popular]
 //! cargo run -p foo_librespot_core --example spotify_dev -- decode <track link> <seconds> [--seek <seconds>]
 //! cargo run -p foo_librespot_core --example spotify_dev -- library
+//! cargo run -p foo_librespot_core --example spotify_dev -- related <track link> album|artist [<name>]|radio|show
 //! cargo run -p foo_librespot_core --example spotify_dev -- logout
 //! ```
 //!
 //! `library` lists the account's playlists, saying which it can change, and the size of Liked Songs.
+//! `related` prints the album, artist or show a track or episode belongs to, or a track's radio
+//! playlist: each name with its link. `artist` lists every artist of the track, or, given a name,
+//! that one.
 //! The login is kept in `.spotify-dev` in the current folder, or in `--profile <folder>`.
 //! An artist link resolves to the artist's whole discography, as in foobar2000, or to their
 //! popular tracks with `--popular`.
@@ -23,10 +27,11 @@ use foo_librespot_core::audio::decoder::SAMPLE_RATE;
 use foo_librespot_core::audio::format::Bitrate;
 use foo_librespot_core::library::{LIKED_SONGS, LibraryState};
 use foo_librespot_core::link::parse_link;
+use foo_librespot_core::related::{Found, Opened, Related};
 use foo_librespot_core::resolve::ArtistTracks;
 use foo_librespot_core::{Core, CoreError};
 
-const USAGE: &str = "usage: spotify_dev [--profile <folder>] login | logout | library | resolve <link> [--popular] | decode <track link> <seconds> [--seek <seconds>]";
+const USAGE: &str = "usage: spotify_dev [--profile <folder>] login | logout | library | resolve <link> [--popular] | decode <track link> <seconds> [--seek <seconds>] | related <track link> album|artist [<name>]|radio|show";
 
 fn main() -> ExitCode {
 	init_logger();
@@ -53,6 +58,13 @@ fn main() -> ExitCode {
 		["library"] => library(&core),
 		["resolve", link] => resolve(&core, link, artist_tracks),
 		["decode", link, seconds] => decode(&core, link, seconds, seek.as_deref()),
+		["related", link, "album"] => related(&core, link, &Related::Album),
+		["related", link, "artist"] => related(&core, link, &Related::Artist(None)),
+		["related", link, "artist", name] => {
+			related(&core, link, &Related::Artist(Some((*name).to_owned())))
+		}
+		["related", link, "radio"] => related(&core, link, &Related::Radio),
+		["related", link, "show"] => related(&core, link, &Related::Show),
 		_ => {
 			eprintln!("{USAGE}");
 			core.shutdown();
@@ -165,6 +177,21 @@ fn resolve(core: &Core, link: &str, artist_tracks: ArtistTracks) -> Result<(), C
 		resolved.skipped.len(),
 		resolved.duplicates
 	);
+	Ok(())
+}
+
+/// Prints what `what` finds for the track or episode at `link`: one name and link per line.
+fn related(core: &Core, link: &str, what: &Related) -> Result<(), CoreError> {
+	let Some(item) = parse_link(link)?.item() else {
+		return Err(CoreError::Unavailable("related needs a track or episode link".to_owned()));
+	};
+	let opened = match core.related(item, what, &|| false)? {
+		Found::One(opened) => vec![opened],
+		Found::Artists(artists) => artists,
+	};
+	for Opened { name, link } in opened {
+		println!("{name} {}", link.uri());
+	}
 	Ok(())
 }
 
