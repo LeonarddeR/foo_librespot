@@ -17,6 +17,7 @@
     BN_CLICKED
     BN_SETFOCUS
     BS_AUTOCHECKBOX
+    BS_DEFPUSHBUTTON
     BS_GROUPBOX
     BS_NOTIFY
     BS_PUSHBUTTON
@@ -63,9 +64,19 @@
     GetWindowTextW
     IAccPropServices
     IDCANCEL
+    IDOK
     IsWindow
     IsWindowEnabled
     LiveSetting
+    LB_ADDSTRING
+    LB_GETCOUNT
+    LB_GETCURSEL
+    LB_GETTEXT
+    LB_GETTEXTLEN
+    LB_RESETCONTENT
+    LB_SETCURSEL
+    LBN_DBLCLK
+    LBS_NOTIFY
     MSG
     NotifyWinEvent
     OBJID_CLIENT

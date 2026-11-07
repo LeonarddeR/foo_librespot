@@ -83,7 +83,7 @@ Checked by hand on 7 November 2026. The new work they showed is under "Later rou
   - foo_librespot can't use foobar2000's own proxy setting. The SDK gives components no way to read it, and foobar2000's web client can't carry librespot's connection to Spotify, which isn't ordinary web traffic.
   - The decision: follow Windows' proxy settings, as foobar2000 does when its proxy choice is "Use system proxy settings". There is no setting of our own. A proxy typed only into foobar2000's preferences is not used.
   - Windows can name the proxy outright or through an automatic configuration script; WinHTTP's `WinHttpGetIEProxyConfigForCurrentUser` and `WinHttpGetProxyForUrl` answer both. Every connection foo_librespot makes must use it: the session, the login and the cover downloads.
-- [ ] Menu commands in foxide2k
+- [x] Menu commands in foxide2k
   - Several ideas below need a command in a menu: the right-click menu on playlist entries, or foobar2000's main menu. Some also need to create or change foobar2000 playlists.
   - foxide2k has no bindings for menus or for foobar2000's playlist manager yet. This comes first for the items marked "needs menus".
 - [ ] Bring foxide2k further in line with the foobar2000 SDK

@@ -1,9 +1,9 @@
 //! Fakes of foobar2000's core services that every [`FakeApi`](super::FakeApi) registers:
-//! popups, the settings store, the main thread, the modeless window list and the player.
+//! popups and questions, the settings store, the main thread, the modeless window list and the player.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char, c_void};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::FakeApi;
@@ -16,7 +16,7 @@ use crate::abi::main_thread::{
 };
 use crate::abi::playback_control::{self, PlaybackControlVtbl};
 use crate::abi::playlist;
-use crate::abi::popup::{self, PopupMessageVtbl};
+use crate::abi::popup::{self, BUTTON_NO, BUTTON_YES, PopupMessageVtbl, PopupV3Vtbl, Query};
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 use crate::cxx::try_host;
 use crate::guid::Guid;
@@ -28,6 +28,8 @@ use crate::strings::bytes_of;
 #[derive(Default)]
 pub(super) struct FakeState {
 	popups: Mutex<Vec<(String, String, PopupIcon)>>,
+	questions: Mutex<Vec<(String, String, u32)>>,
+	answer_yes: AtomicBool,
 	config: Mutex<HashMap<String, i64>>,
 	main_thread: Mutex<Vec<ServicePtr>>,
 	modeless: Mutex<Vec<isize>>,
@@ -37,6 +39,7 @@ pub(super) struct FakeState {
 
 pub(super) fn register(api: &FakeApi, state: &Arc<FakeState>) {
 	api.add_service(popup::IID, new_service(FakePopup(Arc::clone(state))));
+	api.add_service(popup::V3_IID, new_service(FakePopupV3(Arc::clone(state))));
 	api.add_service(config_store::IID, new_service(FakeConfigStore(Arc::clone(state))));
 	api.add_service(MANAGER_IID, new_service(FakeMainThread(Arc::clone(state))));
 	api.add_service(MODELESS_IID, new_service(FakeModeless(Arc::clone(state))));
@@ -49,6 +52,16 @@ impl FakeApi {
 	/// Every popup shown so far, as (title, message, icon).
 	pub fn popups(&self) -> Vec<(String, String, PopupIcon)> {
 		self.state.popups.lock().unwrap_or_else(PoisonError::into_inner).clone()
+	}
+
+	/// Makes later yes/no questions come back answered Yes or No; the default answer is No.
+	pub fn answer_questions(&self, yes: bool) {
+		self.state.answer_yes.store(yes, Ordering::SeqCst);
+	}
+
+	/// Every yes/no question asked so far, as (title, message, default button).
+	pub fn questions(&self) -> Vec<(String, String, u32)> {
+		self.state.questions.lock().unwrap_or_else(PoisonError::into_inner).clone()
 	}
 
 	/// The integer stored under `name` in the fake settings store.
@@ -119,6 +132,35 @@ unsafe extern "C-unwind" fn popup_show(
 		text(message, message_length),
 		PopupIcon::from_raw(icon),
 	));
+}
+
+struct FakePopupV3(Arc<FakeState>);
+
+unsafe impl ServiceImpl for FakePopupV3 {
+	type Vtbl = PopupV3Vtbl;
+	const IIDS: &'static [Guid] = &[popup::V3_IID];
+	const VTBL: &'static PopupV3Vtbl = &PopupV3Vtbl {
+		base: ServiceBaseVtbl::new::<Self>(),
+		show_query: popup_query,
+		show_query_modal: popup_query_modal,
+	};
+}
+
+unsafe extern "C-unwind" fn popup_query(this: *mut ServiceBase, query: *const Query) {
+	unsafe { popup_query_modal(this, query) };
+}
+
+unsafe extern "C-unwind" fn popup_query_modal(this: *mut ServiceBase, query: *const Query) -> u32 {
+	let state = &unsafe { ServiceObject::<FakePopupV3>::value(this) }.0;
+	let query = unsafe { &*query };
+	let cstr =
+		|pointer: *const c_char| unsafe { CStr::from_ptr(pointer) }.to_string_lossy().into_owned();
+	state.questions.lock().unwrap_or_else(PoisonError::into_inner).push((
+		cstr(query.title),
+		cstr(query.message),
+		query.default_button,
+	));
+	if state.answer_yes.load(Ordering::SeqCst) { BUTTON_YES } else { BUTTON_NO }
 }
 
 struct FakeConfigStore(Arc<FakeState>);

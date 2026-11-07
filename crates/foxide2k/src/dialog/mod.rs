@@ -30,6 +30,10 @@ pub mod style {
 	pub const ES_AUTOHSCROLL: u32 = win::ES_AUTOHSCROLL.cast_unsigned();
 	pub const SS_NOPREFIX: u32 = win::SS_NOPREFIX.cast_unsigned();
 	pub const CBS_DROPDOWNLIST: u32 = win::CBS_DROPDOWNLIST.cast_unsigned();
+	/// Makes a list box tell its dialog about clicks and double clicks.
+	pub const LBS_NOTIFY: u32 = win::LBS_NOTIFY.cast_unsigned();
+	/// A push button that Enter presses while focus is on a control that doesn't use Enter.
+	pub const BS_DEFPUSHBUTTON: u32 = win::BS_DEFPUSHBUTTON.cast_unsigned();
 }
 
 /// `WM_COMMAND` notification codes and the ids Windows gives meaning to.
@@ -44,6 +48,10 @@ pub mod notify {
 	pub const CBN_SELCHANGE: u16 = win::CBN_SELCHANGE as u16;
 	/// The id of a dialog's Cancel or Close button, which Escape and the close box press.
 	pub const IDCANCEL: u16 = win::IDCANCEL as u16;
+	/// The id of a dialog's default button, which Enter presses.
+	pub const IDOK: u16 = win::IDOK as u16;
+	/// Sent by a list box with `LBS_NOTIFY` when an item is double clicked.
+	pub const LBN_DBLCLK: u16 = win::LBN_DBLCLK as u16;
 }
 
 #[cfg(test)]
@@ -63,5 +71,7 @@ mod tests {
 		assert_eq!((notify::BN_CLICKED, notify::CBN_SELCHANGE, notify::IDCANCEL), (0, 1, 2));
 		assert_eq!(style::BS_NOTIFY, 0x4000);
 		assert_eq!((notify::BN_SETFOCUS, notify::EN_SETFOCUS), (6, 0x0100));
+		assert_eq!((style::LBS_NOTIFY, style::BS_DEFPUSHBUTTON), (1, 1));
+		assert_eq!((notify::LBN_DBLCLK, notify::IDOK), (2, 1));
 	}
 }

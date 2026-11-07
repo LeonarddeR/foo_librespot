@@ -10,6 +10,7 @@ pub enum ControlClass {
 	Edit,
 	Static,
 	ComboBox,
+	ListBox,
 }
 
 impl ControlClass {
@@ -19,6 +20,7 @@ impl ControlClass {
 			Self::Edit => 0x0081,
 			Self::Static => 0x0082,
 			Self::ComboBox => 0x0085,
+			Self::ListBox => 0x0083,
 		}
 	}
 }
@@ -196,6 +198,7 @@ mod tests {
 			(ControlClass::Edit, 0x0081),
 			(ControlClass::Static, 0x0082),
 			(ControlClass::ComboBox, 0x0085),
+			(ControlClass::ListBox, 0x0083),
 		];
 		for (class, atom) in classes {
 			let words = template(vec![item(1, class, "")]).to_bytes();

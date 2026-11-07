@@ -13,9 +13,10 @@ use crate::bindings::Windows::Win32::{
 	BM_GETCHECK, BM_SETCHECK, BST_CHECKED, BST_UNCHECKED, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL,
 	CreateDialogIndirectParamW, DWLP_MSGRESULT, DestroyWindow, EnableWindow, GWL_STYLE,
 	GetDlgCtrlID, GetDlgItem, GetFocus, GetNextDlgTabItem, GetWindowLongPtrW, GetWindowTextLengthW,
-	GetWindowTextW, HWND, IsWindow, IsWindowEnabled, LPARAM, PostMessageW, SW_HIDE, SW_SHOW,
-	SW_SHOWNA, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
-	WM_APP, WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY, WM_NEXTDLGCTL, WPARAM, WS_VISIBLE,
+	GetWindowTextW, HWND, IsWindow, IsWindowEnabled, LB_ADDSTRING, LB_GETCOUNT, LB_GETCURSEL,
+	LB_GETTEXT, LB_GETTEXTLEN, LB_RESETCONTENT, LB_SETCURSEL, LPARAM, PostMessageW, SW_HIDE,
+	SW_SHOW, SW_SHOWNA, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW,
+	ShowWindow, WM_APP, WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY, WM_NEXTDLGCTL, WPARAM, WS_VISIBLE,
 };
 use crate::console;
 use crate::cxx::ExceptionKind;
@@ -136,6 +137,59 @@ impl Dialog {
 		let selected =
 			unsafe { SendMessageW(self.control(id), CB_GETCURSEL as u32, WPARAM(0), LPARAM(0)) };
 		usize::try_from(selected.0).ok()
+	}
+
+	pub fn list_clear(&self, id: u16) {
+		unsafe { SendMessageW(self.control(id), LB_RESETCONTENT as u32, WPARAM(0), LPARAM(0)) };
+	}
+
+	pub fn list_add(&self, id: u16, text: &str) {
+		let text = wide(text);
+		unsafe {
+			SendMessageW(
+				self.control(id),
+				LB_ADDSTRING as u32,
+				WPARAM(0),
+				LPARAM(text.as_ptr() as isize),
+			);
+		}
+	}
+
+	pub fn list_select(&self, id: u16, index: usize) {
+		unsafe { SendMessageW(self.control(id), LB_SETCURSEL as u32, WPARAM(index), LPARAM(0)) };
+	}
+
+	/// The selected item, or `None` when nothing is selected.
+	pub fn list_selection(&self, id: u16) -> Option<usize> {
+		let selected =
+			unsafe { SendMessageW(self.control(id), LB_GETCURSEL as u32, WPARAM(0), LPARAM(0)) };
+		usize::try_from(selected.0).ok()
+	}
+
+	pub fn list_count(&self, id: u16) -> usize {
+		let count =
+			unsafe { SendMessageW(self.control(id), LB_GETCOUNT as u32, WPARAM(0), LPARAM(0)) };
+		usize::try_from(count.0).unwrap_or(0)
+	}
+
+	/// The text of item `index`, or an empty string when there is no such item.
+	pub fn list_text(&self, id: u16, index: usize) -> String {
+		let control = self.control(id);
+		let length =
+			unsafe { SendMessageW(control, LB_GETTEXTLEN as u32, WPARAM(index), LPARAM(0)) };
+		let Ok(length) = usize::try_from(length.0) else {
+			return String::new();
+		};
+		let mut buffer = vec![0u16; length + 1];
+		let copied = unsafe {
+			SendMessageW(
+				control,
+				LB_GETTEXT as u32,
+				WPARAM(index),
+				LPARAM(buffer.as_mut_ptr() as isize),
+			)
+		};
+		String::from_utf16_lossy(&buffer[..usize::try_from(copied.0).unwrap_or(0)])
 	}
 
 	pub fn is_checked(&self, id: u16) -> bool {
@@ -399,8 +453,8 @@ pub(crate) mod tests {
 	use super::{Dialog, DialogHandler, create_child_dialog, create_modeless_dialog, destroy};
 	use crate::bindings::Windows::Win32::{
 		BN_CLICKED, BS_AUTOCHECKBOX, CBS_DROPDOWNLIST, DS_CONTROL, DS_MODALFRAME, ES_MULTILINE,
-		ES_READONLY, GetWindowTextW, HWND, LPARAM, SendMessageW, WM_CLOSE, WM_COMMAND, WPARAM,
-		WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
+		ES_READONLY, GetWindowTextW, HWND, LBS_NOTIFY, LPARAM, SendMessageW, WM_CLOSE, WM_COMMAND,
+		WPARAM, WS_BORDER, WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
 	};
 	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
 	use crate::testing::wants_all_keys;
@@ -595,6 +649,34 @@ pub(crate) mod tests {
 		}
 		dialog.combo_select(107, 2);
 		assert_eq!(dialog.combo_selection(107), Some(2));
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_list_box_holds_and_selects_its_items() {
+		let template = DialogTemplate {
+			items: vec![item(
+				109,
+				ControlClass::ListBox,
+				"",
+				WS_TABSTOP | WS_VSCROLL | WS_BORDER | LBS_NOTIFY,
+			)],
+			..template(MODELESS)
+		};
+		let dialog =
+			create_modeless_dialog(hidden_parent(), &template, Box::new(Recorder::default()))
+				.unwrap();
+		for text in ["Liked Songs", "Church / Sunday set", "Getty favourites"] {
+			dialog.list_add(109, text);
+		}
+		assert_eq!(dialog.list_count(109), 3);
+		assert_eq!(dialog.list_text(109, 1), "Church / Sunday set");
+		assert_eq!(dialog.list_selection(109), None);
+		dialog.list_select(109, 1);
+		assert_eq!(dialog.list_selection(109), Some(1));
+		dialog.list_clear(109);
+		assert_eq!(dialog.list_count(109), 0);
+		assert_eq!(dialog.list_selection(109), None);
 		destroy(dialog);
 	}
 

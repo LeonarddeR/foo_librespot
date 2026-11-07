@@ -597,6 +597,7 @@ pub mod Windows {
 		pub const BST_CHECKED: i32 = 1;
 		pub const BST_UNCHECKED: i32 = 0;
 		pub const BS_AUTOCHECKBOX: i32 = 3;
+		pub const BS_DEFPUSHBUTTON: i32 = 1;
 		pub const BS_GROUPBOX: i32 = 7;
 		pub const BS_NOTIFY: i32 = 16384;
 		pub const BS_PUSHBUTTON: i32 = 0;
@@ -1903,6 +1904,7 @@ pub mod Windows {
 		}
 		impl windows_core::RuntimeName for IAccPropServices {}
 		pub const IDCANCEL: i32 = 2;
+		pub const IDOK: i32 = 1;
 		windows_core::imp::define_interface!(
 			IDispatch,
 			IDispatch_Vtbl,
@@ -1945,6 +1947,15 @@ pub mod Windows {
 			RecordDestroy: usize,
 		}
 		impl windows_core::RuntimeName for IRecordInfo {}
+		pub const LBN_DBLCLK: i32 = 2;
+		pub const LBS_NOTIFY: i32 = 1;
+		pub const LB_ADDSTRING: i32 = 384;
+		pub const LB_GETCOUNT: i32 = 395;
+		pub const LB_GETCURSEL: i32 = 392;
+		pub const LB_GETTEXT: i32 = 393;
+		pub const LB_GETTEXTLEN: i32 = 394;
+		pub const LB_RESETCONTENT: i32 = 388;
+		pub const LB_SETCURSEL: i32 = 390;
 		#[repr(transparent)]
 		#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 		pub struct LPARAM(pub isize);

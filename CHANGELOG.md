@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - For developers: foxide2k can add popups and commands to foobar2000's main menu (`foxide2k::mainmenu`).
 - For developers: foxide2k can add right-click menu items whose submenus are built as the menu opens, with checkmarks and greyed-out items (`foxide2k::contextmenu`), and read the paths of the tracks foobar2000 passes (`foxide2k::metadb::HandleList`).
 - For developers: foxide2k can create and switch playlist tabs, keep a value with a playlist across restarts, and load links into a tab the way pasting them does (`foxide2k::playlist`).
+- For developers: foxide2k can ask a yes/no question in foobar2000's own message window (`foxide2k::popup::ask`), and dialogs can hold list boxes (`ControlClass::ListBox` and the `Dialog::list_*` methods).
 
 ### Changed
 
