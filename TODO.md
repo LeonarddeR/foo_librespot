@@ -16,10 +16,6 @@ The cheapest wins come first.
   - foo_spotify gave a reason when a track couldn't play: not available in your country, not available for your subscription type, or explicit while the account is set not to play explicit content.
   - foo_librespot gave the country reason when it added a track, but didn't check the explicit filter. librespot checks it when the track plays, in `AudioItem::get_file`, so an import added explicit tracks without a word, and playing one failed with librespot's own message.
   - An import now skips explicit tracks and episodes with the reason "explicit, and your Spotify account is set not to play explicit content" (`explicit_allowed` in `crates/foo_librespot_core/src/metadata.rs`). Playing one added earlier gives the same reason (`audio_item_error` in `crates/foo_librespot_core/src/audio/track.rs`).
-- [ ] Show the artist's picture as album art
-  - foo_spotify answered foobar2000's request for an artist picture with the Spotify picture of the track's first artist.
-  - foo_librespot only has a front cover. `SpotifyArt::query` in `crates/foo_librespot/src/art.rs` returns nothing for any other kind of art.
-  - librespot's artist metadata has the pictures, in `Artist::portraits` and `Artist::portrait_group`.
 - [x] More track info from the metadata we already fetch
   - foo_librespot fetched each track's and album's full metadata from Spotify, but wrote only the title, artists, album, numbers, date, genre and ReplayGain.
   - Tracks now also get `ISRC`, `BARCODE`, `LABEL`, `COPYRIGHT`, `RELEASETYPE`, `COMPOSER`, `CONDUCTOR`, `ORCHESTRA`, `REMIXER` and `ITUNESADVISORY` (for explicit tracks), and episodes `ITUNESADVISORY`, with no extra requests (`TrackInfo` and `AlbumDetails` in `crates/foo_librespot_core/src/metadata.rs`, `fill_info` in `crates/foo_librespot/src/fields.rs`).
@@ -39,7 +35,7 @@ The cheapest wins come first.
   - A recording on both an album and a single is added once, by its ISRC: the first playable copy is kept, so a copy blocked in the account's country doesn't keep out one that plays. The console says how many were left out. There is no warning before a large discography.
 - [x] Search Spotify
   - librespot's `SpClient::get_context` answers searches (`spotify:search:<words>`) with one page of 20 tracks. On 2026-11-06 the first 13 to 15 matched the words and the rest drifted; for "in christ alone" the Getty original came first.
-  - Spotify's search link, `https://open.spotify.com/search/<words>`, and `spotify:search:<words>` now add those 20 tracks, named after the words. A search window would need menus.
+  - Spotify's search link, `https://open.spotify.com/search/<words>`, and `spotify:search:<words>` now add those 20 tracks, named after the words. There is no search window.
 
 ### Detailed logging
 
@@ -85,19 +81,24 @@ Checked by hand on 7 November 2026. The new work they showed is under "Later rou
   - Windows can name the proxy outright or through an automatic configuration script; WinHTTP's `WinHttpGetIEProxyConfigForCurrentUser` and `WinHttpGetProxyForUrl` answer both. Every connection foo_librespot makes must use it: the session, the login and the cover downloads.
 - [x] Menu commands in foxide2k
   - Several ideas below need a command in a menu: the right-click menu on playlist entries, or foobar2000's main menu. Some also need to create or change foobar2000 playlists.
-  - foxide2k has no bindings for menus or for foobar2000's playlist manager yet. This comes first for the items marked "needs menus".
+  - foxide2k had no bindings for menus or for foobar2000's playlist manager.
+  - It now has main-menu popups and commands (`crates/foxide2k/src/mainmenu.rs`); right-click menu items whose submenus are built as the menu opens, with checkmarks and greyed-out entries (`contextmenu.rs`), and the tracks foobar2000 passes to them (`metadb.rs`); and playlist tabs: making and switching them, keeping a value with one across restarts, adding tracks and loading links into one (`playlist.rs`). Its popups can ask yes/no questions, and its dialogs can hold list boxes.
 - [ ] Bring foxide2k further in line with the foobar2000 SDK
-  - foxide2k covers only the parts of the SDK that foo_librespot and foo_oxitone use: services and the component entry point, inputs and decoders, filesystems, playlist loaders, album art, preferences pages, the console, the settings store, popups and the main thread, plus Win32 dialogs. Each new feature starts by adding the SDK interfaces it needs, as menus, Advanced preferences and checkboxes on a dialog do this round.
-  - Covering more of the SDK the same way, each file transcribed with the SDK notice and tested through its vtables, would make later features cheaper: menus and the playlist manager, Advanced preferences, UI elements, metadb and the play callbacks.
+  - foxide2k covers only the parts of the SDK that foo_librespot and foo_oxitone use: services and the component entry point, inputs and decoders with their live info, filesystems, playlist loaders, album art, preferences pages, Advanced preferences branches and checkboxes, main-menu and right-click menu items, playlist tabs, playback control, startup and shutdown callbacks, the console, the settings store, popups and yes/no questions, the main thread and opening web pages, plus Win32 dialogs. Each new feature starts by adding the SDK interfaces it needs.
+  - Covering more of the SDK the same way, each file transcribed with the SDK notice and tested through its vtables, would make later features cheaper. Not covered yet: UI elements, the play callbacks, string entries in Advanced preferences, the rest of the playlist manager, such as reading or removing a playlist's tracks, and metadb beyond the tracks passed to a menu.
   - Check the transcribed files against the newest SDK (version 2026-10-01 on 2026-11-06) for interfaces that changed or were added since.
-- [ ] Radio from a track (needs menus)
+- [ ] Radio from a track
   - librespot's `SpClient::get_radio_for_track` gives a Spotify playlist of tracks like a given one, as Spotify's "Go to song radio" does.
   - A right-click command on a Spotify track could add that radio.
-- [x] Add your own playlists (needs menus)
+- [x] Add your own playlists
   - librespot's `SpClient::get_rootlist` lists the logged-in user's playlists, with their names.
-  - A command could list them and add the chosen ones as foobar2000 playlists, each named after its Spotify playlist. Today a user has to copy each playlist's link from Spotify.
+  - A user had to copy each playlist's link from Spotify.
+  - File > Spotify > Open playlist… now lists Liked Songs and the account's playlists, each in its folder (`crates/foo_librespot/src/open_playlist.rs`, read by `crates/foo_librespot_core/src/library.rs`). The chosen one opens in a tab named after it, filled as pasting its link would; if it has a tab already, that tab comes to the front. A load that adds nothing makes no tab.
   - This browses the user's library, which was out of scope when foo_librespot started.
-- [ ] Open the current track's artist or album (needs menus)
+- [x] Add tracks to your Spotify playlists and Liked Songs
+  - Right-clicking Spotify tracks offers "Add to Spotify playlist", which adds them to Liked Songs or to a playlist the account can change, with a checkmark where every selected track already is. Picking a checked entry asks, then removes them (`crates/foo_librespot/src/playlist_menu.rs`).
+  - The submenu is built from the library as last read, so opening it never waits for Spotify. Changes run one at a time in the core and report in the console; a failure also shows a popup.
+- [ ] Open the current track's artist or album
   - Commands under File > Spotify, such as "Open current artist" and "Open current album", would open the current Spotify track's artist or album as a foobar2000 playlist, the way an artist or album link does. Music you like would then be one command away, without copying a link from Spotify.
   - Still to decide: whether "current" means the playing track or the selected one.
 - [ ] Put an audiobook's chapters in book order
@@ -129,6 +130,10 @@ Checked by hand on 7 November 2026. The new work they showed is under "Later rou
   - The "Open playlist…" window has no test that a refresh with the same playlists leaves its list untouched; one test checks only that the selection stays.
   - `OpenPlaylist::execute` isn't run through `MainMenuHandle` in a test.
   - The window's error path has no test: a playlist whose link foobar2000 can't load shows the "Can't open this Spotify playlist" popup.
+- [ ] Show the artist's picture as album art
+  - foo_spotify answered foobar2000's request for an artist picture with the Spotify picture of the track's first artist.
+  - foo_librespot only has a front cover. `SpotifyArt::query` in `crates/foo_librespot/src/art.rs` returns nothing for any other kind of art.
+  - librespot's artist metadata has the pictures, in `Artist::portraits` and `Artist::portrait_group`.
 
 ## After 1.0
 
