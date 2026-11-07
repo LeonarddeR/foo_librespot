@@ -48,7 +48,9 @@ fn on_init_prints_loaded_line() {
 fn component_registers_all_services() {
 	use foxide2k::abi::advconfig::ENTRY_IID as ADVCONFIG_ENTRY;
 	use foxide2k::abi::album_art::EXTRACTOR_IID as ALBUM_ART;
-	use foxide2k::abi::contextmenu::ITEM_IID as CONTEXTMENU_ITEM;
+	use foxide2k::abi::contextmenu::{
+		GROUP_IID as CONTEXTMENU_GROUP, ITEM_IID as CONTEXTMENU_ITEM,
+	};
 	use foxide2k::abi::filesystem::IID as FILESYSTEM;
 	use foxide2k::abi::input::INPUT_ENTRY;
 	use foxide2k::abi::mainmenu::{COMMANDS_IID as MAINMENU_COMMANDS, GROUP_IID as MAINMENU_GROUP};
@@ -73,14 +75,15 @@ fn component_registers_all_services() {
 		2,
 		"advconfig_entry"
 	);
-	for (iid, name) in [
-		(MAINMENU_GROUP, "mainmenu_group"),
-		(MAINMENU_COMMANDS, "mainmenu_commands"),
-		(CONTEXTMENU_ITEM, "contextmenu_item"),
+	for (iid, name, count) in [
+		(MAINMENU_GROUP, "mainmenu_group", 1),
+		(MAINMENU_COMMANDS, "mainmenu_commands", 1),
+		(CONTEXTMENU_GROUP, "contextmenu_group", 1),
+		(CONTEXTMENU_ITEM, "contextmenu_item", 6),
 	] {
-		assert_eq!(factories.iter().filter(|guid| **guid == iid).count(), 1, "{name}");
+		assert_eq!(factories.iter().filter(|guid| **guid == iid).count(), count, "{name}");
 	}
-	assert_eq!(factories.len(), 12);
+	assert_eq!(factories.len(), 18);
 }
 
 #[test]

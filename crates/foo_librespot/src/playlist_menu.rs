@@ -1,4 +1,4 @@
-//! Right-click Spotify tracks > "Add to Spotify playlist": a submenu that adds the selected
+//! Right-click Spotify tracks > Spotify > "Add to playlist": a submenu that adds the selected
 //! tracks to Liked Songs or to a playlist the account can change, and removes them from one that
 //! holds them all.
 //!
@@ -13,9 +13,8 @@ use foo_librespot_core::library::{
 	Change, Edit, LIKED_SONGS, Library, LibraryState, Target, tracks_of,
 };
 use foo_librespot_core::link::{ItemId, parse_item};
-use foxide2k::abi::contextmenu::GROUP_ROOT;
 use foxide2k::console;
-use foxide2k::contextmenu::{ContextMenuItem, MenuNode};
+use foxide2k::contextmenu::{ContextMenuGroup, ContextMenuItem, MenuNode};
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
 use foxide2k::metadb::HandleList;
@@ -25,18 +24,19 @@ use crate::backend::backend;
 use crate::errors::show_failure;
 use crate::first_use::ask_for_login;
 use crate::links::plural;
+use crate::spotify_menu::SpotifyGroup;
 
-const NAME: &str = "Add to Spotify playlist";
+const NAME: &str = "Add to playlist";
 
-/// The submenu on the right-click menu of Spotify tracks.
+/// The last entry of the right-click Spotify submenu.
 pub struct AddToSpotifyPlaylist;
 
 impl ContextMenuItem for AddToSpotifyPlaylist {
 	const GUID: Guid = Guid::from_u128(0x9dde669c_a508_460e_b0df_c4e8e681592b);
 	const NAME: &'static str = NAME;
 	const DESCRIPTION: &'static str = "Adds the selected Spotify tracks to Liked Songs or one of your Spotify playlists, or removes them from one that has them all.";
-	const PARENT: Guid = GROUP_ROOT;
-	const SORT_PRIORITY: f64 = 1000.0;
+	const PARENT: Guid = SpotifyGroup::GUID;
+	const SORT_PRIORITY: f64 = 10.0;
 
 	fn build(selection: &HandleList<'_>) -> Option<MenuNode> {
 		let mut seen = HashSet::new();
@@ -228,13 +228,18 @@ mod tests {
 	};
 	use foo_librespot_core::link::{ItemId, item_path};
 	use foo_librespot_core::{CoreError, SpotifyId};
-	use foxide2k::abi::contextmenu::{FLAG_CHECKED, FLAG_DISABLED, FLAG_GRAYED, GROUP_ROOT};
+	use foxide2k::abi::contextmenu::{FLAG_CHECKED, FLAG_DISABLED, FLAG_GRAYED};
 	use foxide2k::abi::popup::BUTTON_NO;
-	use foxide2k::contextmenu::{ContextMenuItem, context_menu_service};
+	use foxide2k::contextmenu::{
+		ContextMenuCommand, ContextMenuGroup, ContextMenuItem, context_menu_service,
+	};
 	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::{ContextMenuHandle, FakeApi, FakeHandleList, NodeHandle};
 
 	use super::AddToSpotifyPlaylist;
+	use crate::spotify_menu::{
+		OpenAlbum, OpenArtist, OpenArtistShortcut, OpenShow, SpotifyGroup, TrackRadio,
+	};
 	use crate::testing::{
 		FakeBackend, episode_id, getty_favourites, installed_backend, installed_prompt,
 		shared_playlist, sunday_set, sunday_set_id, track_id, wait_until,
@@ -317,11 +322,20 @@ mod tests {
 	}
 
 	#[test]
-	fn the_item_sits_at_the_bottom_of_the_root_menu() {
+	fn the_item_sits_last_in_the_spotify_submenu() {
 		let item = item();
-		assert_eq!(item.parent(), GROUP_ROOT);
-		assert_eq!(item.sort_priority(), 1000.0);
-		assert_eq!(item.name(), "Add to Spotify playlist");
+		assert_eq!(item.parent(), SpotifyGroup::GUID);
+		assert_eq!(item.sort_priority(), 10.0);
+		for open in [
+			OpenAlbum::SORT_PRIORITY,
+			OpenArtist::SORT_PRIORITY,
+			TrackRadio::SORT_PRIORITY,
+			OpenShow::SORT_PRIORITY,
+			OpenArtistShortcut::SORT_PRIORITY,
+		] {
+			assert!(open < item.sort_priority());
+		}
+		assert_eq!(item.name(), "Add to playlist");
 		assert_eq!(
 			item.description().unwrap(),
 			"Adds the selected Spotify tracks to Liked Songs or one of your Spotify playlists, or removes them from one that has them all."
@@ -343,7 +357,7 @@ mod tests {
 		let (_, fake) = setup(LibraryState::LoggedOut);
 		let prompt = installed_prompt();
 		let (root, data) = open(&[t1()]);
-		assert_eq!(root.node().display(&data).unwrap().0, "Add to Spotify playlist");
+		assert_eq!(root.node().display(&data).unwrap().0, "Add to playlist");
 		assert_eq!(entries(&root, &data), [("Log in to Spotify…".to_owned(), 0)]);
 		pick(&root, &data, "Log in to Spotify…");
 		assert_eq!(prompt.shown(), 1);

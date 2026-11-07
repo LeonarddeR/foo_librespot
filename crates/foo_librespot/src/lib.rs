@@ -20,6 +20,7 @@ mod playlist_menu;
 mod prefs;
 mod related;
 mod settings;
+mod spotify_menu;
 mod status_line;
 mod tabs;
 #[cfg(test)]
@@ -30,7 +31,9 @@ mod worker;
 use foxide2k::advconfig::{advconfig_branch_factory, advconfig_checkbox_factory};
 use foxide2k::album_art::album_art_factory;
 use foxide2k::component::Factory;
-use foxide2k::contextmenu::context_menu_factory;
+use foxide2k::contextmenu::{
+	context_menu_command_factory, context_menu_factory, context_menu_group_factory,
+};
 use foxide2k::filesystem_service::filesystem_factory;
 use foxide2k::initquit::{InitQuit, InitQuitService};
 use foxide2k::input::input_factory;
@@ -76,6 +79,12 @@ foxide2k::component! {
 		advconfig_checkbox_factory::<advanced::DetailedLogging>(),
 		mainmenu_popup_factory::<open_playlist::SpotifyMenu>(),
 		mainmenu_command_factory::<open_playlist::OpenPlaylist>(),
+		context_menu_group_factory::<spotify_menu::SpotifyGroup>(),
+		context_menu_command_factory::<spotify_menu::OpenAlbum>(),
+		context_menu_factory::<spotify_menu::OpenArtist>(),
+		context_menu_command_factory::<spotify_menu::OpenArtistShortcut>(),
+		context_menu_command_factory::<spotify_menu::TrackRadio>(),
+		context_menu_command_factory::<spotify_menu::OpenShow>(),
 		context_menu_factory::<playlist_menu::AddToSpotifyPlaylist>(),
 	],
 }

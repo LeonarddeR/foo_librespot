@@ -98,9 +98,14 @@ impl Screen for MainWindow {
 
 static SCREEN: OnceLock<Box<dyn Screen>> = OnceLock::new();
 
-/// The screen in use: foobar2000's, or the one a test installed.
+/// The screen in use: foobar2000's, or the one a test installed. A test that installed none
+/// panics instead of showing the window.
 fn screen() -> &'static dyn Screen {
-	SCREEN.get_or_init(|| Box::new(MainWindow)).as_ref()
+	if cfg!(test) {
+		SCREEN.get().expect("call installed_screen() first").as_ref()
+	} else {
+		SCREEN.get_or_init(|| Box::new(MainWindow)).as_ref()
+	}
 }
 
 /// Makes `screen()` return `screen` in this test process.
@@ -110,13 +115,6 @@ pub fn install_screen(screen: Box<dyn Screen>) {
 }
 
 /// Shows the window saying "Loading…", opening it if it is closed. Main thread only.
-#[cfg_attr(
-	not(test),
-	expect(
-		dead_code,
-		reason = "the shortcut-only Open artist… will show it while Spotify is asked"
-	)
-)]
 pub fn show_loading() {
 	CLOSED_WHILE_LOADING.set(false);
 	show(None);
@@ -500,6 +498,12 @@ mod tests {
 		let dialog = WINDOW.current().expect("a later lookup's artists open the window");
 		assert_eq!(screen.brought_up(), 2);
 		destroy(dialog);
+	}
+
+	#[test]
+	#[should_panic(expected = "call installed_screen() first")]
+	fn a_test_without_a_fake_screen_panics_instead_of_showing_the_window() {
+		let _ = super::screen();
 	}
 
 	#[test]

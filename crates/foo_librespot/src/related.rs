@@ -23,7 +23,6 @@ use crate::tabs::open_in_tab;
 
 /// Starts finding `what` for `item` and returns at once; what was found then opens in its tab.
 /// `title` names the track in a failure: its stored title, or its URI. Main thread only.
-#[cfg_attr(not(test), expect(dead_code, reason = "the Spotify menus will open related items"))]
 pub fn open_related(item: ItemId, what: Related, title: String) {
 	let noun = noun(&what);
 	let every_artist = what == Related::Artist(None);
