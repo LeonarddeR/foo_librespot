@@ -291,8 +291,12 @@ pub fn open(
 /// foobar2000 stores two or more for the track, the window says "Loading…" meanwhile.
 pub fn open_artists(items: impl IntoIterator<Item = SpotifyItem>, source: Source, command: &str) {
 	if let Some((item, track)) = the_one(items, Kind::Track, source, command) {
-		let wait = (stored_artists(&track).len() >= 2).then(artist_window::show_loading);
-		open_related(item, Related::Artist(None), title_of(item, &track), wait);
+		let ticket = if stored_artists(&track).len() >= 2 {
+			artist_window::show_loading()
+		} else {
+			artist_window::take_ticket()
+		};
+		open_related(item, Related::Artist(None), title_of(item, &track), Some(ticket));
 	}
 }
 
@@ -311,7 +315,8 @@ pub fn artist_picks(item: ItemId, track: &Track) -> ArtistPicks {
 	let artists = stored_artists(track);
 	if artists.len() < 2 {
 		return ArtistPicks::Every(Box::new(move || {
-			open_related(item, Related::Artist(None), title.to_string(), None);
+			let ticket = artist_window::take_ticket();
+			open_related(item, Related::Artist(None), title.to_string(), Some(ticket));
 			Ok(())
 		}));
 	}
@@ -364,9 +369,9 @@ fn stored_artists(track: &Track) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-	use foo_librespot_core::CoreError;
-	use foo_librespot_core::link::ItemId;
-	use foo_librespot_core::related::Related;
+	use foo_librespot_core::link::{ItemId, LinkKind};
+	use foo_librespot_core::related::{Found, Opened, Related};
+	use foo_librespot_core::{CoreError, SpotifyId};
 	use foxide2k::abi::contextmenu::{
 		ENABLED_DEFAULT_ON, ENABLED_FORCE_OFF, FLAG_DISABLED, FLAG_GRAYED, GROUP_ROOT,
 		TYPE_COMMAND, TYPE_GROUP,
@@ -390,7 +395,7 @@ mod tests {
 	use crate::playlist_menu::AddToSpotifyPlaylist;
 	use crate::testing::{
 		BOTH_GETTYS, EPISODE, GETTY_TRACK, KRISTYN_ID, LOCAL, NO_FIELDS, ONE_ARTIST, TRACK_ID,
-		entry, episode_id, getty_track, installed_api_and_backend, wait_until,
+		entry, episode_id, getty_artists, getty_track, installed_api_and_backend, wait_until,
 	};
 	use crate::window::brought_up;
 
@@ -758,5 +763,34 @@ mod tests {
 		press::<OpenArtistShortcut>(&select(&[(GETTY_TRACK, ONE_ARTIST)]));
 		assert!(WINDOW.current().is_none());
 		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist(None))]);
+	}
+
+	/// The artists of a track other than "In Christ Alone": Stuart Townend and Keith Getty.
+	fn townend_and_keith() -> Vec<Opened> {
+		let townend = SpotifyId::from_raw(&[0x53; 16]).unwrap();
+		vec![Opened::new("Stuart Townend", LinkKind::Artist, townend), getty_artists().remove(0)]
+	}
+
+	/// Right-click Open artist on a track that stores one artist, whose lookup runs without the
+	/// window, then the Open artist… shortcut on "In Christ Alone", which stores two and shows
+	/// "Loading…". Spotify lists several artists for each, and the first lookup answers first.
+	#[test]
+	fn the_newest_artist_lookup_wins_when_an_older_one_answers_first() {
+		let (api, fake) = installed_api_and_backend();
+		fake.related_with(|item, _| {
+			let artists = if item == getty_track() { getty_artists() } else { townend_and_keith() };
+			Ok(Found::Artists(artists))
+		});
+		let other = select(&[(OTHER_TRACK, ONE_ARTIST)]);
+		open_artist().instantiate(&other).node().execute(&other).unwrap();
+		wait_until(|| fake.related_answered() == 1);
+		press::<OpenArtistShortcut>(&select(&[(GETTY_TRACK, BOTH_GETTYS)]));
+		let dialog = WINDOW.current().expect("the artist window says Loading…");
+		wait_until(|| fake.related_answered() == 2);
+		assert_eq!(api.run_main_thread(), 2, "the older lookup's answer is settled first");
+		pump_messages();
+		assert_eq!(WINDOW.current(), Some(dialog));
+		assert_eq!(dialog.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
+		destroy(dialog);
 	}
 }

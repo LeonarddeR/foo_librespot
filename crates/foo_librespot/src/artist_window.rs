@@ -4,8 +4,10 @@
 //!
 //! What the window lists lives in a main-thread [`CHOICES`]: showing the window sets it, and the
 //! window's handler reads it when the window opens and on each refresh. A window that says
-//! "Loading…" waits for one lookup, the one [`show_loading`] gave its [`Wait`]: [`settle`] fills
-//! the window with that lookup's artists, or closes it after any other result.
+//! "Loading…" waits for one lookup, the one [`show_loading`] gave its [`Ticket`]: [`settle`]
+//! fills the window with that lookup's artists, or closes it after any other result. Every
+//! lookup of every artist holds a ticket, with or without the window, and the newest one's list
+//! wins.
 //!
 //! [`open_in_tab`]: crate::tabs::open_in_tab
 
@@ -43,36 +45,65 @@ thread_local! {
 	/// The artists the window lists, in the track's order, or `None` while Spotify is asked for
 	/// them. Only foobar2000's main thread sets and reads it.
 	static CHOICES: RefCell<Option<Vec<Opened>>> = const { RefCell::new(None) };
-	/// The lookup the window waits for while it says "Loading…"; `None` once it lists artists or
-	/// the user closed it. Only foobar2000's main thread sets and reads it.
-	static WAITING: Cell<Option<Wait>> = const { Cell::new(None) };
-	/// The last [`Wait`] given out.
-	static LAST_WAIT: Cell<u64> = const { Cell::new(0) };
+	/// The ticket of the lookup the window waits for while it says "Loading…"; `None` once it
+	/// lists artists or the user closed it. Only foobar2000's main thread sets and reads it.
+	static WAITING: Cell<Option<u64>> = const { Cell::new(None) };
+	/// The newest ticket whose lookup the window has listed or waited for. Only foobar2000's
+	/// main thread sets and reads it.
+	static NEWEST: Cell<u64> = const { Cell::new(0) };
+	/// The last ticket given out.
+	static LAST_TICKET: Cell<u64> = const { Cell::new(0) };
 }
 
-/// The lookup a "Loading…" window waits for, given out by [`show_loading`].
+/// The place in line of a lookup of every artist: tickets are given out in the order the
+/// lookups start, so the newest lookup's list wins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Wait(u64);
-
-/// Shows the window saying "Loading…", opening it if it is closed, until the lookup that carries
-/// the returned [`Wait`] settles it. Main thread only.
-pub fn show_loading() -> Wait {
-	let wait = Wait(LAST_WAIT.get() + 1);
-	LAST_WAIT.set(wait.0);
-	WAITING.set(Some(wait));
-	show(None);
-	wait
+pub struct Ticket {
+	number: u64,
+	/// Whether the window said "Loading…" for the lookup when it started.
+	loading: bool,
 }
 
-/// Settles the window for a lookup that ended, which carried `wait` or no window. When it found
-/// several `artists`, the window lists them, opening if it is closed, unless the lookup's
-/// "Loading…" window was closed or another lookup took it over since. After any other result,
-/// the window closes when it still says "Loading…" for this lookup. Main thread only.
-pub fn settle(wait: Option<Wait>, artists: Option<Vec<Opened>>) {
-	let waited_for = wait.is_some() && WAITING.get() == wait;
+impl Ticket {
+	fn next(loading: bool) -> Self {
+		let number = LAST_TICKET.get() + 1;
+		LAST_TICKET.set(number);
+		Self { number, loading }
+	}
+
+	/// Whether the window said "Loading…" for the lookup when it started.
+	pub const fn shows_loading(self) -> bool {
+		self.loading
+	}
+}
+
+/// The ticket of a lookup of every artist that starts without the window. Main thread only.
+pub fn take_ticket() -> Ticket {
+	Ticket::next(false)
+}
+
+/// Shows the window saying "Loading…", opening it if it is closed, for the lookup of every
+/// artist that starts with the returned ticket. Main thread only.
+pub fn show_loading() -> Ticket {
+	let ticket = Ticket::next(true);
+	WAITING.set(Some(ticket.number));
+	NEWEST.set(ticket.number);
+	show(None);
+	ticket
+}
+
+/// Settles the window for the lookup that held `ticket` and ended. When it found several
+/// `artists`, the window lists them, opening if it is closed, if it still says "Loading…" for
+/// this lookup or the lookup started after every lookup the window has listed or waited for:
+/// the newest lookup's list wins, and a lookup whose "Loading…" window the user closed opens
+/// nothing. After any other result, the window closes when it still says "Loading…" for this
+/// lookup. Main thread only.
+pub fn settle(ticket: Ticket, artists: Option<Vec<Opened>>) {
+	let waited_for = WAITING.get() == Some(ticket.number);
 	match artists {
-		Some(artists) if wait.is_none() || waited_for => {
+		Some(artists) if waited_for || ticket.number > NEWEST.get() => {
 			WAITING.set(None);
+			NEWEST.set(ticket.number);
 			show(Some(artists));
 		}
 		None if waited_for => {
@@ -152,13 +183,20 @@ mod tests {
 	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::{hidden_window, pump_messages, send_close, send_command};
 
-	use super::{LABEL, LIST, STATUS, WINDOW, settle, show_loading, window_template};
+	use super::{LABEL, LIST, STATUS, WINDOW, settle, show_loading, take_ticket, window_template};
 	use crate::testing::{GETTY_TRACK, KEITH_ID, KRISTYN_ID, getty_artists, installed_api};
 	use crate::window::brought_up;
 
-	/// Settles the window as a lookup that had no "Loading…" window and found the Getty artists.
+	/// Settles the window as a lookup that just started without the window and found the Getty
+	/// artists.
 	fn list_getty_artists() {
-		settle(None, Some(getty_artists()));
+		settle(take_ticket(), Some(getty_artists()));
+	}
+
+	/// The artists of another track: Stuart Townend and Keith Getty.
+	fn townend_and_keith() -> Vec<Opened> {
+		let townend = SpotifyId::from_raw(&[0x53; 16]).unwrap();
+		vec![Opened::new("Stuart Townend", LinkKind::Artist, townend), getty_artists().remove(0)]
 	}
 
 	#[test]
@@ -196,7 +234,7 @@ mod tests {
 		assert_eq!(dialog.text(STATUS), "Loading…");
 		assert_eq!(dialog.list_count(LIST), 0);
 		assert_eq!(brought_up(), 1);
-		settle(Some(wait), Some(getty_artists()));
+		settle(wait, Some(getty_artists()));
 		pump_messages();
 		assert_eq!(WINDOW.current(), Some(dialog));
 		assert_eq!(dialog.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
@@ -223,9 +261,7 @@ mod tests {
 		list_getty_artists();
 		let dialog = WINDOW.current().unwrap();
 		dialog.list_select(LIST, 1);
-		let townend_id = SpotifyId::from_raw(&[0x53; 16]).unwrap();
-		let townend = Opened::new("Stuart Townend", LinkKind::Artist, townend_id);
-		settle(None, Some(vec![townend, getty_artists().remove(0)]));
+		settle(take_ticket(), Some(townend_and_keith()));
 		pump_messages();
 		assert_eq!(WINDOW.current(), Some(dialog));
 		assert_eq!(dialog.list_texts(LIST), ["Stuart Townend", "Keith Getty"]);
@@ -304,7 +340,7 @@ mod tests {
 		installed_api();
 		let wait = show_loading();
 		send_command(&WINDOW.current().unwrap(), IDCANCEL, BN_CLICKED);
-		settle(Some(wait), Some(getty_artists()));
+		settle(wait, Some(getty_artists()));
 		assert!(WINDOW.current().is_none());
 		assert_eq!(brought_up(), 1);
 		list_getty_artists();
@@ -334,9 +370,9 @@ mod tests {
 		send_command(&WINDOW.current().unwrap(), IDCANCEL, BN_CLICKED);
 		let wait = show_loading();
 		let dialog = WINDOW.current().unwrap();
-		settle(Some(closed), Some(getty_artists()));
+		settle(closed, Some(getty_artists()));
 		assert_eq!(dialog.list_count(LIST), 0);
-		settle(Some(wait), Some(getty_artists()));
+		settle(wait, Some(getty_artists()));
 		pump_messages();
 		assert_eq!(WINDOW.current(), Some(dialog));
 		assert_eq!(dialog.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
@@ -350,12 +386,12 @@ mod tests {
 		let earlier = show_loading();
 		let dialog = WINDOW.current().unwrap();
 		let later = show_loading();
-		settle(Some(earlier), None);
-		settle(Some(earlier), Some(getty_artists()));
+		settle(earlier, None);
+		settle(earlier, Some(getty_artists()));
 		pump_messages();
 		assert_eq!(WINDOW.current(), Some(dialog));
 		assert_eq!(dialog.text(STATUS), "Loading…");
-		settle(Some(later), None);
+		settle(later, None);
 		assert!(!dialog.is_alive());
 	}
 
@@ -364,12 +400,12 @@ mod tests {
 		installed_api();
 		let wait = show_loading();
 		let loading = WINDOW.current().unwrap();
-		settle(Some(wait), None);
+		settle(wait, None);
 		assert!(!loading.is_alive());
 		assert!(WINDOW.current().is_none());
 		list_getty_artists();
 		let listing = WINDOW.current().expect("a window closed by a result opens again");
-		settle(Some(wait), None);
+		settle(wait, None);
 		assert!(listing.is_alive());
 		assert_eq!(listing.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
 		assert_eq!(brought_up(), 2);
@@ -381,12 +417,56 @@ mod tests {
 		installed_api();
 		let wait = show_loading();
 		let dialog = WINDOW.current().unwrap();
-		settle(None, None);
+		settle(take_ticket(), None);
 		assert_eq!(WINDOW.current(), Some(dialog));
 		assert_eq!(dialog.text(STATUS), "Loading…");
-		settle(Some(wait), Some(getty_artists()));
+		settle(wait, Some(getty_artists()));
 		pump_messages();
 		assert_eq!(dialog.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn an_older_lookups_list_leaves_a_newer_lookups_loading_window_waiting() {
+		installed_api();
+		let older = take_ticket();
+		let wait = show_loading();
+		let dialog = WINDOW.current().unwrap();
+		settle(older, Some(townend_and_keith()));
+		pump_messages();
+		assert_eq!(dialog.text(STATUS), "Loading…");
+		assert_eq!(dialog.list_count(LIST), 0);
+		settle(wait, Some(getty_artists()));
+		pump_messages();
+		assert_eq!(dialog.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(brought_up(), 2);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn an_older_lookups_list_doesnt_replace_a_newer_lookups_list() {
+		installed_api();
+		let older = take_ticket();
+		settle(take_ticket(), Some(getty_artists()));
+		let dialog = WINDOW.current().unwrap();
+		settle(older, Some(townend_and_keith()));
+		pump_messages();
+		assert_eq!(dialog.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
+		assert_eq!(brought_up(), 1);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_newer_lookups_list_takes_the_window_over_from_a_loading_lookup() {
+		installed_api();
+		let wait = show_loading();
+		let dialog = WINDOW.current().unwrap();
+		settle(take_ticket(), Some(townend_and_keith()));
+		settle(wait, Some(getty_artists()));
+		settle(wait, None);
+		pump_messages();
+		assert!(dialog.is_alive());
+		assert_eq!(dialog.list_texts(LIST), ["Stuart Townend", "Keith Getty"]);
 		destroy(dialog);
 	}
 
@@ -395,7 +475,7 @@ mod tests {
 		installed_api();
 		let wait = show_loading();
 		send_command(&WINDOW.current().unwrap(), IDCANCEL, BN_CLICKED);
-		settle(Some(wait), None);
+		settle(wait, None);
 		list_getty_artists();
 		let dialog = WINDOW.current().expect("a later lookup's artists open the window");
 		assert_eq!(brought_up(), 2);

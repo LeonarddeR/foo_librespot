@@ -2,8 +2,9 @@
 //! playlist tab of its own.
 //!
 //! The lookup runs in the background; the tab opens on the main thread once it ends. When a
-//! track's artists are asked for and it has several, the artist window lists them instead. A
-//! lookup that the artist window says "Loading…" for settles that window whatever it finds
+//! track's artists are asked for and it has several, the artist window lists them instead, if
+//! no newer lookup of every artist has listed them or said "Loading…" since. A lookup that the
+//! artist window says "Loading…" for settles that window whatever it finds
 //! ([`artist_window::settle`]). Every failure is told in the console and a popup; none reaches
 //! foobar2000.
 
@@ -15,19 +16,19 @@ use foo_librespot_core::related::{Found, Opened, Related};
 use foxide2k::console;
 use foxide2k::main_thread;
 
-use crate::artist_window::{self, Wait};
+use crate::artist_window::{self, Ticket};
 use crate::backend::backend;
 use crate::errors::report_failure;
 use crate::first_use::ask_for_login;
 use crate::tabs::open_in_tab;
 
 /// Starts finding `what` for `item` and returns at once; what was found then opens in its tab.
-/// `title` names the track in a failure: its stored title, or its URI. `wait` is the artist
-/// window's "Loading…" for this lookup, from [`artist_window::show_loading`], if it shows one.
-/// Main thread only.
-pub fn open_related(item: ItemId, what: Related, title: String, wait: Option<Wait>) {
+/// `title` names the track in a failure: its stored title, or its URI. A lookup of every artist
+/// holds the `ticket` from [`artist_window::show_loading`], when the window says "Loading…" for
+/// it, or else from [`artist_window::take_ticket`]. Main thread only.
+pub fn open_related(item: ItemId, what: Related, title: String, ticket: Option<Ticket>) {
 	let noun = noun(&what);
-	backend().related(item, what, Box::new(move |result| end(result, noun, &title, wait)));
+	backend().related(item, what, Box::new(move |result| end(result, noun, &title, ticket)));
 }
 
 /// What a failure calls `what`.
@@ -40,15 +41,15 @@ const fn noun(what: &Related) -> &'static str {
 	}
 }
 
-/// On the main thread, settles the artist window for the lookup that carried `wait`, and opens
+/// On the main thread, settles the artist window for the lookup that held `ticket`, and opens
 /// what the lookup found; several artists are the artist window's to list. Otherwise asks for a
 /// login, or says why it failed, on this thread.
-fn end(result: Result<Found, CoreError>, noun: &'static str, title: &str, wait: Option<Wait>) {
+fn end(result: Result<Found, CoreError>, noun: &'static str, title: &str, ticket: Option<Ticket>) {
 	let found = match result {
 		Ok(found) => found,
 		Err(error) => {
-			if wait.is_some() {
-				close_loading_window(wait);
+			if let Some(ticket) = ticket.filter(|ticket| ticket.shows_loading()) {
+				close_loading_window(ticket);
 			}
 			return match error {
 				CoreError::NotLoggedIn => ask_for_login(),
@@ -60,10 +61,17 @@ fn end(result: Result<Found, CoreError>, noun: &'static str, title: &str, wait: 
 	let queued_title = title.to_owned();
 	let queued = main_thread::run(Box::new(move || match found {
 		Found::One(opened) => {
-			artist_window::settle(wait, None);
+			if let Some(ticket) = ticket {
+				artist_window::settle(ticket, None);
+			}
 			open(&opened, noun, &queued_title);
 		}
-		Found::Artists(artists) => artist_window::settle(wait, Some(artists)),
+		// Only a lookup of every artist finds several, and it holds a ticket; a lookup without
+		// one counts as the newest.
+		Found::Artists(artists) => {
+			let ticket = ticket.unwrap_or_else(artist_window::take_ticket);
+			artist_window::settle(ticket, Some(artists));
+		}
 	}));
 	if let Err(error) = queued {
 		fail(noun, title, &error.message);
@@ -71,9 +79,9 @@ fn end(result: Result<Found, CoreError>, noun: &'static str, title: &str, wait: 
 }
 
 /// On the main thread, closes the artist window if it still says "Loading…" for the lookup
-/// that carried `wait`. Says in the console when it can't.
-fn close_loading_window(wait: Option<Wait>) {
-	if let Err(error) = main_thread::run(Box::new(move || artist_window::settle(wait, None))) {
+/// that held `ticket`. Says in the console when it can't.
+fn close_loading_window(ticket: Ticket) {
+	if let Err(error) = main_thread::run(Box::new(move || artist_window::settle(ticket, None))) {
 		console::print(&format!("foo_librespot: can't close the artist window: {}", error.message));
 	}
 }
@@ -140,7 +148,12 @@ mod tests {
 	fn several_artists_open_the_artist_window() {
 		let api = installed_api();
 		let fake = installed_backend();
-		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned(), None);
+		open_related(
+			getty_track(),
+			Related::Artist(None),
+			"In Christ Alone".to_owned(),
+			Some(artist_window::take_ticket()),
+		);
 		run_main_thread_work(api);
 		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist(None))]);
 		let dialog = artist_window::WINDOW.current().expect("the artist window is open");
@@ -257,20 +270,21 @@ mod tests {
 		run_main_thread_work(api);
 		pump_messages();
 		assert_eq!(dialog.list_texts(artist_window::LIST), ["Keith Getty", "Kristyn Getty"]);
-		let look_up = |wait| {
-			open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned(), wait);
+		let look_up = |ticket| {
+			let title = "In Christ Alone".to_owned();
+			open_related(getty_track(), Related::Artist(None), title, Some(ticket));
 		};
 		fake.related_with(|_, _| Ok(keith_alone()));
-		look_up(Some(earlier));
+		look_up(earlier);
 		run_main_thread_work(api);
-		look_up(None);
+		look_up(artist_window::take_ticket());
 		run_main_thread_work(api);
 		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KEITH_ID}")]]);
 		fake.related_with(|_, _| Err(CoreError::Unavailable("gone".to_owned())));
-		look_up(Some(earlier));
+		look_up(earlier);
 		wait_until(|| !api.popups().is_empty());
 		run_main_thread_work(api);
-		look_up(None);
+		look_up(artist_window::take_ticket());
 		wait_until(|| api.popups().len() == 2);
 		assert_eq!(artist_window::WINDOW.current(), Some(dialog));
 		assert_eq!(dialog.list_texts(artist_window::LIST), ["Keith Getty", "Kristyn Getty"]);
@@ -298,11 +312,21 @@ mod tests {
 		artist_window::show_loading();
 		let dialog = artist_window::WINDOW.current().unwrap();
 		fake.related_with(|_, _| Ok(keith_alone()));
-		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned(), None);
+		open_related(
+			getty_track(),
+			Related::Artist(None),
+			"In Christ Alone".to_owned(),
+			Some(artist_window::take_ticket()),
+		);
 		run_main_thread_work(api);
 		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KEITH_ID}")]]);
 		fake.related_with(|_, _| Err(CoreError::Unavailable("gone".to_owned())));
-		open_related(getty_track(), Related::Artist(None), "In Christ Alone".to_owned(), None);
+		open_related(
+			getty_track(),
+			Related::Artist(None),
+			"In Christ Alone".to_owned(),
+			Some(artist_window::take_ticket()),
+		);
 		wait_until(|| !api.popups().is_empty());
 		assert_eq!(artist_window::WINDOW.current(), Some(dialog));
 		assert_eq!(dialog.text(artist_window::STATUS), "Loading…");

@@ -194,6 +194,8 @@ struct State {
 	change_result: Mutex<Option<ChangeResult>>,
 	related_calls: Mutex<Vec<(ItemId, Related)>>,
 	related_result: Mutex<Option<RelatedResult>>,
+	/// How many lookups have ended and called back.
+	related_answered: AtomicUsize,
 }
 
 /// What a change ends with.
@@ -353,6 +355,12 @@ impl FakeBackend {
 	/// The lookups asked for so far, in order.
 	pub fn related_calls(&self) -> Vec<(ItemId, Related)> {
 		self.0.related_calls.lock().unwrap_or_else(PoisonError::into_inner).clone()
+	}
+
+	/// How many lookups have ended and called back, so what they queued for the main thread is
+	/// there.
+	pub fn related_answered(&self) -> usize {
+		self.0.related_answered.load(Ordering::SeqCst)
 	}
 
 	fn library_state(&self) -> LibraryState {
@@ -556,7 +564,8 @@ impl Backend for FakeBackend {
 		let _ = recorded.send(());
 	}
 
-	/// Records the lookup, then runs it and `on_done` on a thread of its own.
+	/// Records the lookup, then runs it and `on_done` on a thread of its own, and counts it as
+	/// answered.
 	fn related(&self, item: ItemId, what: Related, on_done: OnRelated) {
 		self.0
 			.related_calls
@@ -570,6 +579,7 @@ impl Backend for FakeBackend {
 				result.unwrap_or(related_by_default)(item, &what)
 			});
 			on_done(result);
+			fake.0.related_answered.fetch_add(1, Ordering::SeqCst);
 		});
 	}
 }
