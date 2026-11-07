@@ -20,6 +20,7 @@ mod prefs;
 mod settings;
 #[cfg(test)]
 mod testing;
+mod window;
 mod worker;
 
 use foxide2k::advconfig::{advconfig_branch_factory, advconfig_checkbox_factory};

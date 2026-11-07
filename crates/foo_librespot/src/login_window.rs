@@ -7,21 +7,16 @@
 //! window closes by itself once the login succeeds: the import or play that opened it then
 //! goes on.
 
-use std::cell::Cell;
-
-use foxide2k::dialog::host::{
-	Dialog, DialogHandler, create_modeless_dialog, destroy, refresh_poster,
-};
+use foxide2k::dialog::host::{Dialog, DialogHandler, destroy, refresh_poster};
 use foxide2k::dialog::notify::IDCANCEL;
 use foxide2k::dialog::style::{
 	DS_CENTER, DS_MODALFRAME, WS_CAPTION, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
 };
 use foxide2k::dialog::template::{ControlClass, DialogTemplate, shell_font};
-use foxide2k::error::Result;
-use foxide2k::main_thread::{add_modeless, remove_modeless};
 
 use crate::account::{self, AccountPanel, CODE, LoginControls, item};
 use crate::login::{LoginState, controller};
+use crate::window::SingleWindow;
 
 pub fn window_template() -> DialogTemplate {
 	let mut items = account::items(7, 7, 246);
@@ -36,45 +31,16 @@ pub fn window_template() -> DialogTemplate {
 	}
 }
 
-thread_local! {
-	/// The open window. It lives on foobar2000's main thread, so only that thread sees it.
-	static WINDOW: Cell<Option<Dialog>> = const { Cell::new(None) };
-}
-
-/// The open login window, if any.
-pub fn current() -> Option<Dialog> {
-	WINDOW.get().filter(Dialog::is_alive)
-}
-
-/// Creates the window, hidden, unless it is open already. Main thread only.
-pub fn open(owner: isize) -> Result<Dialog> {
-	if let Some(dialog) = current() {
-		return Ok(dialog);
-	}
-	let dialog =
-		create_modeless_dialog(owner, &window_template(), Box::new(LoginWindow::default()))?;
-	WINDOW.set(Some(dialog));
-	add_modeless(dialog.hwnd());
-	Ok(dialog)
-}
-
-/// Shows the login window, or brings it to the front when it is open. Main thread only.
-pub fn show(owner: isize) -> Result<()> {
-	let dialog = open(owner)?;
-	dialog.show();
-	dialog.activate();
-	Ok(())
-}
+/// The login window.
+pub static WINDOW: SingleWindow<LoginWindow> = SingleWindow::new(window_template);
 
 #[derive(Default)]
-struct LoginWindow {
-	dialog: Option<Dialog>,
+pub struct LoginWindow {
 	panel: Option<AccountPanel>,
 }
 
 impl DialogHandler for LoginWindow {
 	fn init(&mut self, dialog: &Dialog) -> Option<u16> {
-		self.dialog = Some(*dialog);
 		self.panel = Some(AccountPanel::init(*dialog, LoginControls::Always));
 		if logged_in() {
 			// Closed from the refresh: a window can't be destroyed while it is being created.
@@ -107,18 +73,6 @@ fn logged_in() -> bool {
 	matches!(controller().state(), LoginState::LoggedIn(_))
 }
 
-impl Drop for LoginWindow {
-	/// Runs when the window is destroyed, also when foobar2000 quits with it open.
-	fn drop(&mut self) {
-		if let Some(dialog) = self.dialog {
-			remove_modeless(dialog.hwnd());
-			if WINDOW.get() == Some(dialog) {
-				WINDOW.set(None);
-			}
-		}
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use foxide2k::dialog::host::destroy;
@@ -128,7 +82,7 @@ mod tests {
 	use foo_librespot_core::CoreError;
 	use foo_librespot_core::login::LoginError;
 
-	use super::{current, open};
+	use super::WINDOW;
 	use crate::account::{ACCOUNT, BROWSER, CODE, PAGE};
 
 	use crate::login::{LoginState, controller};
@@ -139,7 +93,7 @@ mod tests {
 		let fake = installed_backend();
 		controller().start();
 		fake.send_code(device_code());
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		assert_eq!(dialog.tab_order(), [ACCOUNT, CODE, PAGE, BROWSER, IDCANCEL]);
 		assert_eq!(dialog.focused(), Some(CODE));
 		assert_eq!(dialog.text(IDCANCEL), "Close");
@@ -150,7 +104,7 @@ mod tests {
 	fn login_window_shows_the_code_field_before_the_code_arrives() {
 		let _fake = installed_backend();
 		controller().start();
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		assert!(dialog.is_visible(CODE));
 		assert!(!dialog.is_visible(BROWSER));
 		assert_eq!(dialog.text(CODE), "Waiting for Spotify's code…");
@@ -162,12 +116,12 @@ mod tests {
 	fn the_window_closes_itself_once_the_login_succeeds() {
 		let fake = installed_backend();
 		controller().start();
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		fake.send_code(device_code());
 		fake.finish_login(Ok("Keith Getty".to_owned()));
 		pump_messages();
 		assert!(!dialog.is_alive());
-		assert!(current().is_none());
+		assert!(WINDOW.current().is_none());
 		assert_eq!(controller().state(), LoginState::LoggedIn("Keith Getty".to_owned()));
 	}
 
@@ -175,7 +129,7 @@ mod tests {
 	fn a_failed_login_keeps_the_window_open_to_try_again() {
 		let fake = installed_backend();
 		controller().start();
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		fake.send_code(device_code());
 		fake.finish_login(Err(CoreError::Login(LoginError::Failed("declined".to_owned()))));
 		pump_messages();
@@ -188,7 +142,7 @@ mod tests {
 	fn opening_once_logged_in_closes_at_once() {
 		let fake = installed_backend();
 		fake.set_username(Some("Keith Getty"));
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		pump_messages();
 		assert!(!dialog.is_alive());
 	}
@@ -197,24 +151,24 @@ mod tests {
 	fn closing_the_login_window_cancels_a_waiting_login() {
 		let fake = installed_backend();
 		controller().start();
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		send_close(&dialog);
 		pump_messages();
 		assert_eq!(controller().state(), LoginState::Cancelled);
 		assert!(fake.last_login_cancelled());
 		assert!(!dialog.is_alive());
-		assert!(current().is_none());
+		assert!(WINDOW.current().is_none());
 	}
 
 	#[test]
 	fn showing_twice_keeps_one_window() {
 		let _fake = installed_backend();
 		let owner = hidden_window();
-		let first = open(owner).unwrap();
-		let second = open(owner).unwrap();
+		let first = WINDOW.open(owner).unwrap();
+		let second = WINDOW.open(owner).unwrap();
 		assert_eq!(first, second);
-		assert_eq!(current(), Some(first));
+		assert_eq!(WINDOW.current(), Some(first));
 		destroy(first);
-		assert!(current().is_none());
+		assert!(WINDOW.current().is_none());
 	}
 }

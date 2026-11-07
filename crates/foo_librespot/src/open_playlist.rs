@@ -5,7 +5,6 @@
 //! have arrived. It carries its Spotify URI as a tab property, so choosing the same playlist
 //! again brings that tab to the front; choosing it while its tracks load starts nothing.
 
-use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -14,9 +13,7 @@ use foo_librespot_core::link::Link;
 use foxide2k::abi::mainmenu::{GROUP_FILE, SORT_PRIORITY_BASE};
 use foxide2k::console;
 use foxide2k::dialog::accessibility::{announce, make_live_region};
-use foxide2k::dialog::host::{
-	Dialog, DialogHandler, create_modeless_dialog, destroy, refresh_poster,
-};
+use foxide2k::dialog::host::{Dialog, DialogHandler, destroy, refresh_poster};
 use foxide2k::dialog::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
 use foxide2k::dialog::style::{
 	BS_DEFPUSHBUTTON, DS_CENTER, DS_MODALFRAME, LBS_NOTIFY, SS_NOPREFIX, WS_BORDER, WS_CAPTION,
@@ -26,7 +23,6 @@ use foxide2k::dialog::template::{ControlClass, DialogTemplate, shell_font};
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
 use foxide2k::host::host;
-use foxide2k::main_thread::{add_modeless, remove_modeless};
 use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
 use foxide2k::metadb::HandleList;
 use foxide2k::playlist;
@@ -38,6 +34,7 @@ use crate::errors::show_failure;
 use crate::first_use::ask_for_login;
 use crate::links::canonical;
 use crate::login::controller;
+use crate::window::SingleWindow;
 
 /// The tab property that keeps the Spotify URI of the playlist a tab was opened from.
 pub const TAB_PROPERTY: Guid = Guid::from_u128(0x0c10e611_31ed_4e6e_b689_6a93937de1bc);
@@ -67,7 +64,7 @@ impl MainMenuCommand for OpenPlaylist {
 		"Opens your Liked Songs or one of your Spotify playlists as a playlist tab.";
 
 	fn execute() -> Result<()> {
-		show(host().main_window())
+		WINDOW.show(host().main_window())
 	}
 }
 
@@ -100,35 +97,8 @@ pub fn window_template() -> DialogTemplate {
 	}
 }
 
-thread_local! {
-	/// The open window; only foobar2000's main thread sets and reads it.
-	static WINDOW: Cell<Option<Dialog>> = const { Cell::new(None) };
-}
-
-/// The open window, if any.
-pub fn current() -> Option<Dialog> {
-	WINDOW.get().filter(Dialog::is_alive)
-}
-
-/// Creates the window, hidden, unless it is open already. Main thread only.
-pub fn open(owner: isize) -> Result<Dialog> {
-	if let Some(dialog) = current() {
-		return Ok(dialog);
-	}
-	let dialog =
-		create_modeless_dialog(owner, &window_template(), Box::new(OpenPlaylistWindow::default()))?;
-	WINDOW.set(Some(dialog));
-	add_modeless(dialog.hwnd());
-	Ok(dialog)
-}
-
-/// Shows the window, or brings it to the front when it is open. Main thread only.
-pub fn show(owner: isize) -> Result<()> {
-	let dialog = open(owner)?;
-	dialog.show();
-	dialog.activate();
-	Ok(())
-}
+/// The "Open playlist…" window.
+pub static WINDOW: SingleWindow<OpenPlaylistWindow> = SingleWindow::new(window_template);
 
 /// One line of the list: what the tab is called and where its tracks come from.
 #[derive(PartialEq, Eq)]
@@ -160,8 +130,7 @@ fn entries_of(library: &Library) -> Vec<Entry> {
 }
 
 #[derive(Default)]
-struct OpenPlaylistWindow {
-	dialog: Option<Dialog>,
+pub struct OpenPlaylistWindow {
 	entries: Vec<Entry>,
 	status: String,
 	login_subscription: Option<u64>,
@@ -234,7 +203,6 @@ fn cant_open(name: &str, why: &str) {
 
 impl DialogHandler for OpenPlaylistWindow {
 	fn init(&mut self, dialog: &Dialog) -> Option<u16> {
-		self.dialog = Some(*dialog);
 		if let Err(error) = make_live_region(dialog, STATUS) {
 			console::print(&format!("foo_librespot: {}", error.message));
 		}
@@ -293,12 +261,6 @@ impl Drop for OpenPlaylistWindow {
 		}
 		if let Some(subscription) = self.library_subscription {
 			backend().unsubscribe_library(subscription);
-		}
-		if let Some(dialog) = self.dialog {
-			remove_modeless(dialog.hwnd());
-			if WINDOW.get() == Some(dialog) {
-				WINDOW.set(None);
-			}
 		}
 	}
 }
@@ -371,7 +333,7 @@ mod tests {
 	};
 
 	use super::{
-		LABEL, LIST, OpenPlaylist, STATUS, SpotifyMenu, TAB_PROPERTY, cant_open, current, open,
+		LABEL, LIST, OpenPlaylist, STATUS, SpotifyMenu, TAB_PROPERTY, WINDOW, cant_open,
 		window_template,
 	};
 	use crate::login::controller;
@@ -426,7 +388,7 @@ mod tests {
 		FakeApi::new().install();
 		let fake = installed_backend();
 		fake.set_library(ready());
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		let texts: Vec<String> =
 			(0..dialog.list_count(LIST)).map(|row| dialog.list_text(LIST, row)).collect();
 		assert_eq!(texts, ["Liked Songs", "Church / Sunday set", "Getty favourites"]);
@@ -442,7 +404,7 @@ mod tests {
 		FakeApi::new().install();
 		let fake = installed_backend();
 		fake.set_library(LibraryState::Loading);
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		assert_eq!(dialog.text(STATUS), "Loading…");
 		assert_eq!(dialog.list_count(LIST), 0);
 		fake.publish_library(ready());
@@ -458,7 +420,7 @@ mod tests {
 		let fake = installed_backend();
 		let failed = || LibraryState::Failed("Spotify is unreachable".to_owned());
 		fake.set_library(failed());
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		assert_eq!(dialog.text(STATUS), "Loading…");
 		assert_eq!(dialog.list_count(LIST), 0);
 		fake.publish_library(failed());
@@ -496,7 +458,7 @@ mod tests {
 		FakeApi::new().install();
 		let fake = installed_backend();
 		let prompt = installed_prompt();
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		assert_eq!(dialog.text(STATUS), "Log in to Spotify to see your playlists.");
 		assert_eq!(prompt.shown(), 1);
 		confirm_login_when_started(&fake, 1).join().unwrap();
@@ -518,7 +480,7 @@ mod tests {
 		let fake = installed_backend();
 		let prompt = installed_prompt();
 		fake.set_library(LibraryState::Loading);
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		assert_eq!(prompt.shown(), 0);
 		fake.publish_library(LibraryState::LoggedOut);
 		pump_messages();
@@ -538,7 +500,7 @@ mod tests {
 		let prompt = installed_prompt();
 		fake.set_username(Some("Keith Getty"));
 		fake.set_library(LibraryState::Loading);
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		controller().refresh();
 		controller().press();
 		assert_eq!(fake.logouts(), 1);
@@ -556,7 +518,7 @@ mod tests {
 		let fake = installed_backend();
 		let prompt = installed_prompt();
 		fake.set_library(ready());
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		assert_eq!(dialog.list_count(LIST), 3);
 		fake.set_library(LibraryState::LoggedOut);
 		refresh_poster(&dialog).post();
@@ -573,7 +535,7 @@ mod tests {
 		FakeApi::new().install();
 		let fake = installed_backend();
 		fake.set_library(ready());
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		dialog.list_select(LIST, 2);
 		fake.publish_library(ready());
 		refresh_poster(&dialog).post();
@@ -587,7 +549,7 @@ mod tests {
 		FakeApi::new().install();
 		let fake = installed_backend();
 		fake.set_library(ready());
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		dialog.list_select(LIST, 2);
 		fake.set_library(LibraryState::Ready(library_with(vec![getty_favourites(), sunday_set()])));
 		refresh_poster(&dialog).post();
@@ -599,11 +561,11 @@ mod tests {
 
 	/// Opens the window with the library ready, picks row `row` and presses Open.
 	fn pick_row(row: usize) {
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		dialog.list_select(LIST, row);
 		send_command(&dialog, IDOK, BN_CLICKED);
 		assert!(!dialog.is_alive());
-		assert!(current().is_none());
+		assert!(WINDOW.current().is_none());
 	}
 
 	fn ready_api() -> &'static FakeApi {
@@ -717,7 +679,7 @@ mod tests {
 	#[test]
 	fn double_clicking_a_playlist_opens_it() {
 		let api = ready_api();
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		dialog.list_select(LIST, 2);
 		send_command(&dialog, LIST, LBN_DBLCLK);
 		assert!(!dialog.is_alive());
@@ -730,11 +692,11 @@ mod tests {
 		FakeApi::new().install();
 		let fake = installed_backend();
 		fake.set_library(ready());
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		send_command(&dialog, IDCANCEL, BN_CLICKED);
 		assert!(!dialog.is_alive());
-		assert!(current().is_none());
-		let again = open(hidden_window()).unwrap();
+		assert!(WINDOW.current().is_none());
+		let again = WINDOW.open(hidden_window()).unwrap();
 		send_close(&again);
 		pump_messages();
 		assert!(!again.is_alive());
@@ -745,7 +707,7 @@ mod tests {
 		FakeApi::new().install();
 		let fake = installed_backend();
 		fake.set_library(LibraryState::Loading);
-		let dialog = open(hidden_window()).unwrap();
+		let dialog = WINDOW.open(hidden_window()).unwrap();
 		assert_eq!(fake.library_subscribers(), 1);
 		refresh_poster(&dialog).post();
 		pump_messages();
@@ -761,11 +723,11 @@ mod tests {
 		let fake = installed_backend();
 		fake.set_library(ready());
 		let owner = hidden_window();
-		let first = open(owner).unwrap();
-		let second = open(owner).unwrap();
+		let first = WINDOW.open(owner).unwrap();
+		let second = WINDOW.open(owner).unwrap();
 		assert_eq!(first, second);
-		assert_eq!(current(), Some(first));
+		assert_eq!(WINDOW.current(), Some(first));
 		destroy(first);
-		assert!(current().is_none());
+		assert!(WINDOW.current().is_none());
 	}
 }

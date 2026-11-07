@@ -23,7 +23,7 @@ struct WindowPrompt;
 impl LoginPrompt for WindowPrompt {
 	fn show(&self) {
 		let shown = main_thread::run(Box::new(|| {
-			if let Err(error) = login_window::show(host().main_window()) {
+			if let Err(error) = login_window::WINDOW.show(host().main_window()) {
 				console::print(&format!(
 					"foo_librespot: can't open the login window: {}",
 					error.message
