@@ -222,12 +222,17 @@ impl OpenPlaylistWindow {
 			return;
 		};
 		if let Err(error) = open_entry(entry) {
-			let message = format!("can't open {}: {}", entry.name, error.message);
-			console::print(&format!("foo_librespot: {message}"));
-			let _ = popup::show("Can't open this Spotify playlist", &message, PopupIcon::Error);
+			cant_open(&entry.name, &error.message);
 		}
 		destroy(dialog);
 	}
+}
+
+/// Says in the console and a popup that the playlist `name` couldn't be opened, and why.
+fn cant_open(name: &str, why: &str) {
+	console::print(&format!("foo_librespot: can't open {name}: {why}"));
+	let message = format!("{name}\n\n{why}.");
+	let _ = popup::show("Can't open this Spotify playlist", &message, PopupIcon::Error);
 }
 
 impl DialogHandler for OpenPlaylistWindow {
@@ -239,10 +244,14 @@ impl DialogHandler for OpenPlaylistWindow {
 		let poster = refresh_poster(dialog);
 		self.subscription = Some(controller().subscribe(Box::new(move || poster.post())));
 		let poster = refresh_poster(dialog);
-		let state = backend().library(Some(Box::new(move || poster.post())));
-		if matches!(state, LibraryState::LoggedOut) {
-			ask_for_login();
-		}
+		let state = match backend().library(Some(Box::new(move || poster.post()))) {
+			LibraryState::LoggedOut => {
+				ask_for_login();
+				LibraryState::LoggedOut
+			}
+			LibraryState::Failed(_) => LibraryState::Loading,
+			state => state,
+		};
 		self.render(*dialog, state);
 		Some(LIST)
 	}
@@ -317,13 +326,14 @@ mod tests {
 	};
 
 	use super::{
-		LABEL, LIST, OpenPlaylist, STATUS, SpotifyMenu, TAB_PROPERTY, current, open,
+		LABEL, LIST, OpenPlaylist, STATUS, SpotifyMenu, TAB_PROPERTY, cant_open, current, open,
 		window_template,
 	};
 	use crate::testing::{
 		confirm_login_when_started, getty_favourites, installed_backend, installed_prompt,
 		library_with, sunday_set, sunday_set_id,
 	};
+	use foxide2k::popup::PopupIcon;
 
 	const GETTY_TRACK: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
 
@@ -400,14 +410,39 @@ mod tests {
 	fn a_failed_fetch_shows_why_and_is_not_retried_while_open() {
 		FakeApi::new().install();
 		let fake = installed_backend();
-		fake.set_library(LibraryState::Failed("Spotify is unreachable".to_owned()));
+		let failed = || LibraryState::Failed("Spotify is unreachable".to_owned());
+		fake.set_library(failed());
 		let dialog = open(hidden_window()).unwrap();
-		assert_eq!(dialog.text(STATUS), "Couldn't load your playlists: Spotify is unreachable.");
+		assert_eq!(dialog.text(STATUS), "Loading…");
 		assert_eq!(dialog.list_count(LIST), 0);
+		fake.publish_library(failed());
+		pump_messages();
+		assert_eq!(dialog.text(STATUS), "Couldn't load your playlists: Spotify is unreachable.");
 		refresh_poster(&dialog).post();
 		pump_messages();
 		assert_eq!(fake.library_calls(), 1);
 		destroy(dialog);
+	}
+
+	#[test]
+	fn a_playlist_that_cant_be_opened_shows_a_popup_saying_why() {
+		let api = FakeApi::new();
+		api.install();
+		cant_open("Sunday set", "foobar2000 did not create the playlist");
+		assert_eq!(
+			api.popups(),
+			[(
+				"Can't open this Spotify playlist".to_owned(),
+				"Sunday set\n\nfoobar2000 did not create the playlist.".to_owned(),
+				PopupIcon::Error
+			)]
+		);
+		assert!(
+			api.console_lines().contains(
+				&"foo_librespot: can't open Sunday set: foobar2000 did not create the playlist"
+					.to_owned()
+			)
+		);
 	}
 
 	#[test]

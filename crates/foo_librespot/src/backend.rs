@@ -59,7 +59,8 @@ pub trait Backend: Send + Sync {
 	fn username(&self) -> Result<Option<String>, CoreError>;
 	/// The account's playlists as last read, without waiting for Spotify. Starts a read when none
 	/// runs and the held one is missing, incomplete or old, or the last read failed; `on_change`
-	/// runs once when a running read next publishes. It may run on any thread.
+	/// runs once when a running read next publishes. It may run on any thread. When Spotify's
+	/// core can't start, the answer is `Failed` and `on_change` runs before the call returns.
 	fn library(&self, on_change: Option<OnLibraryChange>) -> LibraryState;
 	/// What [`Backend::library`] would answer, without starting a read.
 	fn held_library(&self) -> LibraryState;
@@ -191,7 +192,12 @@ impl Backend for CoreBackend {
 	fn library(&self, on_change: Option<OnLibraryChange>) -> LibraryState {
 		match core() {
 			Ok(core) => core.library(on_change),
-			Err(error) => LibraryState::Failed(error.to_string()),
+			Err(error) => {
+				if let Some(on_change) = on_change {
+					on_change();
+				}
+				LibraryState::Failed(error.to_string())
+			}
 		}
 	}
 
@@ -237,8 +243,25 @@ pub fn install(fake: Box<dyn Backend>) {
 #[cfg(test)]
 mod tests {
 	use std::path::PathBuf;
+	use std::sync::Arc;
+	use std::sync::atomic::{AtomicBool, Ordering};
 
-	use super::profile_folder;
+	use foo_librespot_core::library::LibraryState;
+
+	use super::{Backend, CoreBackend, profile_folder, shutdown};
+
+	#[test]
+	fn a_library_read_that_cant_start_runs_its_listener() {
+		shutdown();
+		let ran = Arc::new(AtomicBool::new(false));
+		let listener = {
+			let ran = Arc::clone(&ran);
+			Box::new(move || ran.store(true, Ordering::SeqCst))
+		};
+		let state = CoreBackend.library(Some(listener));
+		assert!(matches!(state, LibraryState::Failed(_)), "{state:?}");
+		assert!(ran.load(Ordering::SeqCst));
+	}
 
 	#[test]
 	fn profile_folder_strips_the_file_scheme() {
