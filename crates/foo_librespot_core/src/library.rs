@@ -344,8 +344,8 @@ pub(crate) fn remove_changes(base_revision: &[u8], rows: &[(usize, PlaylistRow)]
 }
 
 /// The body of a write to the "collection" set of `username`: one item per URI, saved at
-/// `now_secs`, or removed when `liked` is false. librespot has no type for it, so the fields are
-/// written one by one: 1 username, 2 set, 3 items; in an item, 1 URI, 2 time added, 3 removed.
+/// `now_secs`, or removed when `liked` is false. Fields: 1 username, 2 set, 3 items; in an item,
+/// 1 URI, 2 time added, 3 removed.
 pub(crate) fn liked_write(username: &str, uris: &[String], liked: bool, now_secs: i32) -> Vec<u8> {
 	let mut body = Vec::new();
 	{
@@ -389,6 +389,12 @@ struct Inner {
 	running: Option<u64>,
 	started: Option<Instant>,
 	listeners: Vec<OnLibraryChange>,
+	/// Counts the calls of `clear`; a change publishes only into the epoch it began in.
+	epoch: u64,
+	/// The playlists a change published since the running fetch began.
+	changed_playlists: HashSet<SpotifyId>,
+	/// A change published Liked Songs since the running fetch began.
+	changed_liked: bool,
 }
 
 impl Inner {
@@ -471,6 +477,8 @@ impl LibraryCache {
 			inner.next_token += 1;
 			inner.running = Some(ticket.0);
 			inner.started = Some(now);
+			inner.changed_playlists.clear();
+			inner.changed_liked = false;
 			ticket
 		});
 		if inner.running.is_some()
@@ -505,6 +513,8 @@ impl LibraryCache {
 		inner.next_token += 1;
 		inner.running = Some(ticket.0);
 		inner.started = Some(now);
+		inner.changed_playlists.clear();
+		inner.changed_liked = false;
 		ticket
 	}
 
@@ -555,7 +565,10 @@ impl LibraryCache {
 			for (id, result) in contents {
 				match result {
 					Ok(contents) => {
-						library.items.insert(id, Held::new(contents));
+						// A change published a newer copy while this one was being read.
+						if !inner.changed_playlists.contains(&id) {
+							library.items.insert(id, Held::new(contents));
+						}
 					}
 					Err(error) => {
 						// A playlist that was read before keeps its old rows.
@@ -565,7 +578,11 @@ impl LibraryCache {
 				}
 			}
 			match liked {
-				Ok(liked) => library.liked = Some(liked),
+				Ok(liked) => {
+					if !(inner.changed_liked && library.liked.is_some()) {
+						library.liked = Some(liked);
+					}
+				}
 				Err(error) => {
 					log::warn!("couldn't read Liked Songs: {error}");
 					first_error.get_or_insert_with(|| error.to_string());
@@ -617,8 +634,8 @@ impl LibraryCache {
 		let listeners = {
 			let mut inner = self.lock();
 			let listeners = std::mem::take(&mut inner.listeners);
-			let next_token = inner.next_token;
-			*inner = Inner { next_token, ..Inner::default() };
+			let (next_token, epoch) = (inner.next_token, inner.epoch + 1);
+			*inner = Inner { next_token, epoch, ..Inner::default() };
 			listeners
 		};
 		run(listeners);
@@ -632,6 +649,7 @@ impl LibraryCache {
 		target: Target,
 		items: &[ItemId],
 	) -> Result<Change, CoreError> {
+		let epoch = self.lock().epoch;
 		match target {
 			Target::Playlist(id) => {
 				let uris = distinct_uris(items);
@@ -639,7 +657,7 @@ impl LibraryCache {
 				let (lacking, already) = missing(&uris, &fresh);
 				if !lacking.is_empty() {
 					source.add(id, &fresh.revision, &lacking).await?;
-					self.read_again(source, id).await;
+					self.read_again(source, id, epoch).await;
 				}
 				Ok(Change { changed: lacking.len(), unchanged: already, episodes_left_out: 0 })
 			}
@@ -653,7 +671,7 @@ impl LibraryCache {
 					.collect();
 				if !lacking.is_empty() {
 					source.set_liked(&lacking, true).await?;
-					self.update_liked(|liked| liked.extend(lacking.iter().cloned()));
+					self.update_liked(epoch, |liked| liked.extend(lacking.iter().cloned()));
 				}
 				Ok(Change {
 					changed: lacking.len(),
@@ -672,13 +690,14 @@ impl LibraryCache {
 		target: Target,
 		items: &[ItemId],
 	) -> Result<Change, CoreError> {
+		let epoch = self.lock().epoch;
 		match target {
 			Target::Playlist(id) => {
 				let fresh = source.contents(id).await?;
 				let rows = rows_holding(&distinct_uris(items), &fresh);
 				if !rows.is_empty() {
 					source.remove(id, &fresh.revision, &rows).await?;
-					self.read_again(source, id).await;
+					self.read_again(source, id, epoch).await;
 				}
 				Ok(Change { changed: rows.len(), ..Change::default() })
 			}
@@ -686,7 +705,7 @@ impl LibraryCache {
 				let (tracks, episodes_left_out) = split_items(items);
 				if !tracks.is_empty() {
 					source.set_liked(&tracks, false).await?;
-					self.update_liked(|liked| {
+					self.update_liked(epoch, |liked| {
 						for uri in &tracks {
 							liked.remove(uri);
 						}
@@ -697,17 +716,23 @@ impl LibraryCache {
 		}
 	}
 
-	/// Reads playlist `id` after a change and publishes its rows and revision. When the read
-	/// fails, the held copy stays and the next fetch finds its revision old.
-	async fn read_again<S: LibrarySource>(&self, source: &S, id: SpotifyId) {
-		let contents = match source.contents(id).await {
+	/// Reads playlist `id` after a change and publishes its rows and revision, unless `clear`
+	/// has run since `epoch`. When the read fails, the held copy stays and the next snapshot
+	/// starts a fetch.
+	async fn read_again<S: LibrarySource>(&self, source: &S, id: SpotifyId, epoch: u64) {
+		let result = source.contents(id).await;
+		let mut inner = self.lock();
+		if inner.epoch != epoch {
+			return;
+		}
+		let contents = match result {
 			Ok(contents) => contents,
 			Err(error) => {
 				log::warn!("couldn't read a Spotify playlist after changing it: {error}");
+				inner.started = None;
 				return;
 			}
 		};
-		let mut inner = self.lock();
 		let Some(mut library) = inner.library.as_deref().cloned() else {
 			return;
 		};
@@ -715,18 +740,27 @@ impl LibraryCache {
 			playlist.revision.clone_from(&contents.revision);
 			library.items.insert(id, Held::new(contents));
 			inner.library = Some(Arc::new(library));
+			if inner.running.is_some() {
+				inner.changed_playlists.insert(id);
+			}
 		}
 	}
 
-	/// Changes the held Liked Songs, when it is known.
-	fn update_liked(&self, change: impl FnOnce(&mut HashSet<String>)) {
+	/// Changes the held Liked Songs, when it is known and `clear` has not run since `epoch`.
+	fn update_liked(&self, epoch: u64, change: impl FnOnce(&mut HashSet<String>)) {
 		let mut inner = self.lock();
+		if inner.epoch != epoch {
+			return;
+		}
 		let Some(mut library) = inner.library.as_deref().cloned() else {
 			return;
 		};
 		if let Some(liked) = library.liked.as_mut() {
 			change(liked);
 			inner.library = Some(Arc::new(library));
+			if inner.running.is_some() {
+				inner.changed_liked = true;
+			}
 		}
 	}
 
@@ -1148,6 +1182,19 @@ mod tests {
 		hang_rootlist: AtomicBool,
 		/// When set, `contents` waits for it before answering.
 		gate: Option<Arc<Notify>>,
+		/// When set, the next `contents` answer is held back until `contents_gate` opens; it
+		/// holds what the playlist was when the call began.
+		hold_contents_once: AtomicBool,
+		contents_gate: Arc<Notify>,
+		/// The call number of `contents` that fails; 0 for none.
+		fail_contents_call: AtomicUsize,
+		/// When set, `liked` answers what Liked Songs was when the call began, once `liked_gate`
+		/// opens.
+		hold_liked: AtomicBool,
+		liked_gate: Arc<Notify>,
+		/// When set, `set_liked` waits for `set_liked_gate` after recording its call.
+		hold_set_liked: AtomicBool,
+		set_liked_gate: Arc<Notify>,
 		/// The calls to `add`: the base revision and the URIs.
 		adds: Mutex<Vec<(Vec<u8>, Vec<String>)>>,
 		/// The calls to `remove`: the base revision and the rows.
@@ -1170,20 +1217,30 @@ mod tests {
 		}
 
 		async fn contents(&self, id: SpotifyId) -> Result<PlaylistContents, CoreError> {
-			self.contents_calls.fetch_add(1, Ordering::SeqCst);
+			let call = self.contents_calls.fetch_add(1, Ordering::SeqCst) + 1;
 			if let Some(gate) = &self.gate {
 				gate.notified().await;
 			}
-			if self.fail_contents.load(Ordering::SeqCst) {
+			if self.fail_contents.load(Ordering::SeqCst)
+				|| self.fail_contents_call.load(Ordering::SeqCst) == call
+			{
 				return Err(CoreError::Unavailable("playlist failed".to_owned()));
 			}
-			Ok(self.contents.lock().unwrap().get(&id).expect("unknown playlist").clone())
+			let answer = self.contents.lock().unwrap().get(&id).expect("unknown playlist").clone();
+			if self.hold_contents_once.swap(false, Ordering::SeqCst) {
+				self.contents_gate.notified().await;
+			}
+			Ok(answer)
 		}
 
 		async fn liked(&self) -> Result<HashSet<String>, CoreError> {
 			self.liked_calls.fetch_add(1, Ordering::SeqCst);
 			tokio::task::yield_now().await;
-			Ok(self.liked.lock().unwrap().clone())
+			let answer = self.liked.lock().unwrap().clone();
+			if self.hold_liked.load(Ordering::SeqCst) {
+				self.liked_gate.notified().await;
+			}
+			Ok(answer)
 		}
 
 		async fn add(
@@ -1221,6 +1278,9 @@ mod tests {
 		async fn set_liked(&self, uris: &[String], liked: bool) -> Result<(), CoreError> {
 			tokio::task::yield_now().await;
 			self.likes.lock().unwrap().push((uris.to_vec(), liked));
+			if self.hold_set_liked.load(Ordering::SeqCst) {
+				self.set_liked_gate.notified().await;
+			}
 			let mut set = self.liked.lock().unwrap();
 			for uri in uris {
 				if liked {
@@ -1506,6 +1566,101 @@ mod tests {
 		let library = ready(cache.held());
 		assert_eq!(library.liked_holds_all(&[uri_of(track(1))]), Some(false));
 		assert_eq!(library.liked_holds_all(&[uri_of(track(2))]), Some(false));
+	}
+
+	#[tokio::test]
+	async fn a_write_in_flight_over_a_logout_leaves_the_next_account_alone() {
+		let source = Arc::new(fake());
+		let cache = loaded(&source).await;
+		source.hold_set_liked.store(true, Ordering::SeqCst);
+		let task = tokio::spawn({
+			let (cache, source) = (cache.clone(), Arc::clone(&source));
+			async move { cache.add(&*source, Target::LikedSongs, &[track(1)]).await }
+		});
+		until(|| !source.likes.lock().unwrap().is_empty()).await;
+		cache.clear();
+		let other = fake();
+		cache.fetch(&other, Instant::now()).await;
+		source.set_liked_gate.notify_one();
+		task.await.unwrap().unwrap();
+		let library = ready(cache.held());
+		assert_eq!(library.liked_holds_all(&[uri_of(track(1))]), Some(false));
+	}
+
+	#[tokio::test]
+	async fn a_playlist_change_in_flight_over_a_logout_leaves_the_next_account_alone() {
+		let source = Arc::new(fake());
+		let cache = loaded(&source).await;
+		source.hold_contents_once.store(true, Ordering::SeqCst);
+		let task = tokio::spawn({
+			let (cache, source) = (cache.clone(), Arc::clone(&source));
+			async move { cache.add(&*source, Target::Playlist(id(1)), &[track(4)]).await }
+		});
+		until(|| !source.hold_contents_once.load(Ordering::SeqCst)).await;
+		cache.clear();
+		let other = fake();
+		cache.fetch(&other, Instant::now()).await;
+		source.contents_gate.notify_one();
+		task.await.unwrap().unwrap();
+		let library = ready(cache.held());
+		assert_eq!(library.holds_all(id(1), &[uri_of(track(4))]), Some(false));
+		assert_eq!(library.contents(id(1)).unwrap().revision, b"r1".to_vec());
+	}
+
+	#[tokio::test]
+	async fn a_fetch_that_read_liked_songs_before_a_save_keeps_the_saved_track() {
+		let source = Arc::new(fake());
+		let cache = loaded(&source).await;
+		source.hold_liked.store(true, Ordering::SeqCst);
+		let fetch = tokio::spawn({
+			let (cache, source) = (cache.clone(), Arc::clone(&source));
+			async move { cache.fetch(&*source, Instant::now()).await }
+		});
+		until(|| source.liked_calls.load(Ordering::SeqCst) == 2).await;
+		until(|| source.liked.lock().unwrap().len() == 1).await;
+		tokio::task::yield_now().await;
+		cache.add(&*source, Target::LikedSongs, &[track(1)]).await.unwrap();
+		source.liked_gate.notify_one();
+		fetch.await.unwrap();
+		let library = ready(cache.held());
+		assert_eq!(library.liked_holds_all(&[uri_of(track(1))]), Some(true));
+	}
+
+	#[tokio::test]
+	async fn a_fetch_that_read_a_playlist_before_a_change_keeps_the_change() {
+		let source = Arc::new(fake());
+		let cache = loaded(&source).await;
+		// The playlist changed elsewhere, so the next fetch reads it again.
+		source.playlists.lock().unwrap()[0].revision = b"r2".to_vec();
+		source.contents.lock().unwrap().get_mut(&id(1)).unwrap().revision = b"r2".to_vec();
+		source.hold_contents_once.store(true, Ordering::SeqCst);
+		let fetch = tokio::spawn({
+			let (cache, source) = (cache.clone(), Arc::clone(&source));
+			async move { cache.fetch(&*source, Instant::now()).await }
+		});
+		until(|| !source.hold_contents_once.load(Ordering::SeqCst)).await;
+		cache.add(&*source, Target::Playlist(id(1)), &[track(4)]).await.unwrap();
+		source.contents_gate.notify_one();
+		fetch.await.unwrap();
+		let library = ready(cache.held());
+		assert_eq!(library.holds_all(id(1), &[uri_of(track(4))]), Some(true));
+		assert_eq!(library.contents(id(1)).unwrap().revision, b"after".to_vec());
+	}
+
+	#[tokio::test]
+	async fn a_failed_re_read_after_a_change_makes_the_next_snapshot_fetch() {
+		let source = fake();
+		let cache = loaded(&source).await;
+		let (_, start) = cache.snapshot(Instant::now(), None);
+		assert!(!start);
+		// The read before the change is the next call; the read after it is the one after.
+		let next = source.contents_calls.load(Ordering::SeqCst) + 2;
+		source.fail_contents_call.store(next, Ordering::SeqCst);
+		let change = cache.add(&source, Target::Playlist(id(1)), &[track(4)]).await.unwrap();
+		assert_eq!(change.changed, 1);
+		let (state, start) = cache.snapshot(Instant::now(), None);
+		assert!(start);
+		assert!(is_ready(&state));
 	}
 
 	fn is_ready(state: &LibraryState) -> bool {
