@@ -37,5 +37,6 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# librespot-org/librespot PR #1855's branch, pinned by commit in Cargo.toml until it is released.
-allow-git = ["https://github.com/Neppkun/librespot"]
+# The foo_librespot branch, which merges librespot-org/librespot PRs #1855 and #1844, pinned by
+# commit in Cargo.toml until both are released.
+allow-git = ["https://github.com/LeonarddeR/librespot"]
