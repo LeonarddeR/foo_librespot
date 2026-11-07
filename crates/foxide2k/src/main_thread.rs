@@ -11,8 +11,8 @@ use crate::abi::main_thread::{
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 use crate::boundary::guard;
 use crate::console;
-use crate::cxx::{ExceptionKind, try_host};
-use crate::error::{Error, Result};
+use crate::cxx::try_host;
+use crate::error::Result;
 use crate::guid::Guid;
 use crate::host::host;
 use crate::service::{ByValueServicePtr, ServiceImpl, ServiceObject, new_service};
@@ -51,9 +51,7 @@ unsafe extern "C-unwind" fn callback_run(this: *mut ServiceBase) {
 
 /// Runs `work` on foobar2000's main thread, soon after this returns.
 pub fn run(work: Work) -> Result<()> {
-	let manager = host().core_service(&MANAGER_IID).ok_or_else(|| {
-		Error::new(ExceptionKind::BugCheck, "foobar2000 has no main_thread_callback_manager")
-	})?;
+	let manager = host().require(&MANAGER_IID, "main_thread_callback_manager")?;
 	let raw = manager.as_raw();
 	// The by-value argument: a temporary holding one reference, which the callee releases.
 	let mut temporary = new_service(MainThreadWork(Mutex::new(Some(work)))).into_raw();

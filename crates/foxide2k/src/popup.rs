@@ -6,8 +6,8 @@ use crate::abi::popup::{
 	BUTTON_NO, BUTTON_YES, ICON_ERROR, ICON_INFORMATION, ICON_QUESTION, IID, PopupMessageVtbl,
 	PopupV3Vtbl, Query, V3_IID,
 };
-use crate::cxx::{ExceptionKind, try_host};
-use crate::error::{Error, Result};
+use crate::cxx::try_host;
+use crate::error::Result;
 use crate::host::host;
 use crate::strings::c_string;
 
@@ -35,9 +35,7 @@ impl PopupIcon {
 /// Shows `message` in a popup titled `title`. Safe from any thread: foobar2000 shows it on the
 /// main thread.
 pub fn show(title: &str, message: &str, icon: PopupIcon) -> Result<()> {
-	let popup = host()
-		.core_service(&IID)
-		.ok_or_else(|| Error::new(ExceptionKind::BugCheck, "foobar2000 has no popup_message"))?;
+	let popup = host().require(&IID, "popup_message")?;
 	let raw = popup.as_raw();
 	try_host(|| unsafe {
 		let vtbl = &*(*raw).vtbl.cast::<PopupMessageVtbl>();
@@ -56,9 +54,7 @@ pub fn show(title: &str, message: &str, icon: PopupIcon) -> Result<()> {
 /// Asks a yes/no question in foobar2000's message window and waits for the answer. Returns true
 /// for Yes; No is the default button. Main thread only.
 pub fn ask(title: &str, message: &str) -> Result<bool> {
-	let popup = host()
-		.core_service(&V3_IID)
-		.ok_or_else(|| Error::new(ExceptionKind::BugCheck, "foobar2000 has no popup_message_v3"))?;
+	let popup = host().require(&V3_IID, "popup_message_v3")?;
 	let title = c_string(title, "a question")?;
 	let message = c_string(message, "a question")?;
 	let query = Query {

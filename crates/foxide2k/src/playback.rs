@@ -2,15 +2,13 @@
 //! [`main_thread::run`](crate::main_thread::run).
 
 use crate::abi::playback_control::{IID, PlaybackControlVtbl};
-use crate::cxx::{ExceptionKind, try_host};
-use crate::error::{Error, Result};
+use crate::cxx::try_host;
+use crate::error::Result;
 use crate::host::host;
 
 /// Stops playback, as the Stop button does. Main thread only.
 pub fn stop() -> Result<()> {
-	let control = host()
-		.core_service(&IID)
-		.ok_or_else(|| Error::new(ExceptionKind::BugCheck, "foobar2000 has no playback_control"))?;
+	let control = host().require(&IID, "playback_control")?;
 	let raw = control.as_raw();
 	try_host(|| unsafe {
 		let vtbl = &*(*raw).vtbl.cast::<PlaybackControlVtbl>();

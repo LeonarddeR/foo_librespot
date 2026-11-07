@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use crate::abi::component::Api;
 use crate::abi::componentversion::{self, ComponentVersionVtbl};
 use crate::abi::service::ServiceBase;
-use crate::cxx::try_host;
+use crate::cxx::{ExceptionKind, try_host};
+use crate::error::{Error, Result};
 use crate::guid::Guid;
 use crate::service::ServicePtr;
 use crate::strings::OwnedString;
@@ -80,6 +81,13 @@ impl Host {
 		self.enumerate(iid).into_iter().next()
 	}
 
+	/// [`core_service`](Self::core_service), or a bug-check error saying foobar2000 has no
+	/// `name`.
+	pub fn require(&self, iid: &Guid, name: &str) -> Result<ServicePtr> {
+		self.core_service(iid)
+			.ok_or_else(|| Error::new(ExceptionKind::BugCheck, format!("foobar2000 has no {name}")))
+	}
+
 	/// foobar2000's main window, or 0 when there is none.
 	pub fn main_window(&self) -> isize {
 		Self::api().map_or(0, |api| {
@@ -150,8 +158,23 @@ mod tests {
 	use super::host;
 	use crate::abi::componentversion;
 	use crate::component::ComponentVersionService;
+	use crate::cxx::ExceptionKind;
+	use crate::guid::Guid;
 	use crate::service::new_service;
 	use crate::testing::FakeApi;
+
+	#[test]
+	fn require_gives_the_core_service_or_names_the_missing_one() {
+		let api = FakeApi::new();
+		let version = ComponentVersionService::new("foo_librespot", "1.0", "");
+		api.add_service(componentversion::IID, new_service(version));
+		api.install();
+		assert!(host().require(&componentversion::IID, "componentversion").is_ok());
+		let missing = Guid::from_u128(0x5f2c_7e10_3a4b_4c8d_9e6f_1a2b_3c4d_5e6f);
+		let error = host().require(&missing, "popup_message").unwrap_err();
+		assert_eq!(error.kind, ExceptionKind::BugCheck);
+		assert_eq!(error.message, "foobar2000 has no popup_message");
+	}
 
 	#[test]
 	fn loaded_components_lists_every_componentversion_file_name() {

@@ -31,9 +31,7 @@ type Done = Box<dyn FnOnce(&HandleList<'_>) -> Result<()> + Send>;
 type Aborted = Box<dyn FnOnce() + Send>;
 
 fn manager() -> Result<ServicePtr> {
-	host()
-		.core_service(&MANAGER_IID)
-		.ok_or_else(|| Error::new(ExceptionKind::BugCheck, "foobar2000 has no playlist_manager"))
+	host().require(&MANAGER_IID, "playlist_manager")
 }
 
 fn manager_v2() -> Result<ServicePtr> {
@@ -237,14 +235,10 @@ unsafe extern "C-unwind" fn url_item(
 /// its progress window, then calls `done` on the main thread. A cancelled load calls `aborted`
 /// instead, once `done` is dropped.
 pub fn load_locations(locations: &[String], done: Done, aborted: Aborted) -> Result<()> {
-	let filter = host()
-		.core_service(&INCOMING_IID)
-		.and_then(|filter| filter.query(&INCOMING_V2_IID))
-		.ok_or_else(|| {
-			Error::new(
-				ExceptionKind::BugCheck,
-				"foobar2000 has no playlist_incoming_item_filter_v2",
-			)
+	const FILTER: &str = "playlist_incoming_item_filter_v2";
+	let filter =
+		host().require(&INCOMING_IID, FILTER)?.query(&INCOMING_V2_IID).ok_or_else(|| {
+			Error::new(ExceptionKind::BugCheck, format!("foobar2000 has no {FILTER}"))
 		})?;
 	let strings = locations
 		.iter()

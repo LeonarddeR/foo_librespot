@@ -1,16 +1,14 @@
 //! foobar2000's settings store, for values a component keeps between sessions.
 
 use crate::abi::config_store::{ConfigStoreVtbl, IID};
-use crate::cxx::{ExceptionKind, try_host};
-use crate::error::{Error, Result};
+use crate::cxx::try_host;
+use crate::error::Result;
 use crate::host::host;
 use crate::service::ServicePtr;
 use crate::strings::c_string;
 
 fn store() -> Result<ServicePtr> {
-	host()
-		.core_service(&IID)
-		.ok_or_else(|| Error::new(ExceptionKind::BugCheck, "foobar2000 has no configStore"))
+	host().require(&IID, "configStore")
 }
 
 /// The integer stored under `name`, or `default` when there is none, no host, or the host
