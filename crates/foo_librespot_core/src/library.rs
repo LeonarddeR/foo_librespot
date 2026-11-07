@@ -106,18 +106,30 @@ pub struct PlaylistContents {
 	pub truncated: bool,
 }
 
+/// Orders the reads and writes of the library: each takes the next one from one counter when
+/// it starts.
+type Stamp = u64;
+
+/// Whether a store with `stamp` replaces an entry stored with `held`, or `None` when there is
+/// none: only a newer stamp at or above `floor` does.
+fn lands(stamp: Stamp, held: Option<Stamp>, floor: Stamp) -> bool {
+	stamp >= floor && held.is_none_or(|held| stamp > held)
+}
+
 /// A playlist's contents with the set of the tracks and episodes it holds.
 #[derive(Debug)]
 struct Held {
 	contents: PlaylistContents,
 	/// Rows whose URI names no track or episode are left out.
 	items: HashSet<ItemId>,
+	/// The stamp of the read that produced `contents`.
+	stamp: Stamp,
 }
 
 impl Held {
-	fn new(contents: PlaylistContents) -> Self {
+	fn new(contents: PlaylistContents, stamp: Stamp) -> Self {
 		let items = contents.rows.iter().filter_map(|row| parse_item(&row.uri)).collect();
-		Self { contents, items }
+		Self { contents, items, stamp }
 	}
 }
 
@@ -130,6 +142,8 @@ pub struct Library {
 	/// that read the list ended.
 	unreadable: HashSet<SpotifyId>,
 	liked: Option<Arc<HashSet<ItemId>>>,
+	/// The stamp of the read or write that produced `liked`.
+	liked_stamp: Stamp,
 }
 
 impl Library {
@@ -141,6 +155,7 @@ impl Library {
 			items: HashMap::new(),
 			unreadable: HashSet::new(),
 			liked: previous.and_then(|previous| previous.liked.clone()),
+			liked_stamp: previous.map_or(0, |previous| previous.liked_stamp),
 		};
 		if let Some(previous) = previous {
 			let editable: Vec<SpotifyId> = library.editable().map(|playlist| playlist.id).collect();
@@ -163,9 +178,15 @@ impl Library {
 	) -> Self {
 		let items = contents
 			.into_iter()
-			.map(|(id, contents)| (id, Arc::new(Held::new(contents))))
+			.map(|(id, contents)| (id, Arc::new(Held::new(contents, 0))))
 			.collect();
-		Self { playlists, items, unreadable: HashSet::new(), liked: liked.map(Arc::new) }
+		Self {
+			playlists,
+			items,
+			unreadable: HashSet::new(),
+			liked: liked.map(Arc::new),
+			liked_stamp: 0,
+		}
 	}
 
 	/// Liked Songs is known, and every playlist the account can change has its items or couldn't
@@ -177,10 +198,42 @@ impl Library {
 			})
 	}
 
-	/// Keeps `contents` as the items of playlist `id`.
-	fn store(&mut self, id: SpotifyId, contents: PlaylistContents) {
-		self.items.insert(id, Arc::new(Held::new(contents)));
+	/// Keeps `contents`, read with `stamp`, as the items and revision of playlist `id`, when it is
+	/// in the list and the store [`lands`] above `floor`.
+	fn store(&mut self, id: SpotifyId, contents: PlaylistContents, stamp: Stamp, floor: Stamp) {
+		let held = self.items.get(&id).map(|held| held.stamp);
+		let Some(playlist) = self.playlists.iter_mut().find(|playlist| playlist.id == id) else {
+			return;
+		};
+		if !lands(stamp, held, floor) {
+			return;
+		}
+		playlist.revision.clone_from(&contents.revision);
+		self.items.insert(id, Arc::new(Held::new(contents, stamp)));
 		self.unreadable.remove(&id);
+	}
+
+	/// Keeps `liked`, read with `stamp`, as Liked Songs, when the store [`lands`] above `floor`.
+	fn store_liked(&mut self, liked: HashSet<ItemId>, stamp: Stamp, floor: Stamp) {
+		if lands(stamp, self.liked.as_ref().map(|_| self.liked_stamp), floor) {
+			self.liked = Some(Arc::new(liked));
+			self.liked_stamp = stamp;
+		}
+	}
+
+	/// Makes `change`, written with `stamp`, to Liked Songs, when it is known and the write
+	/// [`lands`] above `floor`.
+	fn change_liked(
+		&mut self,
+		change: impl FnOnce(&mut HashSet<ItemId>),
+		stamp: Stamp,
+		floor: Stamp,
+	) {
+		let Some(liked) = self.liked.as_mut() else { return };
+		if lands(stamp, Some(self.liked_stamp), floor) {
+			change(Arc::make_mut(liked));
+			self.liked_stamp = stamp;
+		}
 	}
 
 	/// Counts every playlist the account can change that has no items as unreadable.
@@ -477,22 +530,18 @@ fn write_liked(
 
 #[derive(Default)]
 struct Inner {
-	/// The token of the next fetch to start; `clear` keeps it.
-	next_token: u64,
+	/// The next stamp to hand out; `clear` keeps it.
+	next_stamp: Stamp,
+	/// Nothing with an older stamp lands; `clear` raises it past every stamp handed out.
+	floor: Stamp,
 	library: Option<Arc<Library>>,
 	failed: Option<String>,
-	/// The token of the running fetch.
-	running: Option<u64>,
+	/// The stamp of the running fetch.
+	running: Option<Stamp>,
 	started: Option<Instant>,
 	/// The running fetch has published the playlist list.
 	listed: bool,
 	listeners: Vec<OnLibraryChange>,
-	/// Counts the calls of `clear`; a change publishes only into the epoch it began in.
-	epoch: u64,
-	/// The playlists a change published since the running fetch began.
-	changed_playlists: HashSet<SpotifyId>,
-	/// A change published Liked Songs since the running fetch began.
-	changed_liked: bool,
 }
 
 impl Inner {
@@ -511,37 +560,57 @@ impl Inner {
 
 	/// Marks a new fetch, started at `now`, as running and hands out its ticket.
 	fn start(&mut self, now: Instant) -> FetchTicket {
-		let ticket = FetchTicket(self.next_token);
-		self.next_token += 1;
+		let ticket = FetchTicket(self.stamp());
 		self.running = Some(ticket.0);
 		self.started = Some(now);
 		self.listed = false;
-		self.changed_playlists.clear();
-		self.changed_liked = false;
 		ticket
 	}
 
-	/// The held library, for `ticket`'s fetch to change; `None` once another ticket is current.
-	fn library_of(&mut self, ticket: FetchTicket) -> Option<&mut Library> {
-		if self.running != Some(ticket.0) {
-			return None;
-		}
-		self.library.as_mut().map(Arc::make_mut)
+	fn stamp(&mut self) -> Stamp {
+		let stamp = self.next_stamp;
+		self.next_stamp += 1;
+		stamp
 	}
 
-	/// The held library, for a change begun in `epoch` to change; `None` once `clear` has run
-	/// since.
-	fn library_in(&mut self, epoch: u64) -> Option<&mut Library> {
-		if self.epoch != epoch {
-			return None;
+	/// The stamp for a read or write that is part of the fetch or change stamped `begun`: the
+	/// next one, or `begun` itself once `clear` has raised the floor past it, so that nothing it
+	/// stores lands.
+	fn stamp_within(&mut self, begun: Stamp) -> Stamp {
+		if self.admits(begun) { self.stamp() } else { begun }
+	}
+
+	/// Whether `clear` has left `stamp` at or above the floor.
+	const fn admits(&self, stamp: Stamp) -> bool {
+		stamp >= self.floor
+	}
+
+	/// The held library and the floor, for a store to change.
+	fn library_and_floor(&mut self) -> Option<(&mut Library, Stamp)> {
+		let floor = self.floor;
+		self.library.as_mut().map(|library| (Arc::make_mut(library), floor))
+	}
+
+	/// Keeps `contents`, read with `stamp`, as the items of playlist `id`, as
+	/// [`Library::store`] decides.
+	fn store_rows(&mut self, id: SpotifyId, contents: PlaylistContents, stamp: Stamp) {
+		if let Some((library, floor)) = self.library_and_floor() {
+			library.store(id, contents, stamp, floor);
 		}
-		self.library.as_mut().map(Arc::make_mut)
+	}
+
+	/// Keeps `liked`, read with `stamp`, as Liked Songs, as [`Library::store_liked`] decides.
+	fn store_liked(&mut self, liked: HashSet<ItemId>, stamp: Stamp) {
+		if let Some((library, floor)) = self.library_and_floor() {
+			library.store_liked(liked, stamp, floor);
+		}
 	}
 }
 
-/// Names one running fetch: only the fetch holding the current ticket may publish, fail or end it.
+/// Names one running fetch by its stamp: only the fetch holding the current ticket may fail or
+/// end it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct FetchTicket(u64);
+pub(crate) struct FetchTicket(Stamp);
 
 /// Marks the fetch of its ticket as ended when dropped, whether it finished, was dropped
 /// part-way or panicked. It leaves alone a fetch that has another ticket.
@@ -637,11 +706,16 @@ impl LibraryCache {
 	/// keeps its old rows until the new ones arrive; if they can't be read, the old ones stay. A
 	/// playlist without old rows whose read fails counts as unreadable once the fetch ends, until
 	/// a later fetch reads it. Listeners run when the list is published and when the fetch ends.
-	/// It does nothing, and changes nothing, once another ticket is current.
+	/// Each read takes its stamp as it starts, so what a change stored since stays. Nothing it
+	/// read lands once `clear` has run, and it does nothing once another ticket is current.
 	pub(crate) async fn fetch_of<S: LibrarySource>(&self, ticket: FetchTicket, source: &S) {
-		if self.lock().running != Some(ticket.0) {
-			return;
-		}
+		let liked_stamp = {
+			let mut inner = self.lock();
+			if inner.running != Some(ticket.0) {
+				return;
+			}
+			inner.stamp_within(ticket.0)
+		};
 		let _running = Running { cache: self, ticket };
 		let mut liked_read = Box::pin(future::maybe_done(source.liked()));
 		let listed = match future::select(pin!(source.rootlist()), liked_read.as_mut()).await {
@@ -657,7 +731,7 @@ impl LibraryCache {
 		};
 		let unread = {
 			let mut inner = self.lock();
-			if inner.running != Some(ticket.0) {
+			if !inner.admits(ticket.0) {
 				return;
 			}
 			let library = Library::new(playlists, inner.library.as_deref());
@@ -671,11 +745,14 @@ impl LibraryCache {
 
 		let rows = async {
 			let mut reads = stream::iter(unread)
-				.map(|id| async move { (id, source.contents(id).await) })
+				.map(|id| async move {
+					let stamp = self.lock().stamp_within(ticket.0);
+					(id, stamp, source.contents(id).await)
+				})
 				.buffer_unordered(PLAYLIST_CONCURRENCY);
-			while let Some((id, result)) = reads.next().await {
+			while let Some((id, stamp, result)) = reads.next().await {
 				match result {
-					Ok(contents) => self.store_rows(ticket, id, contents),
+					Ok(contents) => self.lock().store_rows(id, contents, stamp),
 					Err(error) => log::warn!("couldn't read a Spotify playlist: {error}"),
 				}
 			}
@@ -684,7 +761,7 @@ impl LibraryCache {
 			liked_read.as_mut().await;
 			match liked_read.as_mut().take_output().expect("the read has finished") {
 				Ok(liked) => {
-					self.store_liked(ticket, liked);
+					self.lock().store_liked(liked, liked_stamp);
 					None
 				}
 				Err(error) => {
@@ -697,40 +774,21 @@ impl LibraryCache {
 
 		let listeners = {
 			let mut inner = self.lock();
-			let Some(library) = inner.library_of(ticket) else {
+			if !inner.admits(ticket.0) {
+				return;
+			}
+			let Some((library, _)) = inner.library_and_floor() else {
 				return;
 			};
 			library.settle_unread();
 			let complete = library.is_complete();
 			inner.failed = liked_error.filter(|_| !complete);
-			inner.running = None;
+			if inner.running == Some(ticket.0) {
+				inner.running = None;
+			}
 			std::mem::take(&mut inner.listeners)
 		};
 		run(listeners);
-	}
-
-	/// Keeps the `contents` that `ticket`'s fetch read for playlist `id`, unless another ticket is
-	/// current or a change published the playlist since the fetch began.
-	fn store_rows(&self, ticket: FetchTicket, id: SpotifyId, contents: PlaylistContents) {
-		let mut inner = self.lock();
-		if inner.changed_playlists.contains(&id) {
-			return;
-		}
-		if let Some(library) = inner.library_of(ticket) {
-			library.store(id, contents);
-		}
-	}
-
-	/// Keeps the Liked Songs that `ticket`'s fetch read, unless another ticket is current or a
-	/// change published Liked Songs since the fetch began.
-	fn store_liked(&self, ticket: FetchTicket, liked: HashSet<ItemId>) {
-		let mut inner = self.lock();
-		if inner.changed_liked {
-			return;
-		}
-		if let Some(library) = inner.library_of(ticket) {
-			library.liked = Some(Arc::new(liked));
-		}
 	}
 
 	/// Runs `read`, the work of the fetch `ticket` names, for at most `limit`. When the time runs
@@ -786,8 +844,8 @@ impl LibraryCache {
 		let listeners = {
 			let mut inner = self.lock();
 			let listeners = std::mem::take(&mut inner.listeners);
-			let (next_token, epoch) = (inner.next_token, inner.epoch + 1);
-			*inner = Inner { next_token, epoch, ..Inner::default() };
+			let next_stamp = inner.next_stamp;
+			*inner = Inner { next_stamp, floor: next_stamp, ..Inner::default() };
 			listeners
 		};
 		run(listeners);
@@ -802,7 +860,7 @@ impl LibraryCache {
 		target: Target,
 		items: &[ItemId],
 	) -> Result<Change, CoreError> {
-		let epoch = self.lock().epoch;
+		let begun = self.lock().stamp();
 		match target {
 			Target::Playlist(id) => {
 				let uris = distinct_uris(items);
@@ -810,7 +868,7 @@ impl LibraryCache {
 				let lacking = missing(&uris, &fresh);
 				if !lacking.is_empty() {
 					source.add(id, &fresh.revision, &lacking).await?;
-					self.read_again(source, id, epoch, |after| missing(&lacking, after).is_empty())
+					self.read_again(source, id, begun, |after| missing(&lacking, after).is_empty())
 						.await?;
 				}
 				Ok(Change {
@@ -832,7 +890,7 @@ impl LibraryCache {
 				};
 				if !lacking.is_empty() {
 					source.set_liked(&uris_of(&lacking), true).await?;
-					self.update_liked(epoch, |liked| liked.extend(lacking.iter().copied()));
+					self.change_liked(begun, |liked| liked.extend(lacking.iter().copied()));
 				}
 				Ok(Change {
 					changed: lacking.len(),
@@ -852,14 +910,14 @@ impl LibraryCache {
 		target: Target,
 		items: &[ItemId],
 	) -> Result<Change, CoreError> {
-		let epoch = self.lock().epoch;
+		let begun = self.lock().stamp();
 		match target {
 			Target::Playlist(id) => {
 				let fresh = whole_contents(source, id).await?;
 				let rows = rows_holding(&distinct_uris(items), &fresh);
 				if !rows.is_empty() {
 					source.remove(id, &fresh.revision, &rows).await?;
-					self.read_again(source, id, epoch, |after| {
+					self.read_again(source, id, begun, |after| {
 						let left: HashSet<&[u8]> =
 							after.rows.iter().map(|row| row.item_id.as_slice()).collect();
 						rows.iter().all(|(_, gone)| !left.contains(gone.item_id.as_slice()))
@@ -872,7 +930,7 @@ impl LibraryCache {
 				let (tracks, episodes_left_out) = split_items(items);
 				if !tracks.is_empty() {
 					source.set_liked(&uris_of(&tracks), false).await?;
-					self.update_liked(epoch, |liked| {
+					self.change_liked(begun, |liked| {
 						for track in &tracks {
 							liked.remove(track);
 						}
@@ -883,20 +941,21 @@ impl LibraryCache {
 		}
 	}
 
-	/// Reads playlist `id` after a change and publishes its rows and revision, unless `clear`
-	/// has run since `epoch`. Fails with [`stale_change`] when `applied` says the rows it read
-	/// lack the change. When the read fails, the held copy stays, the next snapshot starts a
-	/// fetch, and the change counts as made.
+	/// Reads playlist `id` after the change stamped `begun` and keeps its rows and revision, with
+	/// the stamp the read took as it started, unless `clear` has run since `begun`. Fails with
+	/// [`stale_change`] when `applied` says the rows it read lack the change. When the read
+	/// fails, the held copy stays, the next snapshot starts a fetch, and the change counts as made.
 	async fn read_again<S: LibrarySource>(
 		&self,
 		source: &S,
 		id: SpotifyId,
-		epoch: u64,
+		begun: Stamp,
 		applied: impl FnOnce(&PlaylistContents) -> bool,
 	) -> Result<(), CoreError> {
+		let stamp = self.lock().stamp_within(begun);
 		let result = source.contents(id).await;
 		let mut inner = self.lock();
-		if inner.epoch != epoch {
+		if !inner.admits(stamp) {
 			return Ok(());
 		}
 		let contents = match result {
@@ -908,24 +967,18 @@ impl LibraryCache {
 			}
 		};
 		let applied = applied(&contents);
-		if let Some(library) = inner.library_in(epoch)
-			&& let Some(playlist) = library.playlists.iter_mut().find(|playlist| playlist.id == id)
-		{
-			playlist.revision.clone_from(&contents.revision);
-			library.store(id, contents);
-			inner.changed_playlists.insert(id);
-		}
+		inner.store_rows(id, contents, stamp);
 		if applied { Ok(()) } else { Err(stale_change()) }
 	}
 
-	/// Changes the held Liked Songs, when it is known and `clear` has not run since `epoch`.
-	fn update_liked(&self, epoch: u64, change: impl FnOnce(&mut HashSet<ItemId>)) {
+	/// Makes `change` to the held Liked Songs, as a write that is part of the change stamped
+	/// `begun`, as [`Library::change_liked`] decides.
+	fn change_liked(&self, begun: Stamp, change: impl FnOnce(&mut HashSet<ItemId>)) {
 		let mut inner = self.lock();
-		let Some(liked) = inner.library_in(epoch).and_then(|library| library.liked.as_mut()) else {
-			return;
-		};
-		change(Arc::make_mut(liked));
-		inner.changed_liked = true;
+		let stamp = inner.stamp_within(begun);
+		if let Some((library, floor)) = inner.library_and_floor() {
+			library.change_liked(change, stamp, floor);
+		}
 	}
 
 	/// Runs the listeners waiting for a publish of `ticket`'s fetch.
@@ -1433,9 +1486,9 @@ mod tests {
 		hang_rootlist: AtomicBool,
 		/// When set, `contents` waits for it before answering.
 		gate: Option<Arc<Notify>>,
-		/// When set, the next `contents` answer is held back until `contents_gate` opens; it
-		/// holds what the playlist was when the call began.
-		hold_contents_once: AtomicBool,
+		/// The call number of `contents` whose answer, what the playlist was when the call began,
+		/// is held back until `contents_gate` opens; 0 for none.
+		hold_contents_call: AtomicUsize,
 		contents_gate: Arc<Notify>,
 		/// The call number of `contents` that fails; 0 for none.
 		fail_contents_call: AtomicUsize,
@@ -1494,7 +1547,7 @@ mod tests {
 				return Err(CoreError::Unavailable("playlist failed".to_owned()));
 			}
 			let answer = self.contents.lock().unwrap().get(&id).expect("unknown playlist").clone();
-			if self.hold_contents_once.swap(false, Ordering::SeqCst) {
+			if self.hold_contents_call.load(Ordering::SeqCst) == call {
 				self.contents_gate.notified().await;
 			}
 			Ok(answer)
@@ -1566,6 +1619,21 @@ mod tests {
 				}
 			}
 			Ok(())
+		}
+	}
+
+	impl FakeLibrary {
+		/// Holds back the answer of the `n`th `contents` call from now until `contents_gate`
+		/// opens, and returns that call's number.
+		fn hold_contents(&self, n: usize) -> usize {
+			let call = self.contents_calls.load(Ordering::SeqCst) + n;
+			self.hold_contents_call.store(call, Ordering::SeqCst);
+			call
+		}
+
+		/// Whether `contents` call `call` has begun.
+		fn has_begun(&self, call: usize) -> bool {
+			self.contents_calls.load(Ordering::SeqCst) >= call
 		}
 	}
 
@@ -1903,12 +1971,12 @@ mod tests {
 	async fn a_playlist_change_in_flight_over_a_logout_leaves_the_next_account_alone() {
 		let source = Arc::new(fake());
 		let cache = loaded(&source).await;
-		source.hold_contents_once.store(true, Ordering::SeqCst);
+		let read_before = source.hold_contents(1);
 		let task = tokio::spawn({
 			let (cache, source) = (cache.clone(), Arc::clone(&source));
 			async move { cache.add(&*source, Target::Playlist(id(1)), &[track(4)]).await }
 		});
-		until(|| !source.hold_contents_once.load(Ordering::SeqCst)).await;
+		until(|| source.has_begun(read_before)).await;
 		cache.clear();
 		let other = fake();
 		cache.fetch(&other, Instant::now()).await;
@@ -1945,18 +2013,37 @@ mod tests {
 		// Playlist A has a new revision on Spotify.
 		source.playlists.lock().unwrap()[0].revision = b"r2".to_vec();
 		source.contents.lock().unwrap().get_mut(&id(1)).unwrap().revision = b"r2".to_vec();
-		source.hold_contents_once.store(true, Ordering::SeqCst);
+		let fetch_read = source.hold_contents(1);
 		let fetch = tokio::spawn({
 			let (cache, source) = (cache.clone(), Arc::clone(&source));
 			async move { cache.fetch(&*source, Instant::now()).await }
 		});
-		until(|| !source.hold_contents_once.load(Ordering::SeqCst)).await;
+		until(|| source.has_begun(fetch_read)).await;
 		cache.add(&*source, Target::Playlist(id(1)), &[track(4)]).await.unwrap();
 		source.contents_gate.notify_one();
 		fetch.await.unwrap();
 		let library = ready(cache.held());
 		assert_eq!(library.holds(Target::Playlist(id(1)), &[track(4)]), Some(true));
 		assert_eq!(library.contents(id(1)).unwrap().revision, b"after".to_vec());
+	}
+
+	#[tokio::test]
+	async fn of_two_re_reads_of_a_playlist_the_later_one_stays_when_it_lands_first() {
+		let source = Arc::new(fake());
+		let cache = loaded(&source).await;
+		let a = Target::Playlist(id(1));
+		// The first change reads the playlist before and after its add.
+		let first_re_read = source.hold_contents(2);
+		let first = tokio::spawn({
+			let (cache, source) = (cache.clone(), Arc::clone(&source));
+			async move { cache.add(&*source, a, &[track(4)]).await }
+		});
+		until(|| source.has_begun(first_re_read)).await;
+		cache.add(&*source, a, &[track(5)]).await.unwrap();
+		source.contents_gate.notify_one();
+		first.await.unwrap().unwrap();
+		let library = ready(cache.held());
+		assert_eq!(library.holds(a, &[t1(), track(4), track(5)]), Some(true));
 	}
 
 	#[tokio::test]
@@ -2458,10 +2545,10 @@ mod tests {
 	async fn a_second_change_waits_for_the_first_and_sees_its_rows() {
 		let source = Arc::new(fake());
 		let cache = loaded(&source).await;
-		source.hold_contents_once.store(true, Ordering::SeqCst);
+		let first_read = source.hold_contents(1);
 		let a = Target::Playlist(id(1));
 		let first = spawn_change(&cache, &source, Edit::Add, a, vec![track(4)]);
-		until(|| !source.hold_contents_once.load(Ordering::SeqCst)).await;
+		until(|| source.has_begun(first_read)).await;
 		let reads = source.contents_calls.load(Ordering::SeqCst);
 		let second = spawn_change(&cache, &source, Edit::Add, a, vec![track(4)]);
 		for _ in 0..20 {
