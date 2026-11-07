@@ -1,11 +1,11 @@
-//! Driving a right-click menu item and its nodes through their vtables, as foobar2000's menu
-//! does, and a list of tracks to pass them.
+//! Driving a right-click menu item, its nodes and the groups items sit in through their vtables,
+//! as foobar2000's menu does, and a list of tracks to pass them.
 
 use std::ffi::{CString, c_void};
 use std::marker::PhantomData;
 
 use super::FakeString;
-use crate::abi::contextmenu::{CALLER_KEYBOARD_SHORTCUT_LIST, ItemVtbl, Node};
+use crate::abi::contextmenu::{CALLER_KEYBOARD_SHORTCUT_LIST, GroupPopupVtbl, ItemVtbl, Node};
 use crate::abi::file::FileStats;
 use crate::abi::file_info::FileInfo as RawFileInfo;
 use crate::abi::metadb_handle::{HandleListRaw, MetadbHandleVtbl};
@@ -243,7 +243,16 @@ impl ContextMenuHandle {
 
 	/// `item_execute_simple` for `node`, with no tracks.
 	pub fn execute_simple(&self, node: &Guid) {
-		let data = FakeHandleList::new(&[]);
+		self.execute_simple_on(node, &FakeHandleList::new(&[])).expect("item_execute_simple threw");
+	}
+
+	/// `item_execute_simple` for `node` on `data`, as foobar2000 runs a bound shortcut: `node` is
+	/// null for the item's own command.
+	pub fn execute_simple_on(
+		&self,
+		node: &Guid,
+		data: &FakeHandleList,
+	) -> Result<(), HostException> {
 		try_host(|| unsafe {
 			(self.vtbl().item_execute_simple)(
 				self.0.as_raw(),
@@ -253,7 +262,46 @@ impl ContextMenuHandle {
 				&raw const CALLER,
 			);
 		})
-		.expect("item_execute_simple threw");
+	}
+}
+
+/// A `contextmenu_group_popup` service, called through its vtable.
+pub struct ContextMenuGroupHandle(ServicePtr);
+
+impl ContextMenuGroupHandle {
+	pub const fn new(service: ServicePtr) -> Self {
+		Self(service)
+	}
+
+	fn vtbl(&self) -> &GroupPopupVtbl {
+		unsafe { &*(*self.0.as_raw()).vtbl.cast::<GroupPopupVtbl>() }
+	}
+
+	pub fn answers(&self, iid: &Guid) -> bool {
+		self.0.query(iid).is_some()
+	}
+
+	pub fn guid(&self) -> Guid {
+		let mut guid = Guid::from_u128(0);
+		unsafe { (self.vtbl().get_guid)(self.0.as_raw(), &raw mut guid) };
+		guid
+	}
+
+	pub fn parent(&self) -> Guid {
+		let mut guid = Guid::from_u128(0);
+		unsafe { (self.vtbl().get_parent)(self.0.as_raw(), &raw mut guid) };
+		guid
+	}
+
+	pub fn sort_priority(&self) -> f64 {
+		unsafe { (self.vtbl().get_sort_priority)(self.0.as_raw()) }
+	}
+
+	pub fn name(&self) -> String {
+		let mut name = FakeString::new();
+		try_host(|| unsafe { (self.vtbl().get_display_string)(self.0.as_raw(), name.as_raw()) })
+			.expect("get_display_string threw");
+		name.value()
 	}
 }
 
@@ -305,6 +353,29 @@ impl NodeRef<'_> {
 	pub fn kind(&self) -> i32 {
 		let raw = self.raw;
 		unsafe { ((*(*raw).vtbl).get_type)(raw) }
+	}
+
+	/// The text `get_description` gives, or `None` when the node has none.
+	pub fn description(&self) -> Option<String> {
+		let raw = self.raw;
+		let mut text = FakeString::new();
+		let found = try_host(|| unsafe { ((*(*raw).vtbl).get_description)(raw, text.as_raw()) })
+			.expect("get_description threw");
+		found.then(|| text.value())
+	}
+
+	/// The GUID `get_guid` gives. It starts from a non-null GUID, so a slot that writes nothing
+	/// doesn't pass for null.
+	pub fn guid(&self) -> Guid {
+		let raw = self.raw;
+		let mut guid = Guid::from_u128(1);
+		unsafe { ((*(*raw).vtbl).get_guid)(raw, &raw mut guid) };
+		guid
+	}
+
+	pub fn is_mappable_shortcut(&self) -> bool {
+		let raw = self.raw;
+		unsafe { ((*(*raw).vtbl).is_mappable_shortcut)(raw) }
 	}
 
 	pub fn children(&self) -> Vec<Self> {

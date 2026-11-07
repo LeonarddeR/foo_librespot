@@ -21,7 +21,8 @@
 // CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! `contextmenu_item` and the node tree it instantiates (`SDK\contextmenu.h:9-154`).
+//! `contextmenu_item` and the node tree it instantiates (`SDK\contextmenu.h:9-154`), and
+//! `contextmenu_group_popup`, a submenu items sit in (`SDK\contextmenu.h:271-286`).
 
 use std::ffi::c_void;
 
@@ -50,8 +51,15 @@ pub const FLAG_GRAYED: u32 = 4;
 pub const TYPE_GROUP: i32 = 0;
 pub const TYPE_COMMAND: i32 = 1;
 
+/// `contextmenu_item::FORCE_OFF`: shown only in the keyboard shortcut list.
+pub const ENABLED_FORCE_OFF: i32 = 0;
 /// `contextmenu_item::DEFAULT_ON`.
 pub const ENABLED_DEFAULT_ON: i32 = 2;
+
+/// `contextmenu_group`, the entry point groups register under.
+pub const GROUP_IID: Guid = Guid::from_u128(0x9dcfc219_0779_4669_98c1_836df607c5d4);
+/// `contextmenu_group_popup`.
+pub const GROUP_POPUP_IID: Guid = Guid::from_u128(0x97636ad5_5b2d_4ad6_9f79_c9646388c829);
 
 /// A `contextmenu_item_node`, which is not a service: it has no `service_base` slots.
 #[repr(C)]
@@ -129,11 +137,23 @@ pub struct ItemVtbl {
 		unsafe extern "C-unwind" fn(this: *mut ServiceBase, ret: *mut Guid) -> *mut Guid,
 }
 
+/// `contextmenu_group_popup`: `contextmenu_group`'s three slots, then `get_display_string`.
+#[repr(C)]
+pub struct GroupPopupVtbl {
+	pub base: ServiceBaseVtbl,
+	pub get_guid: unsafe extern "C-unwind" fn(this: *mut ServiceBase, ret: *mut Guid) -> *mut Guid,
+	pub get_parent:
+		unsafe extern "C-unwind" fn(this: *mut ServiceBase, ret: *mut Guid) -> *mut Guid,
+	pub get_sort_priority: unsafe extern "C-unwind" fn(this: *mut ServiceBase) -> f64,
+	pub get_display_string:
+		unsafe extern "C-unwind" fn(this: *mut ServiceBase, out: *mut StringBase),
+}
+
 #[cfg(test)]
 mod tests {
 	use std::mem::offset_of;
 
-	use super::{ItemVtbl, NodeVtbl};
+	use super::{GroupPopupVtbl, ItemVtbl, NodeVtbl};
 
 	#[test]
 	fn contextmenu_vtables_have_10_and_13_slots() {
@@ -141,5 +161,13 @@ mod tests {
 		assert_eq!(offset_of!(NodeVtbl, delete), 9 * 8);
 		assert_eq!(size_of::<ItemVtbl>(), 13 * 8);
 		assert_eq!(offset_of!(ItemVtbl, get_sort_priority), 11 * 8);
+	}
+
+	#[test]
+	fn group_popup_vtable_has_7_slots() {
+		assert_eq!(size_of::<GroupPopupVtbl>(), 7 * 8);
+		assert_eq!(offset_of!(GroupPopupVtbl, get_guid), 3 * 8);
+		assert_eq!(offset_of!(GroupPopupVtbl, get_sort_priority), 5 * 8);
+		assert_eq!(offset_of!(GroupPopupVtbl, get_display_string), 6 * 8);
 	}
 }

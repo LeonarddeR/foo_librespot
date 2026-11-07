@@ -1,12 +1,14 @@
-//! Right-click menu items whose submenus are built each time the menu opens.
+//! Right-click menu items: items whose submenus are built each time the menu opens, commands
+//! that can be bound to keys, and the submenus they sit in.
 
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::abi::contextmenu::{
-	ENABLED_DEFAULT_ON, FLAG_CHECKED, FLAG_DISABLED, FLAG_GRAYED, GROUP_ROOT, ITEM_IID,
-	ITEM_V2_IID, ItemVtbl, Node, NodeVtbl, TYPE_COMMAND, TYPE_GROUP,
+	ENABLED_DEFAULT_ON, ENABLED_FORCE_OFF, FLAG_CHECKED, FLAG_DISABLED, FLAG_GRAYED, GROUP_IID,
+	GROUP_POPUP_IID, GROUP_ROOT, GroupPopupVtbl, ITEM_IID, ITEM_V2_IID, ItemVtbl, Node, NodeVtbl,
+	TYPE_COMMAND, TYPE_GROUP,
 };
 use crate::abi::metadb_handle::HandleListRaw;
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
@@ -51,6 +53,43 @@ pub trait ContextMenuItem: 'static {
 	fn build(selection: &HandleList<'_>) -> Option<MenuNode>;
 }
 
+/// A submenu other items sit in, such as right-click > Spotify. Items and groups inside it name
+/// its `GUID` as their `PARENT`.
+pub trait ContextMenuGroup: 'static {
+	const GUID: Guid;
+	const PARENT: Guid = GROUP_ROOT;
+	const SORT_PRIORITY: f64 = 0.0;
+	const NAME: &'static str;
+}
+
+/// One command whose name never changes, so it can be bound to a key.
+pub trait ContextMenuCommand: 'static {
+	const GUID: Guid;
+	/// Its name in the menu, in the keyboard shortcut list and in Preferences > Context Menu.
+	const NAME: &'static str;
+	const DESCRIPTION: &'static str;
+	const PARENT: Guid = GROUP_ROOT;
+	const SORT_PRIORITY: f64 = 0.0;
+	/// Shown only in the keyboard shortcut list (`FORCE_OFF`).
+	const SHORTCUT_ONLY: bool = false;
+	/// How it shows for `selection`, the selected items. Runs on the main thread while the menu
+	/// opens, and never waits.
+	fn shown(selection: &HandleList<'_>) -> Shown;
+	/// Runs on the main thread, from the menu or a shortcut, which ignores `shown`. A shortcut
+	/// passes the selection or the playing track.
+	fn execute(selection: &HandleList<'_>) -> Result<()>;
+}
+
+/// How a command shows in a menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+	/// Left out of the menu.
+	Hidden,
+	Enabled,
+	/// Greyed out, and it can't be picked.
+	Greyed,
+}
+
 /// The factory that registers item `T` with foobar2000.
 pub const fn context_menu_factory<T: ContextMenuItem>() -> Factory {
 	Factory::per_instance(&ITEM_IID, context_menu_service::<T>)
@@ -61,7 +100,44 @@ pub fn context_menu_service<T: ContextMenuItem>() -> ServicePtr {
 	new_service(Item::<T>(PhantomData))
 }
 
+/// The factory that registers group `T` with foobar2000.
+pub const fn context_menu_group_factory<T: ContextMenuGroup>() -> Factory {
+	Factory::per_instance(&GROUP_IID, context_menu_group_service::<T>)
+}
+
+/// A new `contextmenu_group_popup` service for `T`.
+pub fn context_menu_group_service<T: ContextMenuGroup>() -> ServicePtr {
+	new_service(Group::<T>(PhantomData))
+}
+
+/// The factory that registers command `T` with foobar2000.
+pub const fn context_menu_command_factory<T: ContextMenuCommand>() -> Factory {
+	Factory::per_instance(&ITEM_IID, context_menu_command_service::<T>)
+}
+
+/// A new `contextmenu_item_v2` service holding the single command `T`.
+pub fn context_menu_command_service<T: ContextMenuCommand>() -> ServicePtr {
+	new_service(Command::<T>(PhantomData))
+}
+
+/// What a `contextmenu_item_v2` service with one item says about it, the same for any selection.
+trait Entry: 'static {
+	const GUID: Guid;
+	const NAME: &'static str;
+	const DESCRIPTION: &'static str;
+	const PARENT: Guid;
+	const SORT_PRIORITY: f64;
+}
+
 struct Item<T>(PhantomData<fn() -> T>);
+
+impl<T: ContextMenuItem> Entry for Item<T> {
+	const GUID: Guid = T::GUID;
+	const NAME: &'static str = T::NAME;
+	const DESCRIPTION: &'static str = T::DESCRIPTION;
+	const PARENT: Guid = T::PARENT;
+	const SORT_PRIORITY: f64 = T::SORT_PRIORITY;
+}
 
 unsafe impl<T: ContextMenuItem> ServiceImpl for Item<T> {
 	type Vtbl = ItemVtbl;
@@ -70,14 +146,42 @@ unsafe impl<T: ContextMenuItem> ServiceImpl for Item<T> {
 		base: ServiceBaseVtbl::new::<Self>(),
 		get_num_items: item_count,
 		instantiate_item: item_instantiate::<T>,
-		get_item_guid: item_guid::<T>,
-		get_item_name: item_name::<T>,
+		get_item_guid: item_guid::<Self>,
+		get_item_name: item_name::<Self>,
 		get_item_default_path: item_default_path,
-		get_item_description: item_description::<T>,
+		get_item_description: item_description::<Self>,
 		get_enabled_state: item_enabled_state,
 		item_execute_simple,
-		get_sort_priority: item_sort_priority::<T>,
-		get_parent: item_parent::<T>,
+		get_sort_priority: item_sort_priority::<Self>,
+		get_parent: item_parent::<Self>,
+	};
+}
+
+struct Command<T>(PhantomData<fn() -> T>);
+
+impl<T: ContextMenuCommand> Entry for Command<T> {
+	const GUID: Guid = T::GUID;
+	const NAME: &'static str = T::NAME;
+	const DESCRIPTION: &'static str = T::DESCRIPTION;
+	const PARENT: Guid = T::PARENT;
+	const SORT_PRIORITY: f64 = T::SORT_PRIORITY;
+}
+
+unsafe impl<T: ContextMenuCommand> ServiceImpl for Command<T> {
+	type Vtbl = ItemVtbl;
+	const IIDS: &'static [Guid] = &[ITEM_V2_IID, ITEM_IID];
+	const VTBL: &'static ItemVtbl = &ItemVtbl {
+		base: ServiceBaseVtbl::new::<Self>(),
+		get_num_items: item_count,
+		instantiate_item: command_instantiate::<T>,
+		get_item_guid: item_guid::<Self>,
+		get_item_name: item_name::<Self>,
+		get_item_default_path: item_default_path,
+		get_item_description: item_description::<Self>,
+		get_enabled_state: command_enabled_state::<T>,
+		item_execute_simple: command_execute_simple::<T>,
+		get_sort_priority: item_sort_priority::<Self>,
+		get_parent: item_parent::<Self>,
 	};
 }
 
@@ -101,21 +205,36 @@ unsafe extern "C-unwind" fn item_instantiate<T: ContextMenuItem>(
 	}
 }
 
-unsafe extern "C-unwind" fn item_guid<T: ContextMenuItem>(
+/// The command's node, which answers from the tracks each of its calls passes.
+unsafe extern "C-unwind" fn command_instantiate<T: ContextMenuCommand>(
+	_this: *mut ServiceBase,
+	_index: u32,
+	_data: *const HandleListRaw,
+	_caller: *const Guid,
+) -> *mut Node {
+	unsafe {
+		guard(|| {
+			let node = CommandNode::<T> { vtbl: CommandNode::<T>::VTBL, _command: PhantomData };
+			Ok(Box::into_raw(Box::new(node)).cast::<Node>())
+		})
+	}
+}
+
+unsafe extern "C-unwind" fn item_guid<E: Entry>(
 	_this: *mut ServiceBase,
 	ret: *mut Guid,
 	_index: u32,
 ) -> *mut Guid {
-	unsafe { ret.write(T::GUID) };
+	unsafe { ret.write(E::GUID) };
 	ret
 }
 
-unsafe extern "C-unwind" fn item_name<T: ContextMenuItem>(
+unsafe extern "C-unwind" fn item_name<E: Entry>(
 	_this: *mut ServiceBase,
 	_index: u32,
 	out: *mut StringBase,
 ) {
-	unsafe { guard(|| set_string(out, T::NAME)) }
+	unsafe { guard(|| set_string(out, E::NAME)) }
 }
 
 unsafe extern "C-unwind" fn item_default_path(
@@ -126,14 +245,14 @@ unsafe extern "C-unwind" fn item_default_path(
 	unsafe { guard(|| set_string(out, "")) }
 }
 
-unsafe extern "C-unwind" fn item_description<T: ContextMenuItem>(
+unsafe extern "C-unwind" fn item_description<E: Entry>(
 	_this: *mut ServiceBase,
 	_index: u32,
 	out: *mut StringBase,
 ) -> bool {
 	unsafe {
 		guard(|| {
-			set_string(out, T::DESCRIPTION)?;
+			set_string(out, E::DESCRIPTION)?;
 			Ok(true)
 		})
 	}
@@ -141,6 +260,13 @@ unsafe extern "C-unwind" fn item_description<T: ContextMenuItem>(
 
 unsafe extern "C-unwind" fn item_enabled_state(_this: *mut ServiceBase, _index: u32) -> i32 {
 	ENABLED_DEFAULT_ON
+}
+
+unsafe extern "C-unwind" fn command_enabled_state<T: ContextMenuCommand>(
+	_this: *mut ServiceBase,
+	_index: u32,
+) -> i32 {
+	if T::SHORTCUT_ONLY { ENABLED_FORCE_OFF } else { ENABLED_DEFAULT_ON }
 }
 
 unsafe extern "C-unwind" fn item_execute_simple(
@@ -152,16 +278,78 @@ unsafe extern "C-unwind" fn item_execute_simple(
 ) {
 }
 
-unsafe extern "C-unwind" fn item_sort_priority<T: ContextMenuItem>(_this: *mut ServiceBase) -> f64 {
-	T::SORT_PRIORITY
+/// Runs the command when `node` is null, the GUID its node answers, as `contextmenu_item_simple`
+/// does.
+unsafe extern "C-unwind" fn command_execute_simple<T: ContextMenuCommand>(
+	_this: *mut ServiceBase,
+	_index: u32,
+	node: *const Guid,
+	data: *const HandleListRaw,
+	_caller: *const Guid,
+) {
+	unsafe {
+		guard(|| {
+			if *node == Guid::NULL {
+				T::execute(&HandleList::from_raw(data))?;
+			}
+			Ok(())
+		});
+	}
 }
 
-unsafe extern "C-unwind" fn item_parent<T: ContextMenuItem>(
+unsafe extern "C-unwind" fn item_sort_priority<E: Entry>(_this: *mut ServiceBase) -> f64 {
+	E::SORT_PRIORITY
+}
+
+unsafe extern "C-unwind" fn item_parent<E: Entry>(
+	_this: *mut ServiceBase,
+	ret: *mut Guid,
+) -> *mut Guid {
+	unsafe { ret.write(E::PARENT) };
+	ret
+}
+
+struct Group<T>(PhantomData<fn() -> T>);
+
+unsafe impl<T: ContextMenuGroup> ServiceImpl for Group<T> {
+	type Vtbl = GroupPopupVtbl;
+	const IIDS: &'static [Guid] = &[GROUP_POPUP_IID, GROUP_IID];
+	const VTBL: &'static GroupPopupVtbl = &GroupPopupVtbl {
+		base: ServiceBaseVtbl::new::<Self>(),
+		get_guid: group_guid::<T>,
+		get_parent: group_parent::<T>,
+		get_sort_priority: group_sort_priority::<T>,
+		get_display_string: group_display_string::<T>,
+	};
+}
+
+unsafe extern "C-unwind" fn group_guid<T: ContextMenuGroup>(
+	_this: *mut ServiceBase,
+	ret: *mut Guid,
+) -> *mut Guid {
+	unsafe { ret.write(T::GUID) };
+	ret
+}
+
+unsafe extern "C-unwind" fn group_parent<T: ContextMenuGroup>(
 	_this: *mut ServiceBase,
 	ret: *mut Guid,
 ) -> *mut Guid {
 	unsafe { ret.write(T::PARENT) };
 	ret
+}
+
+unsafe extern "C-unwind" fn group_sort_priority<T: ContextMenuGroup>(
+	_this: *mut ServiceBase,
+) -> f64 {
+	T::SORT_PRIORITY
+}
+
+unsafe extern "C-unwind" fn group_display_string<T: ContextMenuGroup>(
+	_this: *mut ServiceBase,
+	out: *mut StringBase,
+) {
+	unsafe { guard(|| set_string(out, T::NAME)) }
 }
 
 /// A node as foobar2000 sees it: the vtable pointer first, so a pointer to it is a `Node`.
@@ -319,22 +507,116 @@ unsafe extern "C-unwind" fn node_delete(this: *mut Node, flags: u32) -> *mut c_v
 	this.cast()
 }
 
+/// A command's node, the root and only node, as `contextmenu_item_simple` makes: its GUID is
+/// null and it can be bound to a key.
+#[repr(C)]
+struct CommandNode<T> {
+	vtbl: *const NodeVtbl,
+	_command: PhantomData<fn() -> T>,
+}
+
+impl<T: ContextMenuCommand> CommandNode<T> {
+	const VTBL: &'static NodeVtbl = &NodeVtbl {
+		get_display_data: command_display_data::<T>,
+		get_type: command_type,
+		execute: command_execute::<T>,
+		get_glyph: node_glyph,
+		get_children_count: command_children_count,
+		get_child: command_child,
+		get_description: command_description::<T>,
+		get_guid: node_guid,
+		is_mappable_shortcut: command_is_mappable_shortcut,
+		delete: command_delete::<T>,
+	};
+}
+
+unsafe extern "C-unwind" fn command_display_data<T: ContextMenuCommand>(
+	_this: *mut Node,
+	out: *mut StringBase,
+	flags: *mut u32,
+	data: *const HandleListRaw,
+	_caller: *const Guid,
+) -> bool {
+	unsafe {
+		guard(|| {
+			let shown = match T::shown(&HandleList::from_raw(data)) {
+				Shown::Hidden => return Ok(false),
+				Shown::Enabled => 0,
+				Shown::Greyed => FLAG_DISABLED | FLAG_GRAYED,
+			};
+			set_string(out, T::NAME)?;
+			flags.write(shown);
+			Ok(true)
+		})
+	}
+}
+
+unsafe extern "C-unwind" fn command_type(_this: *mut Node) -> i32 {
+	TYPE_COMMAND
+}
+
+unsafe extern "C-unwind" fn command_execute<T: ContextMenuCommand>(
+	_this: *mut Node,
+	data: *const HandleListRaw,
+	_caller: *const Guid,
+) {
+	unsafe { guard(|| T::execute(&HandleList::from_raw(data))) }
+}
+
+unsafe extern "C-unwind" fn command_children_count(_this: *mut Node) -> usize {
+	0
+}
+
+unsafe extern "C-unwind" fn command_child(_this: *mut Node, _index: usize) -> *mut Node {
+	std::ptr::null_mut()
+}
+
+unsafe extern "C-unwind" fn command_description<T: ContextMenuCommand>(
+	_this: *mut Node,
+	out: *mut StringBase,
+) -> bool {
+	unsafe {
+		guard(|| {
+			set_string(out, T::DESCRIPTION)?;
+			Ok(true)
+		})
+	}
+}
+
+unsafe extern "C-unwind" fn command_is_mappable_shortcut(_this: *mut Node) -> bool {
+	true
+}
+
+/// The node's scalar deleting destructor: frees it when `flags & 1`.
+unsafe extern "C-unwind" fn command_delete<T: ContextMenuCommand>(
+	this: *mut Node,
+	flags: u32,
+) -> *mut c_void {
+	if flags & 1 != 0 {
+		unsafe { free_from_release(this.cast::<CommandNode<T>>()) };
+	}
+	this.cast()
+}
+
 #[cfg(test)]
 mod tests {
 	use std::cell::{Cell, RefCell};
 	use std::sync::Arc;
 	use std::sync::atomic::{AtomicBool, Ordering};
 
-	use super::{ContextMenuItem, MenuNode, context_menu_service};
+	use super::{
+		ContextMenuCommand, ContextMenuGroup, ContextMenuItem, MenuNode, Shown,
+		context_menu_command_service, context_menu_group_service, context_menu_service,
+	};
 	use crate::abi::contextmenu::{
-		ENABLED_DEFAULT_ON, FLAG_CHECKED, FLAG_DISABLED, FLAG_GRAYED, GROUP_ROOT, ITEM_IID,
-		ITEM_V2_IID, TYPE_COMMAND, TYPE_GROUP,
+		ENABLED_DEFAULT_ON, ENABLED_FORCE_OFF, FLAG_CHECKED, FLAG_DISABLED, FLAG_GRAYED, GROUP_IID,
+		GROUP_POPUP_IID, GROUP_ROOT, ITEM_IID, ITEM_V2_IID, TYPE_COMMAND, TYPE_GROUP,
 	};
 	use crate::cxx::ExceptionKind;
-	use crate::error::Error;
+	use crate::error::{Error, Result};
 	use crate::guid::Guid;
 	use crate::metadb::HandleList;
-	use crate::testing::{ContextMenuHandle, FakeHandleList};
+	use crate::testing::{ContextMenuGroupHandle, ContextMenuHandle, FakeHandleList};
 
 	thread_local! {
 		static BUILT_WITH: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -566,5 +848,202 @@ mod tests {
 	fn execute_simple_runs_nothing() {
 		item().execute_simple(&Guid::from_u128(7));
 		assert_eq!(RUNS.get(), 0);
+	}
+
+	struct TestGroup;
+
+	impl ContextMenuGroup for TestGroup {
+		const GUID: Guid = Guid::from_u128(0xdeda7cba_d69f_460e_8cd8_283c8adbe1a2);
+		const SORT_PRIORITY: f64 = 1.5;
+		const NAME: &'static str = "Spotify";
+	}
+
+	struct NestedGroup;
+
+	impl ContextMenuGroup for NestedGroup {
+		const GUID: Guid = Guid::from_u128(0xdeda7cba_d69f_460e_8cd8_283c8adbe1a3);
+		const PARENT: Guid = TestGroup::GUID;
+		const NAME: &'static str = "More";
+	}
+
+	fn group() -> ContextMenuGroupHandle {
+		ContextMenuGroupHandle::new(context_menu_group_service::<TestGroup>())
+	}
+
+	#[test]
+	fn a_group_answers_as_contextmenu_group_popup_and_contextmenu_group() {
+		let group = group();
+		assert!(group.answers(&GROUP_POPUP_IID));
+		assert!(group.answers(&GROUP_IID));
+		assert!(!group.answers(&ITEM_IID));
+	}
+
+	#[test]
+	fn a_group_takes_guid_parent_priority_and_name_from_the_trait() {
+		let group = group();
+		assert_eq!(group.guid(), TestGroup::GUID);
+		assert_eq!(group.parent(), GROUP_ROOT);
+		assert!((group.sort_priority() - 1.5).abs() < f64::EPSILON);
+		assert_eq!(group.name(), "Spotify");
+		let nested = ContextMenuGroupHandle::new(context_menu_group_service::<NestedGroup>());
+		assert_eq!(nested.guid(), NestedGroup::GUID);
+		assert_eq!(nested.parent(), TestGroup::GUID);
+		assert!(nested.sort_priority().abs() < f64::EPSILON);
+		assert_eq!(nested.name(), "More");
+	}
+
+	thread_local! {
+		static COMMAND_RAN_WITH: RefCell<Vec<Vec<String>>> = const { RefCell::new(Vec::new()) };
+	}
+
+	/// Shows for Spotify tracks only: hidden with none selected, greyed with any other track.
+	struct TestCommand;
+
+	impl ContextMenuCommand for TestCommand {
+		const GUID: Guid = Guid::from_u128(0x738b30b4_1f87_4f1a_b9b2_fba251509b50);
+		const NAME: &'static str = "Open album";
+		const DESCRIPTION: &'static str = "Opens the track's album in a tab.";
+		const PARENT: Guid = TestGroup::GUID;
+		const SORT_PRIORITY: f64 = 3.0;
+
+		fn shown(selection: &HandleList<'_>) -> Shown {
+			match selection.paths() {
+				Ok(paths) if paths.is_empty() => Shown::Hidden,
+				Ok(paths) if paths.iter().all(|path| path.starts_with("sptf://")) => Shown::Enabled,
+				_ => Shown::Greyed,
+			}
+		}
+
+		fn execute(selection: &HandleList<'_>) -> Result<()> {
+			let paths = selection.paths()?;
+			COMMAND_RAN_WITH.with_borrow_mut(|ran| ran.push(paths));
+			Ok(())
+		}
+	}
+
+	struct ShortcutOnlyCommand;
+
+	impl ContextMenuCommand for ShortcutOnlyCommand {
+		const GUID: Guid = Guid::from_u128(0x738b30b4_1f87_4f1a_b9b2_fba251509b51);
+		const NAME: &'static str = "Open artist…";
+		const DESCRIPTION: &'static str = "Asks which artist to open.";
+		const SHORTCUT_ONLY: bool = true;
+
+		fn shown(_selection: &HandleList<'_>) -> Shown {
+			Shown::Enabled
+		}
+
+		fn execute(_selection: &HandleList<'_>) -> Result<()> {
+			Ok(())
+		}
+	}
+
+	struct FailingCommand;
+
+	impl ContextMenuCommand for FailingCommand {
+		const GUID: Guid = Guid::from_u128(0x738b30b4_1f87_4f1a_b9b2_fba251509b52);
+		const NAME: &'static str = "Fail";
+		const DESCRIPTION: &'static str = "Always fails.";
+
+		fn shown(_selection: &HandleList<'_>) -> Shown {
+			Shown::Enabled
+		}
+
+		fn execute(_selection: &HandleList<'_>) -> Result<()> {
+			Err(Error::new(ExceptionKind::Io, "can't open"))
+		}
+	}
+
+	fn open_album() -> ContextMenuHandle {
+		ContextMenuHandle::new(context_menu_command_service::<TestCommand>())
+	}
+
+	#[test]
+	fn a_command_answers_as_contextmenu_item_v2_and_contextmenu_item() {
+		let command = open_album();
+		assert!(command.answers(&ITEM_V2_IID));
+		assert!(command.answers(&ITEM_IID));
+		assert!(!command.answers(&GROUP_IID));
+	}
+
+	#[test]
+	fn a_command_takes_name_guid_description_parent_and_priority_from_the_trait() {
+		let command = open_album();
+		assert_eq!(command.item_count(), 1);
+		assert_eq!(command.guid(), TestCommand::GUID);
+		assert_eq!(command.name(), "Open album");
+		assert_eq!(command.default_path(), "");
+		assert_eq!(command.description().as_deref(), Some("Opens the track's album in a tab."));
+		assert_eq!(command.parent(), TestGroup::GUID);
+		assert!((command.sort_priority() - 3.0).abs() < f64::EPSILON);
+		assert_eq!(command.enabled_state(), ENABLED_DEFAULT_ON);
+		let defaults = ContextMenuHandle::new(context_menu_command_service::<FailingCommand>());
+		assert_eq!(defaults.parent(), GROUP_ROOT);
+		assert!(defaults.sort_priority().abs() < f64::EPSILON);
+	}
+
+	#[test]
+	fn a_command_shows_as_its_trait_says_for_each_selection() {
+		let tracks = FakeHandleList::new(&[PATH]);
+		let root = open_album().instantiate(&tracks);
+		let node = root.node();
+		assert_eq!(node.display(&FakeHandleList::new(&[])), None);
+		assert_eq!(
+			node.display(&FakeHandleList::new(&[PATH, "file://C:\\a.mp3"])),
+			Some(("Open album".into(), FLAG_DISABLED | FLAG_GRAYED))
+		);
+		assert_eq!(node.display(&tracks), Some(("Open album".into(), 0)));
+	}
+
+	#[test]
+	fn a_command_is_a_mappable_shortcut() {
+		let list = FakeHandleList::new(&[PATH]);
+		let root = open_album().instantiate(&list);
+		let node = root.node();
+		assert!(node.is_mappable_shortcut());
+		assert_eq!(node.kind(), TYPE_COMMAND);
+		assert_eq!(node.guid(), Guid::NULL);
+		assert!(node.children().is_empty());
+		assert_eq!(node.description().as_deref(), Some("Opens the track's album in a tab."));
+	}
+
+	#[test]
+	fn picking_a_command_runs_it_on_the_tracks_it_passes() {
+		let root = open_album().instantiate(&FakeHandleList::new(&[PATH]));
+		root.node().execute(&FakeHandleList::new(&[PATH, "file://C:\\a.mp3"])).unwrap();
+		assert_eq!(COMMAND_RAN_WITH.take(), [[PATH, "file://C:\\a.mp3"]]);
+	}
+
+	#[test]
+	fn a_shortcut_runs_the_command_on_the_tracks_it_passes() {
+		let list = FakeHandleList::new(&[PATH, "file://C:\\a.mp3"]);
+		open_album().execute_simple_on(&Guid::NULL, &list).unwrap();
+		assert_eq!(COMMAND_RAN_WITH.take(), [[PATH, "file://C:\\a.mp3"]]);
+	}
+
+	#[test]
+	fn a_shortcut_for_another_node_runs_nothing() {
+		open_album().execute_simple_on(&Guid::from_u128(7), &FakeHandleList::new(&[PATH])).unwrap();
+		assert!(COMMAND_RAN_WITH.take().is_empty());
+	}
+
+	#[test]
+	fn a_shortcut_only_command_is_forced_off() {
+		let command = ContextMenuHandle::new(context_menu_command_service::<ShortcutOnlyCommand>());
+		assert_eq!(command.enabled_state(), ENABLED_FORCE_OFF);
+		assert_eq!(command.name(), "Open artist…");
+	}
+
+	#[test]
+	fn a_failing_command_throws_to_foobar2000() {
+		let list = FakeHandleList::new(&[PATH]);
+		let command = ContextMenuHandle::new(context_menu_command_service::<FailingCommand>());
+		let root = command.instantiate(&list);
+		let picked = root.node().execute(&list).unwrap_err();
+		assert_eq!(picked.kind, ExceptionKind::Io);
+		assert_eq!(picked.message, "can't open");
+		let shortcut = command.execute_simple_on(&Guid::NULL, &list).unwrap_err();
+		assert_eq!(shortcut.kind, ExceptionKind::Io);
+		assert_eq!(shortcut.message, "can't open");
 	}
 }

@@ -50,7 +50,9 @@ mod services;
 mod windows;
 
 pub use advconfig::AdvconfigHandle;
-pub use contextmenu::{ContextMenuHandle, FakeFields, FakeHandleList, NodeHandle, NodeRef};
+pub use contextmenu::{
+	ContextMenuGroupHandle, ContextMenuHandle, FakeFields, FakeHandleList, NodeHandle, NodeRef,
+};
 pub use live_info::FakeLiveInfoList;
 pub use mainmenu::MainMenuHandle;
 pub use playlists::FakeTab;
