@@ -15,9 +15,7 @@ use foo_librespot_core::library::{Edit, LIKED_SONGS, Library, LibraryState, Targ
 use foo_librespot_core::link::ItemId;
 use foxide2k::dialog::host::{Dialog, DialogHandler, destroy, refresh_poster};
 use foxide2k::dialog::notify::{IDCANCEL, IDOK};
-use foxide2k::dialog::style::{
-	LVS_NOCOLUMNHEADER, LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL, WS_BORDER, WS_TABSTOP,
-};
+use foxide2k::dialog::style::CHECK_LIST;
 use foxide2k::dialog::template::{ControlClass, DialogTemplate};
 use foxide2k::host::host;
 
@@ -38,12 +36,7 @@ pub fn window_template() -> DialogTemplate {
 	let ids = Ids { label: LABEL, list: LIST, status: STATUS };
 	let controls = Controls {
 		list_class: ControlClass::ListView,
-		list_style: LVS_REPORT
-			| LVS_NOCOLUMNHEADER
-			| LVS_SINGLESEL
-			| LVS_SHOWSELALWAYS
-			| WS_TABSTOP
-			| WS_BORDER,
+		list_style: CHECK_LIST,
 		ok: "OK",
 		cancel: "Cancel",
 	};
@@ -234,10 +227,7 @@ mod tests {
 	use foo_librespot_core::link::ItemId;
 	use foxide2k::dialog::host::{Dialog, destroy, refresh_poster};
 	use foxide2k::dialog::notify::{BN_CLICKED, IDCANCEL, IDOK};
-	use foxide2k::dialog::style::{
-		BS_DEFPUSHBUTTON, LVS_NOCOLUMNHEADER, LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL,
-		WS_BORDER, WS_TABSTOP,
-	};
+	use foxide2k::dialog::style::{BS_DEFPUSHBUTTON, CHECK_LIST};
 	use foxide2k::dialog::template::ControlClass;
 	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::{hidden_window, pump_messages, send_close, send_command};
@@ -327,14 +317,7 @@ mod tests {
 			]
 		);
 		assert_eq!(template.items[0].text, "&Playlists:");
-		assert_eq!(
-			template.items[1].style,
-			LVS_REPORT
-				| LVS_NOCOLUMNHEADER
-				| LVS_SINGLESEL
-				| LVS_SHOWSELALWAYS
-				| WS_TABSTOP | WS_BORDER
-		);
+		assert_eq!(template.items[1].style, CHECK_LIST);
 		assert_eq!(template.items[3].text, "OK");
 		assert_ne!(template.items[3].style & BS_DEFPUSHBUTTON, 0);
 		assert_eq!(template.items[4].text, "Cancel");

@@ -40,6 +40,15 @@ pub mod style {
 	pub const LVS_SINGLESEL: u32 = win::LVS_SINGLESEL.cast_unsigned();
 	/// Keeps a list view's selection shown while another control has focus.
 	pub const LVS_SHOWSELALWAYS: u32 = win::LVS_SHOWSELALWAYS.cast_unsigned();
+	/// A list view for [`Dialog::check_list_init`](super::host::Dialog::check_list_init): one
+	/// column of rows without a header, one row selected at a time and shown while another
+	/// control has focus, with a border, and a tab stop.
+	pub const CHECK_LIST: u32 = LVS_REPORT
+		| LVS_NOCOLUMNHEADER
+		| LVS_SINGLESEL
+		| LVS_SHOWSELALWAYS
+		| WS_TABSTOP
+		| WS_BORDER;
 }
 
 /// `WM_COMMAND` notification codes and the ids Windows gives meaning to.
@@ -88,5 +97,6 @@ mod tests {
 			),
 			(1, 0x4000, 4, 8)
 		);
+		assert_eq!(style::CHECK_LIST, 0x0001_0000 | 0x0080_0000 | 0x4000 | 4 | 8 | 1);
 	}
 }

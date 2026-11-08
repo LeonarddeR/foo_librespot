@@ -226,7 +226,8 @@ impl Dialog {
 		let mut text = wide(text);
 		let row = LVITEMW {
 			mask: LVIF_TEXT as u32,
-			iItem: i32::try_from(self.check_list_count(id)).unwrap_or(i32::MAX),
+			// Past the last row: the list view appends the row and answers its index.
+			iItem: i32::MAX,
 			pszText: PWSTR(text.as_mut_ptr()),
 			..LVITEMW::default()
 		};
@@ -815,13 +816,7 @@ pub(crate) mod tests {
 	const LIST: u16 = 111;
 
 	fn check_list() -> DialogItem {
-		let style = style::LVS_REPORT
-			| style::LVS_NOCOLUMNHEADER
-			| style::LVS_SINGLESEL
-			| style::LVS_SHOWSELALWAYS
-			| style::WS_TABSTOP
-			| style::WS_BORDER;
-		DialogItem { style, cy: 60, ..item(LIST, ControlClass::ListView, "", 0) }
+		DialogItem { style: style::CHECK_LIST, cy: 60, ..item(LIST, ControlClass::ListView, "", 0) }
 	}
 
 	fn check_list_dialog(items: Vec<DialogItem>) -> Dialog {
@@ -868,9 +863,7 @@ pub(crate) mod tests {
 		for row in 0..30 {
 			dialog.check_list_add(LIST, &format!("Playlist {row}"), false);
 		}
-		let send = |message: i32| unsafe {
-			SendMessageW(dialog.control(LIST), message.cast_unsigned(), WPARAM(0), LPARAM(0)).0
-		};
+		let send = |message| dialog.send(LIST, message, 0, 0);
 		let page = send(LVM_GETCOUNTPERPAGE);
 		assert!(0 < page && page < 29, "{page} rows fit");
 		assert_eq!(send(LVM_GETTOPINDEX), 0);
@@ -898,11 +891,9 @@ pub(crate) mod tests {
 		let mut client = RECT::default();
 		assert!(unsafe { GetClientRect(dialog.control(LIST), &raw mut client) }.as_bool());
 		let scroll_bar = unsafe { GetSystemMetrics(SM_CXVSCROLL) };
-		let width = unsafe {
-			SendMessageW(dialog.control(LIST), LVM_GETCOLUMNWIDTH as u32, WPARAM(0), LPARAM(0))
-		};
+		let width = dialog.send(LIST, LVM_GETCOLUMNWIDTH, 0, 0);
 		assert!(client.right > scroll_bar && scroll_bar > 0);
-		assert_eq!(width.0, isize::try_from(client.right - scroll_bar).unwrap());
+		assert_eq!(width, isize::try_from(client.right - scroll_bar).unwrap());
 		destroy(dialog);
 	}
 
