@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-08
+
 ### Added
 
 - File > Spotify > Open playlist… lists your Liked Songs and the playlists in your Spotify library, including ones you follow, and opens the one you pick as a playlist tab named after it, filled as pasting its link would. If it already has a tab, that tab comes to the front.
