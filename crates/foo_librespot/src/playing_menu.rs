@@ -148,7 +148,6 @@ fn shown(playing: Option<&SpotifyItem>, kind: Kind) -> Shown {
 
 #[cfg(test)]
 mod tests {
-	use foo_librespot_core::link::ItemId;
 	use foo_librespot_core::related::Related;
 	use foxide2k::abi::mainmenu::{COMMANDS_V2_IID, FLAG_DISABLED, SORT_PRIORITY_BASE};
 	use foxide2k::dialog::host::destroy;
@@ -166,7 +165,7 @@ mod tests {
 	use crate::open_playlist::{OpenPlaylist, SpotifyMenu};
 	use crate::playlist_window;
 	use crate::testing::{
-		BOTH_GETTYS, EPISODE, GETTY_TRACK, LOCAL, NO_FIELDS, ONE_ARTIST, entry, episode_id,
+		BOTH_GETTYS, EPISODE, GETTY_TRACK, LOCAL, NO_FIELDS, ONE_ARTIST, entry, episode,
 		getty_track, installed_api, installed_api_and_backend, library_holding,
 	};
 	use crate::window::brought_up;
@@ -331,7 +330,7 @@ mod tests {
 			[
 				(getty_track(), Related::Album),
 				(getty_track(), Related::Radio),
-				(ItemId::Episode(episode_id()), Related::Show),
+				(episode(), Related::Show),
 			]
 		);
 	}
@@ -438,12 +437,8 @@ mod tests {
 		api.set_now_playing(Some((LOCAL, BOTH_GETTYS)));
 		assert_eq!(add.display(0), greyed);
 		press::<PlayingAddToPlaylist>();
-		let play_one = (
-			"Add to playlist…".to_owned(),
-			"Play a Spotify track or episode first.".to_owned(),
-			PopupIcon::Information,
-		);
-		assert_eq!(api.popups(), [play_one.clone(), play_one]);
+		let play = play_one("Add to playlist…", "track or episode");
+		assert_eq!(api.popups(), [play.clone(), play]);
 		assert!(playlist_window::WINDOW.current().is_none());
 		assert_eq!(brought_up(), 0);
 	}

@@ -245,7 +245,7 @@ mod tests {
 	use foo_librespot_core::SpotifyId;
 	use foo_librespot_core::library::{Edit, Library, LibraryPlaylist, LibraryState, Target};
 	use foo_librespot_core::link::ItemId;
-	use foxide2k::dialog::host::{Dialog, destroy, refresh_poster};
+	use foxide2k::dialog::host::{Dialog, destroy};
 	use foxide2k::dialog::notify::{BN_CLICKED, IDCANCEL, IDOK};
 	use foxide2k::dialog::style::{BS_DEFPUSHBUTTON, CHECK_LIST};
 	use foxide2k::dialog::template::ControlClass;
@@ -254,23 +254,11 @@ mod tests {
 	use super::{LABEL, LIST, PlaylistWindow, STATUS, WINDOW, show_for, window_template};
 	use crate::playlist_save::Planned;
 	use crate::testing::{
-		FakeBackend, contents_of, episode_id, getty_favourites, getty_track, installed_api,
-		installed_backend, installed_prompt, library_holding, library_with, shared_playlist,
-		sunday_set, sunday_set_id,
+		FakeBackend, contents_of, episode, getty_favourites, getty_track,
+		installed_api_and_backend, installed_prompt, library_holding, library_with, other_track,
+		refresh, shared_change, shared_playlist, sunday_change, sunday_set, sunday_set_id, ticks,
 	};
 	use crate::window::brought_up;
-
-	fn t1() -> ItemId {
-		getty_track()
-	}
-
-	fn t2() -> ItemId {
-		ItemId::Track(SpotifyId::from_raw(&[0x77; 16]).unwrap())
-	}
-
-	fn episode() -> ItemId {
-		ItemId::Episode(episode_id())
-	}
 
 	/// "Advent", a playlist the account can change, made after the others.
 	fn advent() -> LibraryPlaylist {
@@ -285,35 +273,15 @@ mod tests {
 
 	/// A fake Spotify whose library is `state`, and the window it shows for `items`.
 	fn shown_for(state: LibraryState, items: Vec<ItemId>) -> (FakeBackend, Dialog) {
-		installed_api();
-		let fake = installed_backend();
+		let (_, fake) = installed_api_and_backend();
 		fake.set_library(state);
 		show_for(items);
 		(fake, WINDOW.current().expect("showing opens the window"))
 	}
 
-	/// Refreshes the window, as a change of the library does.
-	fn refresh(dialog: Dialog) {
-		refresh_poster(&dialog).post();
-		pump_messages();
-	}
-
-	fn ticks(dialog: Dialog) -> Vec<bool> {
-		(0..dialog.check_list_count(LIST)).map(|row| dialog.is_row_checked(LIST, row)).collect()
-	}
-
 	/// What OK would send now.
 	fn planned() -> Vec<Planned> {
 		WINDOW.inspect(PlaylistWindow::planned).expect("the window is open")
-	}
-
-	fn sunday(edit: Edit) -> Planned {
-		let name = "Church / Sunday set".to_owned();
-		Planned { edit, target: Target::Playlist(sunday_set_id()), name }
-	}
-
-	fn shared(edit: Edit) -> Planned {
-		Planned { edit, target: Target::Playlist(shared_playlist().id), name: "Shared".to_owned() }
 	}
 
 	const ALL_ROWS: [&str; 3] = ["Liked Songs", "Church / Sunday set", "Shared"];
@@ -343,7 +311,7 @@ mod tests {
 
 	#[test]
 	fn the_window_lists_liked_songs_then_each_playlist_it_can_change() {
-		let (_, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t1()]);
+		let (_, dialog) = shown_for(library_holding(&[], &[], &[]), vec![getty_track()]);
 		assert_eq!(dialog.check_list_texts(LIST), ALL_ROWS);
 		assert!(dialog.is_check_list(LIST), "each row has a checkbox");
 		assert_eq!(dialog.tab_order(), [LIST, IDOK, IDCANCEL]);
@@ -355,15 +323,16 @@ mod tests {
 
 	#[test]
 	fn the_first_row_starts_selected() {
-		let (_, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t1()]);
+		let (_, dialog) = shown_for(library_holding(&[], &[], &[]), vec![getty_track()]);
 		assert_eq!(dialog.check_list_selection(LIST), Some(0));
 		destroy(dialog);
 	}
 
 	#[test]
 	fn a_row_starts_ticked_only_when_its_playlist_holds_every_item() {
-		let library = library_holding(&[t1(), t2()], &[t1()], &[t2()]);
-		let (_, dialog) = shown_for(library, vec![t1(), t2()]);
+		let library =
+			library_holding(&[getty_track(), other_track()], &[getty_track()], &[other_track()]);
+		let (_, dialog) = shown_for(library, vec![getty_track(), other_track()]);
 		assert_eq!(dialog.check_list_texts(LIST), ALL_ROWS);
 		assert_eq!(ticks(dialog), [false, true, false]);
 		assert_eq!(planned(), []);
@@ -374,7 +343,7 @@ mod tests {
 	fn liked_songs_is_left_out_when_only_episodes_are_selected() {
 		let (_, dialog) = shown_for(library_holding(&[], &[], &[]), vec![episode()]);
 		assert_eq!(dialog.check_list_texts(LIST), ["Church / Sunday set", "Shared"]);
-		show_for(vec![t1(), episode()]);
+		show_for(vec![getty_track(), episode()]);
 		pump_messages();
 		assert_eq!(dialog.check_list_texts(LIST), ALL_ROWS);
 		destroy(dialog);
@@ -386,7 +355,7 @@ mod tests {
 		let (fake, dialog) = shown_for(none_to_change, vec![episode()]);
 		assert_eq!(dialog.check_list_count(LIST), 0);
 		assert_eq!(dialog.text(STATUS), "You have no Spotify playlists you can change.");
-		show_for(vec![t1()]);
+		show_for(vec![getty_track()]);
 		pump_messages();
 		assert_eq!(dialog.check_list_texts(LIST), ["Liked Songs"]);
 		assert_eq!(dialog.text(STATUS), "");
@@ -402,14 +371,20 @@ mod tests {
 
 	#[test]
 	fn showing_keeps_each_item_once_in_order() {
-		let (_, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t2(), t1(), t2()]);
-		assert_eq!(WINDOW.inspect(|window, _| window.items.clone()), Some(vec![t2(), t1()]));
+		let (_, dialog) = shown_for(
+			library_holding(&[], &[], &[]),
+			vec![other_track(), getty_track(), other_track()],
+		);
+		assert_eq!(
+			WINDOW.inspect(|window, _| window.items.clone()),
+			Some(vec![other_track(), getty_track()])
+		);
 		destroy(dialog);
 	}
 
 	#[test]
 	fn the_window_says_loading_until_the_library_is_complete() {
-		let (fake, dialog) = shown_for(LibraryState::Loading, vec![t1()]);
+		let (fake, dialog) = shown_for(LibraryState::Loading, vec![getty_track()]);
 		assert_eq!(dialog.text(STATUS), "Loading…");
 		assert_eq!(dialog.check_list_count(LIST), 0);
 		let playlists = vec![sunday_set(), getty_favourites(), shared_playlist()];
@@ -428,12 +403,15 @@ mod tests {
 
 	#[test]
 	fn a_refresh_keeps_the_users_ticks_and_adds_new_playlists_unticked() {
-		let (fake, dialog) = shown_for(library_holding(&[t1()], &[], &[]), vec![t1()]);
+		let (fake, dialog) =
+			shown_for(library_holding(&[getty_track()], &[], &[]), vec![getty_track()]);
 		assert_eq!(ticks(dialog), [false, true, false]);
 		dialog.set_row_checked(LIST, 1, false);
 		let playlists = vec![sunday_set(), getty_favourites(), shared_playlist(), advent()];
-		let contents =
-			vec![(sunday_set_id(), contents_of(&[t1()])), (shared_playlist().id, contents_of(&[]))];
+		let contents = vec![
+			(sunday_set_id(), contents_of(&[getty_track()])),
+			(shared_playlist().id, contents_of(&[])),
+		];
 		let incomplete = Library::from_parts(playlists, contents, Some(HashSet::new()));
 		assert!(!incomplete.is_complete());
 		fake.set_library(LibraryState::Ready(Arc::new(incomplete)));
@@ -443,19 +421,19 @@ mod tests {
 			["Liked Songs", "Church / Sunday set", "Shared", "Advent"]
 		);
 		assert_eq!(ticks(dialog), [false, false, false, false]);
-		assert_eq!(planned(), [sunday(Edit::Remove)]);
+		assert_eq!(planned(), [sunday_change(Edit::Remove)]);
 		destroy(dialog);
 	}
 
 	#[test]
 	fn a_refresh_shows_the_new_starting_tick_of_rows_the_user_didnt_touch() {
-		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t1()]);
+		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![getty_track()]);
 		dialog.set_row_checked(LIST, 2, true);
-		fake.set_library(library_holding(&[t1()], &[], &[]));
+		fake.set_library(library_holding(&[getty_track()], &[], &[]));
 		refresh(dialog);
 		assert_eq!(ticks(dialog), [false, true, true]);
-		assert_eq!(planned(), [shared(Edit::Add)]);
-		fake.set_library(library_holding(&[t1()], &[t1()], &[]));
+		assert_eq!(planned(), [shared_change(Edit::Add)]);
+		fake.set_library(library_holding(&[getty_track()], &[getty_track()], &[]));
 		refresh(dialog);
 		assert_eq!(ticks(dialog), [false, true, true]);
 		assert_eq!(planned(), []);
@@ -464,7 +442,7 @@ mod tests {
 
 	#[test]
 	fn a_change_to_a_playlist_no_longer_listed_is_dropped() {
-		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t1()]);
+		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![getty_track()]);
 		dialog.set_row_checked(LIST, 2, true);
 		fake.set_library(LibraryState::Ready(library_with(vec![sunday_set()])));
 		refresh(dialog);
@@ -480,10 +458,10 @@ mod tests {
 
 	#[test]
 	fn a_users_tick_that_matches_spotify_again_is_no_longer_a_change() {
-		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t1()]);
+		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![getty_track()]);
 		dialog.set_row_checked(LIST, 2, true);
-		assert_eq!(planned(), [shared(Edit::Add)]);
-		fake.set_library(library_holding(&[], &[t1()], &[]));
+		assert_eq!(planned(), [shared_change(Edit::Add)]);
+		fake.set_library(library_holding(&[], &[getty_track()], &[]));
 		refresh(dialog);
 		assert_eq!(ticks(dialog), [false, false, true]);
 		assert_eq!(planned(), []);
@@ -492,7 +470,7 @@ mod tests {
 
 	#[test]
 	fn a_refresh_keeps_the_selected_playlist_selected() {
-		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t1()]);
+		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![getty_track()]);
 		dialog.check_list_select(LIST, 2);
 		fake.set_library(LibraryState::Ready(library_with(vec![shared_playlist(), sunday_set()])));
 		refresh(dialog);
@@ -507,7 +485,7 @@ mod tests {
 
 	#[test]
 	fn a_refresh_with_the_same_rows_leaves_the_list_alone() {
-		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t1()]);
+		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![getty_track()]);
 		// A rebuild would clear this row.
 		dialog.check_list_add(LIST, "Marker", false);
 		fake.set_library(library_holding(&[], &[], &[]));
@@ -519,12 +497,12 @@ mod tests {
 
 	#[test]
 	fn a_refresh_that_only_changes_ticks_keeps_the_list_and_its_selection() {
-		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t1()]);
+		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![getty_track()]);
 		dialog.check_list_select(LIST, 2);
 		dialog.set_row_checked(LIST, 0, true);
 		// A rebuild would clear this row.
 		dialog.check_list_add(LIST, "Marker", false);
-		fake.set_library(library_holding(&[t1()], &[], &[]));
+		fake.set_library(library_holding(&[getty_track()], &[], &[]));
 		refresh(dialog);
 		assert_eq!(
 			dialog.check_list_texts(LIST),
@@ -532,7 +510,7 @@ mod tests {
 		);
 		assert_eq!(ticks(dialog), [true, true, false, false]);
 		assert_eq!(dialog.check_list_selection(LIST), Some(2));
-		show_for(vec![t2()]);
+		show_for(vec![other_track()]);
 		pump_messages();
 		assert_eq!(dialog.check_list_count(LIST), 4, "new items with the same rows keep the list");
 		assert_eq!(ticks(dialog), [false, false, false, false]);
@@ -542,12 +520,13 @@ mod tests {
 
 	#[test]
 	fn loading_after_the_fill_keeps_the_rows_and_ticks() {
-		let (fake, dialog) = shown_for(library_holding(&[t1()], &[], &[]), vec![t1()]);
+		let (fake, dialog) =
+			shown_for(library_holding(&[getty_track()], &[], &[]), vec![getty_track()]);
 		dialog.set_row_checked(LIST, 1, false);
 		fake.set_library(LibraryState::Loading);
 		refresh(dialog);
 		assert_eq!(dialog.check_list_texts(LIST), ALL_ROWS);
-		assert_eq!(planned(), [sunday(Edit::Remove)]);
+		assert_eq!(planned(), [sunday_change(Edit::Remove)]);
 		assert_eq!(dialog.text(STATUS), "");
 		destroy(dialog);
 	}
@@ -555,7 +534,8 @@ mod tests {
 	#[test]
 	fn a_logout_empties_the_list_and_drops_the_ticks() {
 		let prompt = installed_prompt();
-		let (fake, dialog) = shown_for(library_holding(&[t1()], &[], &[]), vec![t1()]);
+		let (fake, dialog) =
+			shown_for(library_holding(&[getty_track()], &[], &[]), vec![getty_track()]);
 		dialog.set_row_checked(LIST, 2, true);
 		fake.set_library(LibraryState::LoggedOut);
 		refresh(dialog);
@@ -563,7 +543,7 @@ mod tests {
 		assert_eq!(dialog.text(STATUS), "Log in to Spotify to see your playlists.");
 		assert_eq!(planned(), []);
 		assert_eq!(prompt.shown(), 0);
-		fake.set_library(library_holding(&[t1()], &[], &[]));
+		fake.set_library(library_holding(&[getty_track()], &[], &[]));
 		refresh(dialog);
 		assert_eq!(ticks(dialog), [false, true, false]);
 		assert_eq!(planned(), []);
@@ -573,7 +553,7 @@ mod tests {
 	#[test]
 	fn logged_out_the_window_asks_for_a_login_once() {
 		let prompt = installed_prompt();
-		let (fake, dialog) = shown_for(LibraryState::LoggedOut, vec![t1()]);
+		let (fake, dialog) = shown_for(LibraryState::LoggedOut, vec![getty_track()]);
 		assert_eq!(dialog.text(STATUS), "Log in to Spotify to see your playlists.");
 		assert_eq!(dialog.check_list_count(LIST), 0);
 		assert_eq!((prompt.shown(), fake.logins_started()), (1, 1));
@@ -584,7 +564,7 @@ mod tests {
 
 	#[test]
 	fn a_failed_load_says_why() {
-		let (fake, dialog) = shown_for(LibraryState::Loading, vec![t1()]);
+		let (fake, dialog) = shown_for(LibraryState::Loading, vec![getty_track()]);
 		let failed = || LibraryState::Failed("no network".to_owned());
 		fake.publish_library(failed());
 		pump_messages();
@@ -602,10 +582,11 @@ mod tests {
 
 	#[test]
 	fn showing_for_new_items_replaces_them_and_drops_the_ticks() {
-		let (_, dialog) = shown_for(library_holding(&[t1()], &[], &[]), vec![t1()]);
+		let (_, dialog) =
+			shown_for(library_holding(&[getty_track()], &[], &[]), vec![getty_track()]);
 		assert_eq!(ticks(dialog), [false, true, false]);
 		dialog.set_row_checked(LIST, 2, true);
-		show_for(vec![t2()]);
+		show_for(vec![other_track()]);
 		pump_messages();
 		assert_eq!(WINDOW.current(), Some(dialog));
 		assert_eq!(brought_up(), 2);
@@ -616,15 +597,16 @@ mod tests {
 
 	#[test]
 	fn new_items_with_no_library_to_list_them_empty_the_list() {
-		let (fake, dialog) = shown_for(library_holding(&[t1()], &[], &[]), vec![t1()]);
+		let (fake, dialog) =
+			shown_for(library_holding(&[getty_track()], &[], &[]), vec![getty_track()]);
 		dialog.set_row_checked(LIST, 2, true);
 		fake.set_library(LibraryState::Failed("no network".to_owned()));
-		show_for(vec![t2()]);
+		show_for(vec![other_track()]);
 		pump_messages();
 		assert_eq!(dialog.check_list_count(LIST), 0);
 		assert_eq!(planned(), []);
 		assert_eq!(dialog.text(STATUS), "Couldn't load your playlists: no network.");
-		fake.set_library(library_holding(&[t1()], &[], &[]));
+		fake.set_library(library_holding(&[getty_track()], &[], &[]));
 		refresh(dialog);
 		assert_eq!(ticks(dialog), [false, false, false]);
 		destroy(dialog);
@@ -632,70 +614,74 @@ mod tests {
 
 	#[test]
 	fn ok_and_cancel_close_the_window() {
-		let (_, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t1()]);
+		let (_, dialog) = shown_for(library_holding(&[], &[], &[]), vec![getty_track()]);
 		send_command(&dialog, IDOK, BN_CLICKED);
 		assert!(!dialog.is_alive());
 		assert_eq!(WINDOW.current(), None);
-		show_for(vec![t1()]);
+		show_for(vec![getty_track()]);
 		send_command(&WINDOW.current().unwrap(), IDCANCEL, BN_CLICKED);
 		assert_eq!(WINDOW.current(), None);
-		show_for(vec![t1()]);
+		show_for(vec![getty_track()]);
 		send_close(&WINDOW.current().unwrap());
 		pump_messages();
 		assert_eq!(WINDOW.current(), None);
 	}
 
-	/// The changes sent so far: what, where and for which items.
-	fn sent(fake: &FakeBackend) -> Vec<(Edit, Target, Vec<ItemId>)> {
-		fake.changes().into_iter().map(|(edit, target, items, _)| (edit, target, items)).collect()
-	}
-
 	#[test]
 	fn ok_saves_the_changed_rows_and_closes() {
-		let library = library_holding(&[t1(), t2()], &[], &[]);
-		let (fake, dialog) = shown_for(library, vec![t1(), t2()]);
+		let library = library_holding(&[getty_track(), other_track()], &[], &[]);
+		let (fake, dialog) = shown_for(library, vec![getty_track(), other_track()]);
 		dialog.set_row_checked(LIST, 2, true);
 		dialog.set_row_checked(LIST, 1, false);
 		send_command(&dialog, IDOK, BN_CLICKED);
 		assert!(!dialog.is_alive());
 		assert_eq!(WINDOW.current(), None);
 		assert_eq!(
-			sent(&fake),
+			fake.changes(),
 			[
-				(Edit::Remove, Target::Playlist(sunday_set_id()), vec![t1(), t2()]),
-				(Edit::Add, Target::Playlist(shared_playlist().id), vec![t1(), t2()]),
+				(
+					Edit::Remove,
+					Target::Playlist(sunday_set_id()),
+					vec![getty_track(), other_track()]
+				),
+				(
+					Edit::Add,
+					Target::Playlist(shared_playlist().id),
+					vec![getty_track(), other_track()]
+				),
 			]
 		);
 	}
 
 	#[test]
 	fn cancel_and_escape_send_nothing() {
-		let (fake, dialog) = shown_for(library_holding(&[t1()], &[], &[]), vec![t1()]);
+		let (fake, dialog) =
+			shown_for(library_holding(&[getty_track()], &[], &[]), vec![getty_track()]);
 		dialog.set_row_checked(LIST, 1, false);
 		dialog.set_row_checked(LIST, 2, true);
 		send_command(&dialog, IDCANCEL, BN_CLICKED);
 		assert!(!dialog.is_alive());
-		show_for(vec![t1()]);
+		show_for(vec![getty_track()]);
 		let dialog = WINDOW.current().expect("showing opens the window");
 		dialog.set_row_checked(LIST, 2, true);
 		send_close(&dialog);
 		pump_messages();
 		assert_eq!(WINDOW.current(), None);
-		assert_eq!(sent(&fake), []);
+		assert_eq!(fake.changes(), []);
 	}
 
 	#[test]
 	fn ok_while_loading_sends_nothing_and_closes() {
-		let (fake, dialog) = shown_for(LibraryState::Loading, vec![t1()]);
+		let (fake, dialog) = shown_for(LibraryState::Loading, vec![getty_track()]);
 		send_command(&dialog, IDOK, BN_CLICKED);
 		assert!(!dialog.is_alive());
 		assert_eq!(WINDOW.current(), None);
-		assert_eq!(sent(&fake), []);
+		assert_eq!(fake.changes(), []);
 	}
 
 	#[test]
 	fn the_window_listens_to_the_library_while_it_is_open() {
-		let (fake, dialog) = shown_for(LibraryState::Loading, vec![t1()]);
+		let (fake, dialog) = shown_for(LibraryState::Loading, vec![getty_track()]);
 		assert_eq!(fake.library_subscribers(), 1);
 		refresh(dialog);
 		assert_eq!(fake.library_calls(), 2);
@@ -706,12 +692,12 @@ mod tests {
 
 	#[test]
 	fn a_window_that_cant_open_says_why() {
-		let api = installed_api();
-		installed_backend().set_library(library_holding(&[], &[], &[]));
+		let (api, fake) = installed_api_and_backend();
+		fake.set_library(library_holding(&[], &[], &[]));
 		let gone = hidden_window();
 		destroy(Dialog::from_hwnd(gone));
 		api.set_main_window(gone);
-		show_for(vec![t1()]);
+		show_for(vec![getty_track()]);
 		let popups = api.popups();
 		let (title, message, _) = &popups[0];
 		assert_eq!(title, "Can't change the Spotify playlist");

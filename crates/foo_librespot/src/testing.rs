@@ -18,9 +18,13 @@ use foo_librespot_core::related::{Found, Opened, Related, related_in};
 use foo_librespot_core::replaygain::ReplayGain;
 use foo_librespot_core::resolve::{ArtistTracks, Resolved};
 use foo_librespot_core::{CoreError, SpotifyId};
-use foxide2k::testing::{FakeApi, FakeFields};
+use foxide2k::contextmenu::{ContextMenuCommand, context_menu_command_service};
+use foxide2k::dialog::host::{Dialog, refresh_poster};
+use foxide2k::guid::Guid;
+use foxide2k::testing::{ContextMenuHandle, FakeApi, FakeFields, FakeHandleList, pump_messages};
 
 use crate::backend::{Backend, LoginTask, OnCode, OnDone, OnRelated, PcmTrack};
+use crate::playlist_save::Planned;
 
 pub const CHIRP: &[u8] = include_bytes!("../../foo_librespot_core/tests/fixtures/chirp.ogg");
 
@@ -39,6 +43,16 @@ pub fn getty_track() -> ItemId {
 	ItemId::Track(track_id())
 }
 
+/// "Christ Our Hope In Life And Death", another Keith & Kristyn Getty track, as foobar2000
+/// stores it.
+pub const OTHER_TRACK: &str = "sptf://spotify:track:0iYaBOYiWTPt2A7JMNK6eO";
+
+/// [`OTHER_TRACK`] as a Spotify item.
+pub fn other_track() -> ItemId {
+	let id = OTHER_TRACK.split_at("sptf://spotify:track:".len()).1;
+	ItemId::Track(SpotifyId::from_base62(id).unwrap())
+}
+
 /// A podcast episode, the one the maintainer shared as an example, as foobar2000 stores it.
 pub const EPISODE: &str = "sptf://spotify:episode:4QomYTPgZ1mpVbUmxBsUpz";
 
@@ -47,6 +61,11 @@ pub const EPISODE_ID: &str = EPISODE.split_at("sptf://spotify:episode:".len()).1
 
 pub fn episode_id() -> SpotifyId {
 	SpotifyId::from_base62(EPISODE_ID).unwrap()
+}
+
+/// [`EPISODE`] as a Spotify item.
+pub fn episode() -> ItemId {
+	ItemId::Episode(episode_id())
 }
 
 /// A local file.
@@ -70,6 +89,33 @@ pub const NO_FIELDS: FakeFields<'static> = &[];
 /// A menu entry's name and flags, as the test handles show them.
 pub fn entry(name: &str, flags: u32) -> (String, u32) {
 	(name.to_owned(), flags)
+}
+
+/// The right-click command `T`, as foobar2000 reaches it.
+pub fn command<T: ContextMenuCommand>() -> ContextMenuHandle {
+	ContextMenuHandle::new(context_menu_command_service::<T>())
+}
+
+/// Runs the right-click command `T` as a key bound to it does, on `data`.
+pub fn press<T: ContextMenuCommand>(data: &FakeHandleList) {
+	command::<T>().execute_simple_on(&Guid::NULL, data).unwrap();
+}
+
+/// Runs the right-click command `T` from the right-click menu opened on `data`.
+pub fn choose<T: ContextMenuCommand>(data: &FakeHandleList) {
+	command::<T>().instantiate(data).node().execute(data).unwrap();
+}
+
+/// Refreshes `dialog`, as a change of the library does.
+pub fn refresh(dialog: Dialog) {
+	refresh_poster(&dialog).post();
+	pump_messages();
+}
+
+/// The ticks of the Add to playlist window's list, row by row.
+pub fn ticks(dialog: Dialog) -> Vec<bool> {
+	let list = crate::playlist_window::LIST;
+	(0..dialog.check_list_count(list)).map(|row| dialog.is_row_checked(list, row)).collect()
 }
 
 /// A fake foobar2000, installed as the host of this test process.
@@ -203,8 +249,8 @@ struct State {
 /// What a change of a target ends with.
 pub type ChangeResult = fn(Target) -> Result<Change, CoreError>;
 
-/// A change that was asked for, and the thread it ran and reported on.
-pub type RecordedChange = (Edit, Target, Vec<ItemId>, std::thread::ThreadId);
+/// A change that was asked for: what, where and for which items.
+pub type RecordedChange = (Edit, Target, Vec<ItemId>);
 
 /// What a lookup of an item ends with.
 pub type RelatedResult = fn(ItemId, &Related) -> Result<Found, CoreError>;
@@ -339,7 +385,7 @@ impl FakeBackend {
 		self.0.library_calls.load(Ordering::SeqCst)
 	}
 
-	/// The changes asked for so far, each with the thread it ran and reported on.
+	/// The changes asked for so far, in order.
 	pub fn changes(&self) -> Vec<RecordedChange> {
 		self.0.changes.lock().unwrap_or_else(PoisonError::into_inner).clone()
 	}
@@ -546,13 +592,16 @@ impl Backend for FakeBackend {
 		self.0.library_subscribers.unsubscribe(id);
 	}
 
-	/// Runs the change and `on_done` on a thread of its own, which starts once the change is
-	/// recorded. A change that lands tells the library's subscribers first, as Spotify's does.
+	/// Records the change, then runs it and `on_done` on a thread of its own. A change that lands
+	/// tells the library's subscribers first, as Spotify's does.
 	fn change(&self, edit: Edit, target: Target, items: &[ItemId], on_done: OnChanged) {
+		self.0.changes.lock().unwrap_or_else(PoisonError::into_inner).push((
+			edit,
+			target,
+			items.to_vec(),
+		));
 		let (fake, count) = (self.clone(), items.len());
-		let (recorded, wait) = std::sync::mpsc::channel::<()>();
-		let thread = std::thread::spawn(move || {
-			let _ = wait.recv();
+		std::thread::spawn(move || {
 			let result = fake.enter(&|| false).and_then(|()| {
 				let result = *fake.0.change_result.lock().unwrap_or_else(PoisonError::into_inner);
 				result.map_or_else(
@@ -566,13 +615,6 @@ impl Backend for FakeBackend {
 			on_done(result);
 			fake.0.changes_answered.fetch_add(1, Ordering::SeqCst);
 		});
-		self.0.changes.lock().unwrap_or_else(PoisonError::into_inner).push((
-			edit,
-			target,
-			items.to_vec(),
-			thread.thread().id(),
-		));
-		let _ = recorded.send(());
 	}
 
 	/// Records the lookup, then runs it and `on_done` on a thread of its own, and counts it as
@@ -735,6 +777,22 @@ pub fn library_holding(sunday: &[ItemId], shared: &[ItemId], liked: &[ItemId]) -
 	LibraryState::Ready(Arc::new(Library::from_parts(playlists, contents, Some(liked))))
 }
 
+/// The change `edit` of [`sunday_set`], as the Add to playlist window plans it.
+pub fn sunday_change(edit: Edit) -> Planned {
+	let name = "Church / Sunday set".to_owned();
+	Planned { edit, target: Target::Playlist(sunday_set_id()), name }
+}
+
+/// The change `edit` of [`shared_playlist`], as the Add to playlist window plans it.
+pub fn shared_change(edit: Edit) -> Planned {
+	Planned { edit, target: Target::Playlist(shared_playlist().id), name: "Shared".to_owned() }
+}
+
+/// The change `edit` of Liked Songs, as the Add to playlist window plans it.
+pub fn liked_change(edit: Edit) -> Planned {
+	Planned { edit, target: Target::LikedSongs, name: "Liked Songs".to_owned() }
+}
+
 /// A login prompt that only counts how often it was shown.
 #[derive(Clone, Default)]
 pub struct FakePrompt(Arc<AtomicUsize>);
@@ -838,4 +896,49 @@ pub fn stop_after(
 pub fn lock_shared_state() -> std::sync::MutexGuard<'static, ()> {
 	static SHARED: Mutex<()> = Mutex::new(());
 	SHARED.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+mod tests {
+	use std::sync::Arc;
+	use std::sync::atomic::{AtomicUsize, Ordering};
+	use std::sync::mpsc;
+	use std::time::Duration;
+
+	use foo_librespot_core::CoreError;
+	use foo_librespot_core::library::{Change, Edit, Target};
+
+	use super::{FakeBackend, getty_track, shared_playlist};
+	use crate::backend::Backend;
+
+	/// The fake changes a playlist the way Spotify's backend does: only a change that lands tells
+	/// the library's listeners, and they have heard before the change ends.
+	#[test]
+	fn only_a_change_that_lands_tells_the_library_listeners() {
+		let fake = FakeBackend::default();
+		let heard = Arc::new(AtomicUsize::new(0));
+		let hearing = Arc::clone(&heard);
+		fake.subscribe_library(Box::new(move || {
+			hearing.fetch_add(1, Ordering::SeqCst);
+		}));
+		// How often the listeners had heard when a change ended.
+		let heard_when_done = || {
+			let (done, ended) = mpsc::channel();
+			let heard = Arc::clone(&heard);
+			let target = Target::Playlist(shared_playlist().id);
+			fake.change(
+				Edit::Add,
+				target,
+				&[getty_track()],
+				Box::new(move |_| {
+					let _ = done.send(heard.load(Ordering::SeqCst));
+				}),
+			);
+			ended.recv_timeout(Duration::from_secs(5)).unwrap()
+		};
+		assert_eq!(heard_when_done(), 1);
+		fake.change_with(|_| Ok(Change::default()));
+		assert_eq!(heard_when_done(), 1);
+		fake.change_with(|_| Err(CoreError::Unavailable("playlist is gone".to_owned())));
+		assert_eq!(heard_when_done(), 1);
+	}
 }

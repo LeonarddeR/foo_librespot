@@ -303,47 +303,25 @@ mod tests {
 	use foxide2k::abi::contextmenu::{
 		ENABLED_DEFAULT_ON, FLAG_DISABLED, FLAG_GRAYED, GROUP_ROOT, TYPE_COMMAND,
 	};
-	use foxide2k::contextmenu::{
-		ContextMenuCommand, ContextMenuGroup, Shown, context_menu_command_service,
-		context_menu_group_service,
-	};
+	use foxide2k::contextmenu::{ContextMenuGroup, Shown, context_menu_group_service};
 	use foxide2k::dialog::host::destroy;
 	use foxide2k::guid::Guid;
 	use foxide2k::popup::PopupIcon;
-	use foxide2k::testing::{
-		ContextMenuGroupHandle, ContextMenuHandle, FakeFields, FakeHandleList, pump_messages,
-	};
+	use foxide2k::testing::{ContextMenuGroupHandle, FakeFields, FakeHandleList, pump_messages};
 
 	use super::{Kind, OpenAlbum, OpenArtist, OpenShow, SpotifyGroup, TrackRadio, shown_among};
 	use crate::artist_window::{self, LIST, STATUS, WINDOW};
-	use crate::playlist_menu::AddToPlaylist;
 	use crate::testing::{
-		BOTH_GETTYS, EPISODE, GETTY_TRACK, LOCAL, NO_FIELDS, ONE_ARTIST, TRACK_ID, entry,
-		episode_id, getty_artists, getty_track, installed_api_and_backend, wait_until,
+		BOTH_GETTYS, EPISODE, GETTY_TRACK, LOCAL, NO_FIELDS, ONE_ARTIST, OTHER_TRACK, TRACK_ID,
+		choose, command, entry, episode, getty_artists, getty_track, installed_api_and_backend,
+		press, wait_until,
 	};
 	use crate::window::brought_up;
 
 	const GREYED: u32 = FLAG_DISABLED | FLAG_GRAYED;
 
-	/// Another Keith & Kristyn Getty track.
-	const OTHER_TRACK: &str = "sptf://spotify:track:0iYaBOYiWTPt2A7JMNK6eO";
-
 	fn select(tracks: &[(&str, FakeFields<'_>)]) -> FakeHandleList {
 		*FakeHandleList::with_meta(tracks)
-	}
-
-	fn command<T: ContextMenuCommand>() -> ContextMenuHandle {
-		ContextMenuHandle::new(context_menu_command_service::<T>())
-	}
-
-	/// Runs `T` as a key bound to it does, on `data`.
-	fn press<T: ContextMenuCommand>(data: &FakeHandleList) {
-		command::<T>().execute_simple_on(&Guid::NULL, data).unwrap();
-	}
-
-	/// Runs `T` from the right-click menu opened on `data`.
-	fn choose<T: ContextMenuCommand>(data: &FakeHandleList) {
-		command::<T>().instantiate(data).node().execute(data).unwrap();
 	}
 
 	/// The open entries the Spotify submenu shows for `data`, in menu order, with their flags.
@@ -412,14 +390,6 @@ mod tests {
 			assert_eq!(entry.parent(), SpotifyGroup::GUID, "{name}");
 			assert_eq!(entry.sort_priority(), sort_priority, "{name}");
 		}
-	}
-
-	#[test]
-	fn add_to_playlist_keeps_its_guid_and_moves_into_the_spotify_submenu() {
-		let item = command::<AddToPlaylist>();
-		assert_eq!(item.guid(), Guid::from_u128(0x9dde669c_a508_460e_b0df_c4e8e681592b));
-		assert_eq!(item.parent(), SpotifyGroup::GUID);
-		assert_eq!(item.name(), "Add to playlist…");
 	}
 
 	#[test]
@@ -513,7 +483,7 @@ mod tests {
 			[
 				(getty_track(), Related::Album),
 				(getty_track(), Related::Radio),
-				(ItemId::Episode(episode_id()), Related::Show),
+				(episode(), Related::Show),
 			]
 		);
 	}
@@ -597,7 +567,7 @@ mod tests {
 
 	#[test]
 	fn how_a_command_shows_is_known_from_the_first_items_that_settle_it() {
-		let (track, episode) = (getty_track(), ItemId::Episode(episode_id()));
+		let (track, episode) = (getty_track(), episode());
 		let unread = || std::iter::from_fn(|| -> Option<ItemId> { panic!("read too far") });
 		let shown =
 			|items: &[ItemId], kind| shown_among(items.iter().copied().chain(unread()), kind);

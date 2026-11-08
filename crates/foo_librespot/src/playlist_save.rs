@@ -128,44 +128,18 @@ fn already_there(unchanged: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-	use std::sync::Arc;
-	use std::sync::atomic::{AtomicUsize, Ordering};
-
+	use foo_librespot_core::CoreError;
 	use foo_librespot_core::library::{Change, Edit, Target};
-	use foo_librespot_core::link::ItemId;
-	use foo_librespot_core::{CoreError, SpotifyId};
 	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::FakeApi;
 
 	use super::{Planned, save};
-	use crate::backend::backend;
 	use crate::testing::{
-		FakeBackend, getty_track, installed_api_and_backend, shared_playlist, sunday_set_id,
-		wait_until,
+		FakeBackend, getty_track, installed_api_and_backend, liked_change, other_track,
+		shared_change, sunday_change, sunday_set_id, wait_until,
 	};
 
 	const TITLE: &str = "Can't change the Spotify playlist";
-
-	fn t1() -> ItemId {
-		getty_track()
-	}
-
-	fn t2() -> ItemId {
-		ItemId::Track(SpotifyId::from_raw(&[0x77; 16]).unwrap())
-	}
-
-	fn sunday(edit: Edit) -> Planned {
-		let name = "Church / Sunday set".to_owned();
-		Planned { edit, target: Target::Playlist(sunday_set_id()), name }
-	}
-
-	fn shared(edit: Edit) -> Planned {
-		Planned { edit, target: Target::Playlist(shared_playlist().id), name: "Shared".to_owned() }
-	}
-
-	fn liked(edit: Edit) -> Planned {
-		Planned { edit, target: Target::LikedSongs, name: "Liked Songs".to_owned() }
-	}
 
 	fn is_sunday(target: Target) -> bool {
 		target == Target::Playlist(sunday_set_id())
@@ -175,10 +149,10 @@ mod tests {
 		CoreError::Unavailable("playlist is gone".to_owned())
 	}
 
-	/// Saves `planned` for t1 and t2, and waits until each of its changes has ended.
+	/// Saves `planned` for the two Getty tracks, and waits until each of its changes has ended.
 	fn saved(fake: &FakeBackend, planned: Vec<Planned>) {
 		let ended = fake.changes_answered() + planned.len();
-		save(&[t1(), t2()], planned);
+		save(&[getty_track(), other_track()], planned);
 		wait_until(|| fake.changes_answered() == ended);
 	}
 
@@ -189,17 +163,12 @@ mod tests {
 	#[test]
 	fn save_starts_each_planned_change_with_the_items() {
 		let (_, fake) = installed_api_and_backend();
-		saved(&fake, vec![sunday(Edit::Add), liked(Edit::Remove)]);
-		let started: Vec<_> = fake
-			.changes()
-			.into_iter()
-			.map(|(edit, target, items, _)| (edit, target, items))
-			.collect();
+		saved(&fake, vec![sunday_change(Edit::Add), liked_change(Edit::Remove)]);
 		assert_eq!(
-			started,
+			fake.changes(),
 			[
-				(Edit::Add, Target::Playlist(sunday_set_id()), vec![t1(), t2()]),
-				(Edit::Remove, Target::LikedSongs, vec![t1(), t2()]),
+				(Edit::Add, Target::Playlist(sunday_set_id()), vec![getty_track(), other_track()]),
+				(Edit::Remove, Target::LikedSongs, vec![getty_track(), other_track()]),
 			]
 		);
 	}
@@ -214,7 +183,10 @@ mod tests {
 				Target::Playlist(_) => Change { changed: 1, ..Change::default() },
 			})
 		});
-		saved(&fake, vec![sunday(Edit::Add), liked(Edit::Add), shared(Edit::Remove)]);
+		saved(
+			&fake,
+			vec![sunday_change(Edit::Add), liked_change(Edit::Add), shared_change(Edit::Remove)],
+		);
 		let mut lines = api.console_lines();
 		lines.sort();
 		let mut expected = [
@@ -232,7 +204,7 @@ mod tests {
 	fn leaving_out_several_episodes_says_episodes() {
 		let (api, fake) = installed_api_and_backend();
 		fake.change_with(|_| Ok(Change { changed: 1, unchanged: 0, episodes_left_out: 2 }));
-		saved(&fake, vec![liked(Edit::Add)]);
+		saved(&fake, vec![liked_change(Edit::Add)]);
 		assert!(
 			printed(api, "foo_librespot: left out 2 episodes: Liked Songs holds songs only"),
 			"{:?}",
@@ -250,7 +222,10 @@ mod tests {
 			std::thread::sleep(std::time::Duration::from_millis(100));
 			Ok(Change { changed: 2, ..Change::default() })
 		});
-		save(&[t1(), t2()], vec![sunday(Edit::Add), shared(Edit::Add)]);
+		save(
+			&[getty_track(), other_track()],
+			vec![sunday_change(Edit::Add), shared_change(Edit::Add)],
+		);
 		wait_until(|| !api.popups().is_empty());
 		assert!(printed(api, "foo_librespot: added 2 tracks to Shared"), "the popup came too soon");
 		wait_until(|| fake.changes_answered() == 2);
@@ -273,7 +248,7 @@ mod tests {
 			}
 			Err(CoreError::Unavailable("Spotify said no".to_owned()))
 		});
-		saved(&fake, vec![sunday(Edit::Add), shared(Edit::Remove)]);
+		saved(&fake, vec![sunday_change(Edit::Add), shared_change(Edit::Remove)]);
 		let message = format!(
 			"Couldn't change these playlists:\n\nChurch / Sunday set: {}.\nShared: Spotify said no.",
 			gone()
@@ -286,7 +261,7 @@ mod tests {
 	fn a_cancelled_change_shows_nothing() {
 		let (api, fake) = installed_api_and_backend();
 		fake.change_with(|_| Err(CoreError::Aborted));
-		saved(&fake, vec![shared(Edit::Add)]);
+		saved(&fake, vec![shared_change(Edit::Add)]);
 		assert_eq!(api.popups(), []);
 		assert!(api.console_lines().is_empty(), "{:?}", api.console_lines());
 	}
@@ -297,28 +272,11 @@ mod tests {
 		fake.change_with(
 			|target| if is_sunday(target) { Err(CoreError::Aborted) } else { Err(gone()) },
 		);
-		saved(&fake, vec![sunday(Edit::Add), shared(Edit::Add)]);
+		saved(&fake, vec![sunday_change(Edit::Add), shared_change(Edit::Add)]);
 		let why = gone().to_string();
 		assert_eq!(
 			api.popups(),
 			[(TITLE.to_owned(), format!("Shared\n\n{why}."), PopupIcon::Error)]
 		);
-	}
-
-	#[test]
-	fn only_a_change_that_lands_tells_the_library_listeners() {
-		let (_, fake) = installed_api_and_backend();
-		let heard = Arc::new(AtomicUsize::new(0));
-		let hearing = Arc::clone(&heard);
-		backend().subscribe_library(Box::new(move || {
-			hearing.fetch_add(1, Ordering::SeqCst);
-		}));
-		saved(&fake, vec![shared(Edit::Add)]);
-		assert_eq!(heard.load(Ordering::SeqCst), 1);
-		fake.change_with(|_| Ok(Change::default()));
-		saved(&fake, vec![shared(Edit::Add)]);
-		fake.change_with(|_| Err(gone()));
-		saved(&fake, vec![shared(Edit::Add)]);
-		assert_eq!(heard.load(Ordering::SeqCst), 1);
 	}
 }

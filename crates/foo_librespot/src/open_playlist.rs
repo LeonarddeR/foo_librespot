@@ -122,7 +122,7 @@ mod tests {
 	use foo_librespot_core::library::LibraryState;
 	use foxide2k::abi::mainmenu::{COMMANDS_IID, GROUP_FILE, GROUP_IID, SORT_PRIORITY_BASE};
 	use foxide2k::abi::playlist;
-	use foxide2k::dialog::host::{destroy, refresh_poster};
+	use foxide2k::dialog::host::destroy;
 	use foxide2k::dialog::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
 	use foxide2k::dialog::template::ControlClass;
 	use foxide2k::guid::Guid;
@@ -138,7 +138,7 @@ mod tests {
 	use crate::tabs::TAB_PROPERTY;
 	use crate::testing::{
 		GETTY_TRACK, confirm_login_when_started, getty_favourites, installed_api,
-		installed_backend, installed_prompt, library_with, sunday_set,
+		installed_backend, installed_prompt, library_with, refresh, sunday_set,
 	};
 	use crate::window::brought_up;
 	use foxide2k::popup::PopupIcon;
@@ -235,8 +235,7 @@ mod tests {
 		fake.publish_library(failed());
 		pump_messages();
 		assert_eq!(dialog.text(STATUS), "Couldn't load your playlists: Spotify is unreachable.");
-		refresh_poster(&dialog).post();
-		pump_messages();
+		refresh(dialog);
 		assert_eq!(fake.library_calls(), 1);
 		destroy(dialog);
 	}
@@ -275,8 +274,7 @@ mod tests {
 		assert_eq!(dialog.text(STATUS), "Log in to Spotify to see your playlists.");
 		assert_eq!(prompt.shown(), 1);
 		assert_eq!(fake.logins_started(), 1);
-		refresh_poster(&dialog).post();
-		pump_messages();
+		refresh(dialog);
 		assert_eq!(prompt.shown(), 1);
 		destroy(dialog);
 	}
@@ -309,8 +307,7 @@ mod tests {
 		let dialog = WINDOW.open(hidden_window()).unwrap();
 		assert_eq!(dialog.list_count(LIST), 3);
 		fake.set_library(LibraryState::LoggedOut);
-		refresh_poster(&dialog).post();
-		pump_messages();
+		refresh(dialog);
 		assert_eq!(dialog.list_count(LIST), 0);
 		assert_eq!(dialog.text(STATUS), "Log in to Spotify to see your playlists.");
 		assert_eq!(fake.logins_started(), 0);
@@ -326,8 +323,7 @@ mod tests {
 		let dialog = WINDOW.open(hidden_window()).unwrap();
 		dialog.list_select(LIST, 2);
 		fake.publish_library(ready());
-		refresh_poster(&dialog).post();
-		pump_messages();
+		refresh(dialog);
 		assert_eq!(dialog.list_selection(LIST), Some(2));
 		destroy(dialog);
 	}
@@ -341,8 +337,7 @@ mod tests {
 		// A refill would clear this row.
 		dialog.list_add(LIST, "Marker");
 		fake.publish_library(ready());
-		refresh_poster(&dialog).post();
-		pump_messages();
+		refresh(dialog);
 		assert_eq!(dialog.list_count(LIST), 4);
 		assert_eq!(dialog.list_text(LIST, 3), "Marker");
 		destroy(dialog);
@@ -356,8 +351,7 @@ mod tests {
 		let dialog = WINDOW.open(hidden_window()).unwrap();
 		dialog.list_select(LIST, 2);
 		fake.set_library(LibraryState::Ready(library_with(vec![getty_favourites(), sunday_set()])));
-		refresh_poster(&dialog).post();
-		pump_messages();
+		refresh(dialog);
 		assert_eq!(dialog.list_text(LIST, 1), "Getty favourites");
 		assert_eq!(dialog.list_selection(LIST), Some(1));
 		destroy(dialog);
@@ -446,8 +440,7 @@ mod tests {
 		fake.set_library(LibraryState::Loading);
 		let dialog = WINDOW.open(hidden_window()).unwrap();
 		assert_eq!(fake.library_subscribers(), 1);
-		refresh_poster(&dialog).post();
-		pump_messages();
+		refresh(dialog);
 		assert_eq!(fake.library_calls(), 2);
 		assert_eq!(fake.library_subscribers(), 1);
 		destroy(dialog);

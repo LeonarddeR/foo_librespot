@@ -49,42 +49,24 @@ mod tests {
 	use foo_librespot_core::library::{Edit, Target};
 	use foo_librespot_core::link::{ItemId, item_path};
 	use foxide2k::abi::contextmenu::ENABLED_DEFAULT_ON;
-	use foxide2k::contextmenu::{
-		ContextMenuCommand, ContextMenuGroup, context_menu_command_service,
-	};
-	use foxide2k::dialog::host::Dialog;
+	use foxide2k::contextmenu::{ContextMenuCommand, ContextMenuGroup};
 	use foxide2k::dialog::notify::{BN_CLICKED, IDOK};
 	use foxide2k::guid::Guid;
 	use foxide2k::popup::PopupIcon;
-	use foxide2k::testing::{ContextMenuHandle, FakeHandleList, send_command};
+	use foxide2k::testing::{FakeHandleList, send_command};
 
 	use super::AddToPlaylist;
 	use crate::playlist_window::{LIST, WINDOW};
 	use crate::spotify_menu::{OpenAlbum, OpenArtist, OpenShow, SpotifyGroup, TrackRadio};
 	use crate::testing::{
-		LOCAL, entry, episode_id, getty_track, installed_api_and_backend, library_holding,
-		shared_playlist,
+		LOCAL, choose, command, entry, episode, getty_track, installed_api_and_backend,
+		library_holding, other_track, press, shared_playlist, ticks,
 	};
 	use crate::window::brought_up;
 
-	fn t1() -> ItemId {
-		getty_track()
-	}
-
-	fn t2() -> ItemId {
-		ItemId::Track(SpotifyId::from_raw(&[0x77; 16]).unwrap())
-	}
-
+	/// A third Spotify track.
 	fn t3() -> ItemId {
 		ItemId::Track(SpotifyId::from_raw(&[0x78; 16]).unwrap())
-	}
-
-	fn episode() -> ItemId {
-		ItemId::Episode(episode_id())
-	}
-
-	fn command() -> ContextMenuHandle {
-		ContextMenuHandle::new(context_menu_command_service::<AddToPlaylist>())
 	}
 
 	/// A selection of `items`, then the local files `locals`.
@@ -97,28 +79,15 @@ mod tests {
 
 	/// The entry the Spotify submenu shows for `data`, with its flags; `None` when hidden.
 	fn shown(data: &FakeHandleList) -> Option<(String, u32)> {
-		command().instantiate(data).node().display(data)
-	}
-
-	/// Runs the command as a key bound to it does, on `data`.
-	fn press(data: &FakeHandleList) {
-		command().execute_simple_on(&Guid::NULL, data).unwrap();
-	}
-
-	/// Runs the command from the right-click menu opened on `data`.
-	fn choose(data: &FakeHandleList) {
-		command().instantiate(data).node().execute(data).unwrap();
-	}
-
-	fn ticks(dialog: Dialog) -> Vec<bool> {
-		(0..dialog.check_list_count(LIST)).map(|row| dialog.is_row_checked(LIST, row)).collect()
+		command::<AddToPlaylist>().instantiate(data).node().display(data)
 	}
 
 	#[test]
 	fn add_to_playlist_is_the_last_spotify_entry_and_takes_a_key() {
-		let add = command();
+		let add = command::<AddToPlaylist>();
+		assert_eq!(add.guid(), Guid::from_u128(0x9dde669c_a508_460e_b0df_c4e8e681592b));
 		assert_eq!(add.enabled_state(), ENABLED_DEFAULT_ON);
-		assert!(add.instantiate(&select(&[t1()], &[])).node().is_mappable_shortcut());
+		assert!(add.instantiate(&select(&[getty_track()], &[])).node().is_mappable_shortcut());
 		assert_eq!(add.name(), "Add to playlist…");
 		assert_eq!(
 			add.description().as_deref(),
@@ -141,10 +110,10 @@ mod tests {
 	#[test]
 	fn add_to_playlist_shows_for_any_spotify_selection_and_hides_otherwise() {
 		let enabled = Some(entry("Add to playlist…", 0));
-		assert_eq!(shown(&select(&[t1()], &[])), enabled);
-		assert_eq!(shown(&select(&[t1(), t2(), t3()], &[])), enabled);
-		assert_eq!(shown(&select(&[episode(), t1()], &[])), enabled);
-		let local_first = *FakeHandleList::new(&[LOCAL, &item_path(t1())]);
+		assert_eq!(shown(&select(&[getty_track()], &[])), enabled);
+		assert_eq!(shown(&select(&[getty_track(), other_track(), t3()], &[])), enabled);
+		assert_eq!(shown(&select(&[episode(), getty_track()], &[])), enabled);
+		let local_first = *FakeHandleList::new(&[LOCAL, &item_path(getty_track())]);
 		assert_eq!(shown(&local_first), enabled);
 		assert_eq!(shown(&select(&[], &[LOCAL, LOCAL])), None);
 	}
@@ -154,27 +123,29 @@ mod tests {
 	#[test]
 	fn the_selection_reaches_the_window_once_per_item_in_order() {
 		let (_, fake) = installed_api_and_backend();
-		fake.set_library(library_holding(&[t1(), t2()], &[], &[]));
-		choose(&select(&[t2(), t1(), t2()], &[LOCAL]));
+		fake.set_library(library_holding(&[getty_track(), other_track()], &[], &[]));
+		choose::<AddToPlaylist>(&select(&[other_track(), getty_track(), other_track()], &[LOCAL]));
 		let dialog = WINDOW.current().expect("the Add to playlist window is open");
 		assert_eq!(brought_up(), 1);
 		assert_eq!(ticks(dialog), [false, true, false]);
 		dialog.set_row_checked(LIST, 2, true);
 		send_command(&dialog, IDOK, BN_CLICKED);
-		let sent: Vec<_> = fake
-			.changes()
-			.into_iter()
-			.map(|(edit, target, items, _)| (edit, target, items))
-			.collect();
-		assert_eq!(sent, [(Edit::Add, Target::Playlist(shared_playlist().id), vec![t2(), t1()])]);
+		assert_eq!(
+			fake.changes(),
+			[(
+				Edit::Add,
+				Target::Playlist(shared_playlist().id),
+				vec![other_track(), getty_track()]
+			)]
+		);
 	}
 
 	#[test]
 	fn a_key_with_no_spotify_selection_says_what_to_select() {
 		let (api, fake) = installed_api_and_backend();
 		fake.set_library(library_holding(&[], &[], &[]));
-		press(&select(&[], &[LOCAL]));
-		press(&select(&[], &[]));
+		press::<AddToPlaylist>(&select(&[], &[LOCAL]));
+		press::<AddToPlaylist>(&select(&[], &[]));
 		let select_one = (
 			"Add to playlist…".to_owned(),
 			"Select a Spotify track or episode first.".to_owned(),
