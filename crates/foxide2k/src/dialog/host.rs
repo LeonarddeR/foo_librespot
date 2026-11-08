@@ -18,12 +18,12 @@ use crate::bindings::Windows::Win32::{
 	INITCOMMONCONTROLSEX, InitCommonControlsEx, IsWindow, IsWindowEnabled, LB_ADDSTRING,
 	LB_GETCOUNT, LB_GETCURSEL, LB_GETTEXT, LB_GETTEXTLEN, LB_RESETCONTENT, LB_SETCURSEL, LPARAM,
 	LVCF_WIDTH, LVCOLUMNW, LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVIS_STATEIMAGEMASK, LVITEMW,
-	LVM_DELETEALLITEMS, LVM_GETITEMCOUNT, LVM_GETITEMSTATE, LVM_GETITEMTEXTW, LVM_GETNEXTITEM,
-	LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE,
-	LVNI_SELECTED, LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT, PostMessageW, RECT, SM_CXVSCROLL,
-	SW_HIDE, SW_SHOW, SW_SHOWNA, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
-	SetWindowTextW, ShowWindow, WM_APP, WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY, WM_NEXTDLGCTL,
-	WPARAM, WS_VISIBLE,
+	LVM_DELETEALLITEMS, LVM_ENSUREVISIBLE, LVM_GETEXTENDEDLISTVIEWSTYLE, LVM_GETITEMCOUNT,
+	LVM_GETITEMSTATE, LVM_GETITEMTEXTW, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
+	LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVNI_SELECTED, LVS_EX_CHECKBOXES,
+	LVS_EX_FULLROWSELECT, PostMessageW, RECT, SM_CXVSCROLL, SW_HIDE, SW_SHOW, SW_SHOWNA,
+	SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, WM_APP,
+	WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY, WM_NEXTDLGCTL, WPARAM, WS_VISIBLE,
 };
 use crate::console;
 use crate::cxx::ExceptionKind;
@@ -37,6 +37,9 @@ const WM_REFRESH: u32 = WM_APP as u32 + 1;
 const INIT: u32 = WM_INITDIALOG as u32;
 const COMMAND: u32 = WM_COMMAND as u32;
 const NC_DESTROY: u32 = WM_NCDESTROY as u32;
+/// The extended list view styles of a checkable list: a checkbox on each row, and a click
+/// anywhere on a row selects it.
+const CHECK_LIST_STYLES: i32 = LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT;
 
 /// What a dialog does with its messages. Every call runs on the thread that made the dialog.
 pub trait DialogHandler: 'static {
@@ -195,8 +198,8 @@ impl Dialog {
 	/// list less a vertical scroll bar. Clicking anywhere on a row selects it. Call it once,
 	/// before adding rows.
 	pub fn check_list_init(&self, id: u16) {
-		const STYLES: i32 = LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT;
-		self.send(id, LVM_SETEXTENDEDLISTVIEWSTYLE, STYLES as usize, STYLES as isize);
+		let (styles, mask) = (CHECK_LIST_STYLES as isize, CHECK_LIST_STYLES as usize);
+		self.send(id, LVM_SETEXTENDEDLISTVIEWSTYLE, mask, styles);
 		let mut client = RECT::default();
 		unsafe {
 			let _ = GetClientRect(self.control(id), &raw mut client);
@@ -205,6 +208,13 @@ impl Dialog {
 		let width = client.right - unsafe { GetSystemMetrics(SM_CXVSCROLL) };
 		let column = LVCOLUMNW { mask: LVCF_WIDTH as u32, cx: width, ..LVCOLUMNW::default() };
 		self.send(id, LVM_INSERTCOLUMNW, 0, (&raw const column) as isize);
+	}
+
+	/// Whether list view `id` is set up as [`check_list_init`](Self::check_list_init) sets it
+	/// up: a checkbox on each row, and a click anywhere on a row selects it.
+	pub fn is_check_list(&self, id: u16) -> bool {
+		const STYLES: isize = CHECK_LIST_STYLES as isize;
+		self.send(id, LVM_GETEXTENDEDLISTVIEWSTYLE, 0, 0) & STYLES == STYLES
 	}
 
 	pub fn check_list_clear(&self, id: u16) {
@@ -271,10 +281,13 @@ impl Dialog {
 		usize::try_from(self.send(id, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize)).ok()
 	}
 
-	/// Selects row `index` and makes it the row the arrow keys and Space act on.
+	/// Selects row `index`, makes it the row the arrow keys and Space act on, and scrolls the
+	/// list until the whole row is in view.
 	pub fn check_list_select(&self, id: u16, index: usize) {
 		let state = (LVIS_SELECTED | LVIS_FOCUSED) as u32;
 		self.set_row_state(id, index, state, state);
+		// An lParam of FALSE asks for the whole row, not just part of it.
+		self.send(id, LVM_ENSUREVISIBLE, index, 0);
 	}
 
 	/// Sets the bits of row `index`'s state that `mask` names.
@@ -565,8 +578,9 @@ pub(crate) mod tests {
 	use crate::bindings::Windows::Win32::{
 		BN_CLICKED, BS_AUTOCHECKBOX, CBS_DROPDOWNLIST, DS_CONTROL, DS_MODALFRAME, ES_MULTILINE,
 		ES_READONLY, GetClientRect, GetSystemMetrics, GetWindowTextW, HWND, LBS_NOTIFY, LPARAM,
-		LVM_GETCOLUMNWIDTH, RECT, SM_CXVSCROLL, SendMessageW, WM_CLOSE, WM_COMMAND, WPARAM,
-		WS_BORDER, WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
+		LVM_GETCOLUMNWIDTH, LVM_GETCOUNTPERPAGE, LVM_GETTOPINDEX, RECT, SM_CXVSCROLL, SendMessageW,
+		WM_CLOSE, WM_COMMAND, WPARAM, WS_BORDER, WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU,
+		WS_TABSTOP, WS_VSCROLL,
 	};
 	use crate::dialog::style;
 	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
@@ -835,6 +849,34 @@ pub(crate) mod tests {
 		dialog.check_list_clear(LIST);
 		assert_eq!(dialog.check_list_count(LIST), 0);
 		assert_eq!(dialog.check_list_selection(LIST), None);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_list_view_is_a_check_list_once_it_is_set_up() {
+		let dialog = check_list_dialog(vec![check_list()]);
+		assert!(!dialog.is_check_list(LIST));
+		dialog.check_list_init(LIST);
+		assert!(dialog.is_check_list(LIST));
+		destroy(dialog);
+	}
+
+	#[test]
+	fn selecting_a_row_scrolls_it_into_view() {
+		let dialog = check_list_dialog(vec![check_list()]);
+		dialog.check_list_init(LIST);
+		for row in 0..30 {
+			dialog.check_list_add(LIST, &format!("Playlist {row}"), false);
+		}
+		let send = |message: i32| unsafe {
+			SendMessageW(dialog.control(LIST), message.cast_unsigned(), WPARAM(0), LPARAM(0)).0
+		};
+		let page = send(LVM_GETCOUNTPERPAGE);
+		assert!(0 < page && page < 29, "{page} rows fit");
+		assert_eq!(send(LVM_GETTOPINDEX), 0);
+		dialog.check_list_select(LIST, 29);
+		let top = send(LVM_GETTOPINDEX);
+		assert!(top <= 29 && 29 < top + page, "row 29 is out of view: {top}..{}", top + page);
 		destroy(dialog);
 	}
 

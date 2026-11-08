@@ -2026,11 +2026,15 @@ pub mod Windows {
 			pub iGroup: i32,
 		}
 		pub const LVM_DELETEALLITEMS: i32 = 4105;
+		pub const LVM_ENSUREVISIBLE: i32 = 4115;
 		pub const LVM_GETCOLUMNWIDTH: i32 = 4125;
+		pub const LVM_GETCOUNTPERPAGE: i32 = 4136;
+		pub const LVM_GETEXTENDEDLISTVIEWSTYLE: i32 = 4151;
 		pub const LVM_GETITEMCOUNT: i32 = 4100;
 		pub const LVM_GETITEMSTATE: i32 = 4140;
 		pub const LVM_GETITEMTEXTW: i32 = 4211;
 		pub const LVM_GETNEXTITEM: i32 = 4108;
+		pub const LVM_GETTOPINDEX: i32 = 4135;
 		pub const LVM_INSERTCOLUMNW: i32 = 4193;
 		pub const LVM_INSERTITEMW: i32 = 4173;
 		pub const LVM_SETEXTENDEDLISTVIEWSTYLE: i32 = 4150;
