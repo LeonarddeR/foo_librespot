@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - For developers: foxide2k reads a track's stored fields (`metadb::Track::meta`) and the playing track (`playback::now_playing`).
 - For developers: foxide2k can add right-click submenus (`contextmenu::ContextMenuGroup`), and right-click commands that can be bound to keys, including ones shown only in the keyboard shortcut list (`contextmenu::ContextMenuCommand`).
 - For developers: foxide2k's main-menu commands can be hidden or greyed out each time the menu opens (`MainMenuCommand::shown`), and a main-menu command can build its entry, a command or a submenu, each time the menu opens (`mainmenu::MainMenuDynamicCommand`), and be hidden or greyed out too (`MainMenuDynamicCommand::shown`).
-- For developers: foxide2k dialogs can hold a standard Windows list view with a checkbox on each row (`ControlClass::ListView`, the `Dialog::check_list_*` methods, `Dialog::is_row_checked` and `Dialog::set_row_checked`).
+- For developers: foxide2k dialogs can hold a standard Windows list view with a checkbox on each row (`ControlClass::ListView` with the `style::CHECK_LIST` style, the `Dialog::check_list_*` methods, `Dialog::is_check_list`, `Dialog::is_row_checked` and `Dialog::set_row_checked`).
 
 ### Changed
 
