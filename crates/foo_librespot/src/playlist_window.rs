@@ -24,7 +24,7 @@ use foxide2k::host::host;
 use crate::errors::report_failure;
 use crate::library_watch::LibraryWatch;
 use crate::link_list::{self, Controls, Ids};
-use crate::playlist_save::save;
+use crate::playlist_save::{CANT_CHANGE, save};
 use crate::status_line::StatusLine;
 use crate::window::SingleWindow;
 
@@ -33,9 +33,6 @@ pub const LIST: u16 = 502;
 pub const STATUS: u16 = 503;
 
 const TITLE: &str = "Add to a Spotify playlist";
-
-/// The title of the popup that says the window can't be opened.
-const CANT_CHANGE: &str = "Can't change the Spotify playlist";
 
 pub fn window_template() -> DialogTemplate {
 	let ids = Ids { label: LABEL, list: LIST, status: STATUS };
@@ -141,7 +138,7 @@ impl PlaylistWindow {
 
 	/// Shows `state` in the list and the status line; a new status is announced. Once filled,
 	/// the list stays while the library loads or fails. New items without a library to list
-	/// them from empty it.
+	/// them from empty it. A filled list without rows says why.
 	fn render(&mut self, dialog: Dialog, state: LibraryState) {
 		let new_items = self.showing != SHOWINGS.get();
 		self.showing = SHOWINGS.get();
@@ -151,7 +148,9 @@ impl PlaylistWindow {
 		let status = match state {
 			LibraryState::Ready(library) if self.filled || library.is_complete() => {
 				self.fill(dialog, &library, new_items);
-				String::new()
+				// Only episodes, which Liked Songs can't hold, and no playlist to change.
+				let none = "You have no Spotify playlists you can change.";
+				if self.rows.is_empty() { none.to_owned() } else { String::new() }
 			}
 			LibraryState::Loading if self.filled => return,
 			LibraryState::Ready(_) | LibraryState::Loading => "Loading…".to_owned(),
@@ -345,6 +344,7 @@ mod tests {
 	fn the_window_lists_liked_songs_then_each_playlist_it_can_change() {
 		let (_, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t1()]);
 		assert_eq!(dialog.check_list_texts(LIST), ALL_ROWS);
+		assert!(dialog.is_check_list(LIST), "each row has a checkbox");
 		assert_eq!(dialog.tab_order(), [LIST, IDOK, IDCANCEL]);
 		assert_eq!(dialog.focused(), Some(LIST));
 		assert_eq!(dialog.text(STATUS), "");
@@ -376,6 +376,26 @@ mod tests {
 		show_for(vec![t1(), episode()]);
 		pump_messages();
 		assert_eq!(dialog.check_list_texts(LIST), ALL_ROWS);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn with_only_episodes_and_no_playlist_to_change_the_window_says_so() {
+		let none_to_change = LibraryState::Ready(library_with(vec![getty_favourites()]));
+		let (fake, dialog) = shown_for(none_to_change, vec![episode()]);
+		assert_eq!(dialog.check_list_count(LIST), 0);
+		assert_eq!(dialog.text(STATUS), "You have no Spotify playlists you can change.");
+		show_for(vec![t1()]);
+		pump_messages();
+		assert_eq!(dialog.check_list_texts(LIST), ["Liked Songs"]);
+		assert_eq!(dialog.text(STATUS), "");
+		show_for(vec![episode()]);
+		pump_messages();
+		assert_eq!(dialog.text(STATUS), "You have no Spotify playlists you can change.");
+		fake.set_library(library_holding(&[], &[], &[]));
+		refresh(dialog);
+		assert_eq!(dialog.check_list_texts(LIST), ["Church / Sunday set", "Shared"]);
+		assert_eq!(dialog.text(STATUS), "");
 		destroy(dialog);
 	}
 
@@ -423,6 +443,37 @@ mod tests {
 		);
 		assert_eq!(ticks(dialog), [false, false, false, false]);
 		assert_eq!(planned(), [sunday(Edit::Remove)]);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_refresh_shows_the_new_starting_tick_of_rows_the_user_didnt_touch() {
+		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t1()]);
+		dialog.set_row_checked(LIST, 2, true);
+		fake.set_library(library_holding(&[t1()], &[], &[]));
+		refresh(dialog);
+		assert_eq!(ticks(dialog), [false, true, true]);
+		assert_eq!(planned(), [shared(Edit::Add)]);
+		fake.set_library(library_holding(&[t1()], &[t1()], &[]));
+		refresh(dialog);
+		assert_eq!(ticks(dialog), [false, true, true]);
+		assert_eq!(planned(), []);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_change_to_a_playlist_no_longer_listed_is_dropped() {
+		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t1()]);
+		dialog.set_row_checked(LIST, 2, true);
+		fake.set_library(LibraryState::Ready(library_with(vec![sunday_set()])));
+		refresh(dialog);
+		assert_eq!(dialog.check_list_texts(LIST), ["Liked Songs", "Church / Sunday set"]);
+		assert_eq!(planned(), []);
+		fake.set_library(library_holding(&[], &[], &[]));
+		refresh(dialog);
+		assert_eq!(dialog.check_list_texts(LIST), ALL_ROWS);
+		assert_eq!(ticks(dialog), [false, false, false]);
+		assert_eq!(planned(), []);
 		destroy(dialog);
 	}
 

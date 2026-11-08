@@ -70,7 +70,8 @@ pub trait Backend: Send + Sync {
 	/// What [`Backend::library`] would answer, without starting a read.
 	fn held_library(&self) -> LibraryState;
 	/// Calls `notify` after each publish and failure of a library read, after each logout and
-	/// login, and when a [`change`](Self::change) lands, before its `on_done`, on any thread.
+	/// login, and when a [`change`](Self::change) lands and changed something, before its
+	/// `on_done`, on any thread.
 	/// Returns the id to [`unsubscribe_library`](Self::unsubscribe_library) with.
 	fn subscribe_library(&self, notify: Box<dyn Fn() + Send + Sync>) -> u64;
 	fn unsubscribe_library(&self, id: u64);

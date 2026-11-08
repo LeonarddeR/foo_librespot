@@ -152,11 +152,13 @@ mod tests {
 		assert_eq!(shown(&select(&[t1()], &[])), enabled);
 		assert_eq!(shown(&select(&[t1(), t2(), t3()], &[])), enabled);
 		assert_eq!(shown(&select(&[episode(), t1()], &[])), enabled);
+		let local_first = *FakeHandleList::new(&[LOCAL, &item_path(t1())]);
+		assert_eq!(shown(&local_first), enabled);
 		assert_eq!(shown(&select(&[], &[LOCAL, LOCAL])), None);
 	}
 
-	/// The playlist "Church / Sunday set" holds both tracks, so its row starts ticked only when
-	/// the window counts both.
+	/// The playlist "Church / Sunday set" holds both tracks, so its row starts ticked only if the
+	/// window counts nothing else; the change OK sends shows both, each once, in order.
 	#[test]
 	fn the_selection_reaches_the_window_once_per_item_in_order() {
 		let (_, fake) = installed_api_and_backend();

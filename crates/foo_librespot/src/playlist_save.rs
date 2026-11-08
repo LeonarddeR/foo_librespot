@@ -16,8 +16,9 @@ use crate::errors::{show_failure, show_message};
 use crate::links::plural;
 use crate::playlist_window::Planned;
 
-/// The title of the popup that says what failed.
-const TITLE: &str = "Can't change the Spotify playlist";
+/// The title of the popups that say a playlist can't be changed: the one that says which
+/// changes failed, and the one that says the Add to playlist window can't open.
+pub const CANT_CHANGE: &str = "Can't change the Spotify playlist";
 
 /// Starts each of `planned` with `items`, and returns at once.
 pub fn save(items: &[ItemId], planned: Vec<Planned>) {
@@ -70,12 +71,12 @@ fn ended(saving: &Mutex<Saving>, index: usize, change: Planned, result: Result<C
 fn show_failures(failures: &[(String, CoreError)]) {
 	match failures {
 		[] => {}
-		[(name, error)] => show_failure(TITLE, PopupIcon::Error, name, error),
+		[(name, error)] => show_failure(CANT_CHANGE, PopupIcon::Error, name, error),
 		several => {
 			let lines: Vec<String> =
 				several.iter().map(|(name, error)| format!("{name}: {error}.")).collect();
 			let message = format!("Couldn't change these playlists:\n\n{}", lines.join("\n"));
-			show_message(TITLE, &message, PopupIcon::Error);
+			show_message(CANT_CHANGE, &message, PopupIcon::Error);
 		}
 	}
 }
