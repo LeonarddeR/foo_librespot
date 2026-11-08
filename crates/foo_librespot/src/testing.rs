@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use foo_librespot_core::audio::decoder::PcmDecoder;
 use foo_librespot_core::audio::format::FileFormat;
 use foo_librespot_core::library::{
-	Change, Edit, Library, LibraryPlaylist, LibraryState, OnChanged, PlaylistContents, Subscribers,
-	Target,
+	Change, Edit, Library, LibraryPlaylist, LibraryState, OnChanged, PlaylistContents, PlaylistRow,
+	Subscribers, Target,
 };
 use foo_librespot_core::link::{ItemId, Link, LinkKind};
 use foo_librespot_core::login::DeviceCode;
@@ -696,6 +696,32 @@ pub fn library_with(playlists: Vec<LibraryPlaylist>) -> Arc<Library> {
 		})
 		.collect();
 	Arc::new(Library::from_parts(playlists, contents, Some(std::collections::HashSet::new())))
+}
+
+/// The rows of a playlist holding `items`, in order.
+pub fn contents_of(items: &[ItemId]) -> PlaylistContents {
+	PlaylistContents {
+		revision: b"r1".to_vec(),
+		rows: items
+			.iter()
+			.enumerate()
+			.map(|(index, item)| PlaylistRow {
+				uri: item.uri().to_uri(),
+				item_id: vec![u8::try_from(index).unwrap()],
+			})
+			.collect(),
+		truncated: false,
+	}
+}
+
+/// A complete library of [`sunday_set`], [`getty_favourites`] and [`shared_playlist`], in which
+/// Sunday set holds `sunday`, Shared holds `shared` and Liked Songs holds `liked`.
+pub fn library_holding(sunday: &[ItemId], shared: &[ItemId], liked: &[ItemId]) -> LibraryState {
+	let playlists = vec![sunday_set(), getty_favourites(), shared_playlist()];
+	let contents =
+		vec![(sunday_set_id(), contents_of(sunday)), (shared_playlist().id, contents_of(shared))];
+	let liked = liked.iter().copied().collect();
+	LibraryState::Ready(Arc::new(Library::from_parts(playlists, contents, Some(liked))))
 }
 
 /// A login prompt that only counts how often it was shown.

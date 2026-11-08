@@ -4,13 +4,10 @@
 //!
 //! [`open_in_tab`]: crate::tabs::open_in_tab
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use foo_librespot_core::library::{LIKED_SONGS, Library, LibraryState};
 use foo_librespot_core::link::Link;
 use foxide2k::abi::mainmenu::{GROUP_FILE, SORT_PRIORITY_BASE};
-use foxide2k::dialog::host::{Dialog, DialogHandler, destroy, refresh_poster};
+use foxide2k::dialog::host::{Dialog, DialogHandler, destroy};
 use foxide2k::dialog::notify::IDCANCEL;
 use foxide2k::dialog::template::DialogTemplate;
 use foxide2k::error::Result;
@@ -18,10 +15,8 @@ use foxide2k::guid::Guid;
 use foxide2k::host::host;
 use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
 
-use crate::backend::backend;
-use crate::first_use::ask_for_login;
+use crate::library_watch::LibraryWatch;
 use crate::link_list::{self, Entry, Ids, LinkList, is_pick};
-use crate::login::controller;
 use crate::status_line::StatusLine;
 use crate::window::SingleWindow;
 
@@ -82,11 +77,7 @@ fn entries_of(library: &Library) -> Vec<Entry> {
 pub struct OpenPlaylistWindow {
 	entries: LinkList,
 	status: Option<StatusLine>,
-	login_subscription: Option<u64>,
-	library_subscription: Option<u64>,
-	/// Set while the window hasn't learnt whether the account is logged in and the login hasn't
-	/// changed since it opened: a logged-out answer then asks for a login.
-	ask_when_logged_out: Arc<AtomicBool>,
+	library: LibraryWatch,
 }
 
 impl OpenPlaylistWindow {
@@ -113,25 +104,7 @@ impl OpenPlaylistWindow {
 impl DialogHandler for OpenPlaylistWindow {
 	fn init(&mut self, dialog: &Dialog) -> Option<u16> {
 		self.status = Some(StatusLine::new(*dialog, STATUS, String::new()));
-		let (poster, ask) = (refresh_poster(dialog), Arc::clone(&self.ask_when_logged_out));
-		self.login_subscription = Some(controller().subscribe(Box::new(move || {
-			ask.store(false, Ordering::SeqCst);
-			poster.post();
-		})));
-		let poster = refresh_poster(dialog);
-		self.library_subscription =
-			Some(backend().subscribe_library(Box::new(move || poster.post())));
-		let state = match backend().library() {
-			LibraryState::LoggedOut => {
-				ask_for_login();
-				LibraryState::LoggedOut
-			}
-			LibraryState::Loading | LibraryState::Failed(_) => {
-				self.ask_when_logged_out.store(true, Ordering::SeqCst);
-				LibraryState::Loading
-			}
-			state @ LibraryState::Ready(_) => state,
-		};
+		let state = self.library.start(*dialog);
 		self.render(*dialog, state);
 		Some(LIST)
 	}
@@ -145,30 +118,8 @@ impl DialogHandler for OpenPlaylistWindow {
 	}
 
 	fn refresh(&mut self, dialog: &Dialog) {
-		let state = match backend().held_library() {
-			LibraryState::Loading => backend().library(),
-			state => state,
-		};
-		match state {
-			LibraryState::Loading => {}
-			LibraryState::LoggedOut if self.ask_when_logged_out.swap(false, Ordering::SeqCst) => {
-				ask_for_login();
-			}
-			_ => self.ask_when_logged_out.store(false, Ordering::SeqCst),
-		}
+		let state = self.library.refreshed();
 		self.render(*dialog, state);
-	}
-}
-
-impl Drop for OpenPlaylistWindow {
-	/// Runs when the window is destroyed, also when foobar2000 quits with it open.
-	fn drop(&mut self) {
-		if let Some(subscription) = self.login_subscription {
-			controller().unsubscribe(subscription);
-		}
-		if let Some(subscription) = self.library_subscription {
-			backend().unsubscribe_library(subscription);
-		}
 	}
 }
 

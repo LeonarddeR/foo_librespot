@@ -1,6 +1,8 @@
 //! What "Open playlist…" and "Open artist…" share: a window that lists Spotify links under a
 //! label, with a status line, Open and Close. Open, Enter or a double click opens the link picked
 //! in a playlist tab named after it, as [`open_in_tab`] opens any link, and closes the window.
+//! "Add to playlist…" lays its window out the same way, with a list and buttons of its own
+//! ([`template_with`]).
 
 use foo_librespot_core::link::Link;
 use foo_librespot_core::related::Opened;
@@ -16,7 +18,7 @@ use crate::account::item;
 use crate::errors::report_failure;
 use crate::tabs::open_in_tab;
 
-/// The ids of a window's label, list and status line; Open and Close are `IDOK` and `IDCANCEL`.
+/// The ids of a window's label, list and status line; its two buttons are `IDOK` and `IDCANCEL`.
 #[derive(Clone, Copy)]
 pub struct Ids {
 	pub label: u16,
@@ -24,12 +26,42 @@ pub struct Ids {
 	pub status: u16,
 }
 
+/// A window's list, by its class and style, and what its two buttons say.
+#[derive(Clone, Copy)]
+pub struct Controls<'a> {
+	pub list_class: ControlClass,
+	pub list_style: u32,
+	pub ok: &'a str,
+	pub cancel: &'a str,
+}
+
+/// A list box that tells its window of double clicks, with Open and Close.
+const LINKS: Controls<'static> = Controls {
+	list_class: ControlClass::ListBox,
+	list_style: WS_TABSTOP | WS_VSCROLL | WS_BORDER | LBS_NOTIFY,
+	ok: "&Open",
+	cancel: "Close",
+};
+
 /// A window titled `title`, `cx` by `cy` dialog units, whose list is `list_height` high and
 /// labelled `label`. Each control is made in tab order, the label right before its list.
 pub fn template(
 	title: &str,
 	label: &str,
 	ids: Ids,
+	size: (i16, i16),
+	list_height: i16,
+) -> DialogTemplate {
+	template_with(title, label, ids, LINKS, size, list_height)
+}
+
+/// A window laid out as [`template`] lays one out, with the list and buttons of `controls`. OK is
+/// the default button.
+pub fn template_with(
+	title: &str,
+	label: &str,
+	ids: Ids,
+	controls: Controls<'_>,
 	(cx, cy): (i16, i16),
 	list_height: i16,
 ) -> DialogTemplate {
@@ -46,20 +78,26 @@ pub fn template(
 			item(ids.label, ControlClass::Static, label, 0, (7, 7, width, 10)),
 			item(
 				ids.list,
-				ControlClass::ListBox,
+				controls.list_class,
 				"",
-				WS_TABSTOP | WS_VSCROLL | WS_BORDER | LBS_NOTIFY,
+				controls.list_style,
 				(7, 19, width, list_height),
 			),
 			item(ids.status, ControlClass::Static, "", SS_NOPREFIX, (7, status_y, width, 10)),
 			item(
 				IDOK,
 				ControlClass::Button,
-				"&Open",
+				controls.ok,
 				BS_DEFPUSHBUTTON | WS_TABSTOP,
 				(cx - 145, buttons_y, 66, 14),
 			),
-			item(IDCANCEL, ControlClass::Button, "Close", WS_TABSTOP, (cx - 73, buttons_y, 66, 14)),
+			item(
+				IDCANCEL,
+				ControlClass::Button,
+				controls.cancel,
+				WS_TABSTOP,
+				(cx - 73, buttons_y, 66, 14),
+			),
 		],
 	}
 }

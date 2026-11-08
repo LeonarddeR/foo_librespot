@@ -10,6 +10,7 @@ mod errors;
 mod fields;
 mod first_use;
 mod input;
+mod library_watch;
 mod lifecycle;
 mod link_list;
 mod links;
@@ -19,6 +20,8 @@ mod login_window;
 mod open_playlist;
 mod playing_menu;
 mod playlist_menu;
+#[cfg_attr(not(test), expect(dead_code, reason = "no menu command opens the window yet"))]
+mod playlist_window;
 mod prefs;
 mod related;
 mod settings;

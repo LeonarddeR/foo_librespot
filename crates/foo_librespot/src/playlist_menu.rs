@@ -215,11 +215,7 @@ fn already_there(unchanged: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-	use std::collections::HashSet;
-
-	use foo_librespot_core::library::{
-		Change, Edit, Library, LibraryState, PlaylistContents, PlaylistRow, Target,
-	};
+	use foo_librespot_core::library::{Change, Edit, Library, LibraryState, Target};
 	use foo_librespot_core::link::{ItemId, item_path};
 	use foo_librespot_core::{CoreError, SpotifyId};
 	use foxide2k::abi::contextmenu::{FLAG_CHECKED, FLAG_DISABLED, FLAG_GRAYED};
@@ -233,8 +229,8 @@ mod tests {
 	use super::AddToSpotifyPlaylist;
 	use crate::spotify_menu::{OpenAlbum, OpenArtist, OpenShow, SpotifyGroup, TrackRadio};
 	use crate::testing::{
-		FakeBackend, episode_id, getty_favourites, installed_api_and_backend, installed_prompt,
-		shared_playlist, sunday_set, sunday_set_id, track_id, wait_until,
+		FakeBackend, episode_id, installed_api_and_backend, installed_prompt, library_holding,
+		sunday_set, sunday_set_id, track_id, wait_until,
 	};
 
 	const GREYED: u32 = FLAG_DISABLED | FLAG_GRAYED;
@@ -249,30 +245,6 @@ mod tests {
 
 	fn episode() -> ItemId {
 		ItemId::Episode(episode_id())
-	}
-
-	fn contents(items: &[ItemId]) -> PlaylistContents {
-		PlaylistContents {
-			revision: b"r1".to_vec(),
-			rows: items
-				.iter()
-				.enumerate()
-				.map(|(index, item)| PlaylistRow {
-					uri: item.uri().to_uri(),
-					item_id: vec![u8::try_from(index).unwrap()],
-				})
-				.collect(),
-			truncated: false,
-		}
-	}
-
-	/// A complete library holding `sunday`, `shared` and `liked`.
-	fn library(sunday: &[ItemId], shared: &[ItemId], liked: &[ItemId]) -> LibraryState {
-		let playlists = vec![sunday_set(), getty_favourites(), shared_playlist()];
-		let parts =
-			vec![(sunday_set_id(), contents(sunday)), (shared_playlist().id, contents(shared))];
-		let liked: HashSet<ItemId> = liked.iter().copied().collect();
-		LibraryState::Ready(std::sync::Arc::new(Library::from_parts(playlists, parts, Some(liked))))
 	}
 
 	fn item() -> ContextMenuHandle {
@@ -334,7 +306,7 @@ mod tests {
 
 	#[test]
 	fn the_item_is_hidden_without_spotify_tracks() {
-		let (_, fake) = setup(library(&[], &[], &[]));
+		let (_, fake) = setup(library_holding(&[], &[], &[]));
 		let data = list(&["file://C:\\a.mp3".to_owned()]);
 		let root = item().instantiate(&data);
 		assert!(root.node().display(&data).is_none());
@@ -377,7 +349,7 @@ mod tests {
 
 	#[test]
 	fn the_submenu_lists_liked_songs_then_the_playlists_you_can_change() {
-		setup(library(&[], &[], &[]));
+		setup(library_holding(&[], &[], &[]));
 		let (root, data) = open(&[t1()]);
 		assert_eq!(names(&root, &data), ["Liked Songs", "Church / Sunday set", "Shared"]);
 		assert!(entries(&root, &data).iter().all(|(_, flags)| *flags == 0));
@@ -385,7 +357,7 @@ mod tests {
 
 	#[test]
 	fn a_checkmark_shows_where_every_selected_track_already_is() {
-		setup(library(&[t1(), t2()], &[t1()], &[t1(), t2()]));
+		setup(library_holding(&[t1(), t2()], &[t1()], &[t1(), t2()]));
 		let (root, data) = open(&[t1(), t2()]);
 		assert_eq!(
 			entries(&root, &data),
@@ -399,7 +371,7 @@ mod tests {
 
 	#[test]
 	fn liked_songs_is_greyed_for_episodes_only_and_checks_tracks_only() {
-		setup(library(&[], &[], &[t1()]));
+		setup(library_holding(&[], &[], &[t1()]));
 		let (root, data) = open(&[episode()]);
 		assert_eq!(entries(&root, &data)[0], ("Liked Songs".to_owned(), GREYED));
 		let (root, data) = open(&[t1(), episode()]);
@@ -410,7 +382,7 @@ mod tests {
 
 	#[test]
 	fn local_files_in_the_selection_are_left_out() {
-		let (_, fake) = setup(library(&[], &[], &[]));
+		let (_, fake) = setup(library_holding(&[], &[], &[]));
 		let data = list(&["file://C:\\a.mp3".to_owned(), item_path(t1())]);
 		let root = item().instantiate(&data);
 		pick(&root, &data, "Church / Sunday set");
@@ -425,7 +397,7 @@ mod tests {
 
 	#[test]
 	fn picking_an_unchecked_playlist_adds_the_selection() {
-		let (api, fake) = setup(library(&[], &[], &[]));
+		let (api, fake) = setup(library_holding(&[], &[], &[]));
 		fake.change_with(|| Ok(Change { changed: 2, unchanged: 1, episodes_left_out: 0 }));
 		let (root, data) = open(&[t1(), t2()]);
 		pick(&root, &data, "Church / Sunday set");
@@ -440,7 +412,7 @@ mod tests {
 
 	#[test]
 	fn saving_to_liked_songs_says_what_was_left_out() {
-		let (api, fake) = setup(library(&[], &[], &[]));
+		let (api, fake) = setup(library_holding(&[], &[], &[]));
 		fake.change_with(|| Ok(Change { changed: 1, unchanged: 2, episodes_left_out: 1 }));
 		let (root, data) = open(&[t1(), episode()]);
 		pick(&root, &data, "Liked Songs");
@@ -453,7 +425,7 @@ mod tests {
 
 	#[test]
 	fn picking_a_checked_playlist_asks_before_removing() {
-		let (api, fake) = setup(library(&[t1(), t2()], &[], &[]));
+		let (api, fake) = setup(library_holding(&[t1(), t2()], &[], &[]));
 		let (root, data) = open(&[t1(), t2()]);
 		api.answer_questions(false);
 		pick(&root, &data, "Church / Sunday set");
@@ -476,7 +448,7 @@ mod tests {
 
 	#[test]
 	fn the_question_for_one_track_is_singular() {
-		let (api, _) = setup(library(&[t1()], &[], &[]));
+		let (api, _) = setup(library_holding(&[t1()], &[], &[]));
 		let (root, data) = open(&[t1()]);
 		pick(&root, &data, "Church / Sunday set");
 		assert_eq!(api.questions()[0].1, "Remove the selected track from Church / Sunday set?");
@@ -484,7 +456,7 @@ mod tests {
 
 	#[test]
 	fn the_question_for_liked_songs_counts_only_the_tracks() {
-		let (api, _) = setup(library(&[], &[], &[t1(), t2()]));
+		let (api, _) = setup(library_holding(&[], &[], &[t1(), t2()]));
 		let (root, data) = open(&[t1(), episode(), t2()]);
 		pick(&root, &data, "Liked Songs");
 		assert_eq!(api.questions()[0].1, "Remove the 2 selected tracks from Liked Songs?");
@@ -492,7 +464,7 @@ mod tests {
 
 	#[test]
 	fn a_track_selected_twice_is_counted_once() {
-		let (api, _) = setup(library(&[t1(), t2()], &[], &[]));
+		let (api, _) = setup(library_holding(&[t1(), t2()], &[], &[]));
 		let (root, data) = open(&[t1(), t2(), t1()]);
 		pick(&root, &data, "Church / Sunday set");
 		assert_eq!(api.questions()[0].1, "Remove the 2 selected tracks from Church / Sunday set?");
@@ -500,7 +472,7 @@ mod tests {
 
 	#[test]
 	fn leaving_out_several_episodes_says_episodes() {
-		let (api, fake) = setup(library(&[], &[], &[]));
+		let (api, fake) = setup(library_holding(&[], &[], &[]));
 		fake.change_with(|| Ok(Change { changed: 1, unchanged: 0, episodes_left_out: 2 }));
 		let (root, data) = open(&[t1(), episode()]);
 		pick(&root, &data, "Liked Songs");
@@ -511,7 +483,7 @@ mod tests {
 
 	#[test]
 	fn a_failed_change_shows_a_popup_saying_why() {
-		let (api, fake) = setup(library(&[], &[], &[]));
+		let (api, fake) = setup(library_holding(&[], &[], &[]));
 		fake.change_with(|| Err(CoreError::Unavailable("Spotify said no".to_owned())));
 		let (root, data) = open(&[t1()]);
 		pick(&root, &data, "Church / Sunday set");
@@ -537,7 +509,7 @@ mod tests {
 
 	#[test]
 	fn an_aborted_change_reports_nothing() {
-		let (api, fake) = setup(library(&[], &[], &[]));
+		let (api, fake) = setup(library_holding(&[], &[], &[]));
 		fake.change_with(|| Err(CoreError::Aborted));
 		let (root, data) = open(&[t1()]);
 		pick(&root, &data, "Shared");
@@ -548,7 +520,7 @@ mod tests {
 
 	#[test]
 	fn the_change_runs_and_reports_off_the_main_thread() {
-		let (api, fake) = setup(library(&[], &[], &[]));
+		let (api, fake) = setup(library_holding(&[], &[], &[]));
 		let (root, data) = open(&[t1()]);
 		pick(&root, &data, "Shared");
 		assert_eq!(fake.changes().len(), 1);

@@ -58,6 +58,34 @@ impl<H: DialogHandler + Default> SingleWindow<H> {
 		bring_up(self.open(owner)?);
 		Ok(())
 	}
+
+	/// What `look` finds in the open window's handler, run on it as the window's own messages
+	/// are; `None` while the window is closed.
+	#[cfg(test)]
+	pub fn inspect<R: 'static>(&self, look: impl FnOnce(&H, Dialog) -> R + 'static) -> Option<R> {
+		let dialog = self.current()?;
+		let found = std::rc::Rc::new(std::cell::Cell::new(None));
+		let into = std::rc::Rc::clone(&found);
+		INSPECTION.set(Some(Box::new(move |handler, dialog| {
+			into.set(handler.downcast_ref::<H>().map(|handler| look(handler, dialog)));
+		})));
+		foxide2k::testing::send_command(&dialog, INSPECT, 0);
+		found.take()
+	}
+}
+
+/// The command [`SingleWindow::inspect`] sends; no control has this id.
+#[cfg(test)]
+const INSPECT: u16 = 0xFFFE;
+
+/// What [`SingleWindow::inspect`] runs on a window's handler: the handler, and its window.
+#[cfg(test)]
+type Look = Box<dyn FnOnce(&dyn std::any::Any, Dialog)>;
+
+#[cfg(test)]
+thread_local! {
+	/// What [`SingleWindow::inspect`] runs on a window's handler, until the window runs it.
+	static INSPECTION: RefCell<Option<Look>> = const { RefCell::new(None) };
 }
 
 /// Makes `dialog` visible and brings it to the front.
@@ -100,6 +128,13 @@ impl<H: DialogHandler> DialogHandler for Single<H> {
 	}
 
 	fn command(&mut self, dialog: &Dialog, id: u16, notification: u16) {
+		#[cfg(test)]
+		if id == INSPECT
+			&& let Some(look) = INSPECTION.take()
+		{
+			look(&self.handler, *dialog);
+			return;
+		}
 		self.handler.command(dialog, id, notification);
 	}
 
@@ -201,6 +236,16 @@ mod tests {
 		assert_eq!(ONE.current(), Some(shown));
 		assert_eq!(brought_up(), 2);
 		destroy(shown);
+	}
+
+	#[test]
+	fn inspecting_reaches_the_open_windows_handler() {
+		let owner = hidden_window();
+		assert!(ONE.inspect(|_, _| ()).is_none());
+		let dialog = ONE.open(owner).unwrap();
+		assert_eq!(ONE.inspect(|_, seen| seen), Some(dialog));
+		assert!(dialog.is_alive());
+		destroy(dialog);
 	}
 
 	#[test]
