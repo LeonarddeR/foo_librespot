@@ -123,6 +123,11 @@ pub mod Windows {
 			unsafe { EnableWindow(hwnd, benable.into()) }
 		}
 		#[inline]
+		pub unsafe fn GetClientRect(hwnd: HWND, lprect: *mut RECT) -> windows_core::BOOL {
+			windows_core::link!("user32.dll" "system" fn GetClientRect(hwnd : HWND, lprect : *mut RECT) -> windows_core::BOOL);
+			unsafe { GetClientRect(hwnd, lprect as _) }
+		}
+		#[inline]
 		pub unsafe fn GetDlgCtrlID(hwnd: HWND) -> i32 {
 			windows_core::link!("user32.dll" "system" fn GetDlgCtrlID(hwnd : HWND) -> i32);
 			unsafe { GetDlgCtrlID(hwnd) }
@@ -170,6 +175,13 @@ pub mod Windows {
 		) -> i32 {
 			windows_core::link!("user32.dll" "system" fn GetWindowTextW(hwnd : HWND, lpstring : windows_core::PWSTR, nmaxcount : i32) -> i32);
 			unsafe { GetWindowTextW(hwnd, lpstring, nmaxcount) }
+		}
+		#[inline]
+		pub unsafe fn InitCommonControlsEx(
+			picce: *const INITCOMMONCONTROLSEX,
+		) -> windows_core::BOOL {
+			windows_core::link!("comctl32.dll" "system" fn InitCommonControlsEx(picce : *const INITCOMMONCONTROLSEX) -> windows_core::BOOL);
+			unsafe { InitCommonControlsEx(picce) }
 		}
 		#[inline]
 		pub unsafe fn IsWindow(hwnd: Option<HWND>) -> windows_core::BOOL {
@@ -1903,6 +1915,7 @@ pub mod Windows {
 			}
 		}
 		impl windows_core::RuntimeName for IAccPropServices {}
+		pub const ICC_LISTVIEW_CLASSES: i32 = 1;
 		pub const IDCANCEL: i32 = 2;
 		pub const IDOK: i32 = 1;
 		windows_core::imp::define_interface!(
@@ -1920,6 +1933,12 @@ pub mod Windows {
 			Invoke: usize,
 		}
 		impl windows_core::RuntimeName for IDispatch {}
+		#[repr(C)]
+		#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+		pub struct INITCOMMONCONTROLSEX {
+			pub dwSize: u32,
+			pub dwICC: u32,
+		}
 		windows_core::imp::define_interface!(
 			IRecordInfo,
 			IRecordInfo_Vtbl,
@@ -1962,6 +1981,62 @@ pub mod Windows {
 		#[repr(transparent)]
 		#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 		pub struct LRESULT(pub isize);
+		pub const LVCF_WIDTH: i32 = 2;
+		#[repr(C)]
+		#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+		pub struct LVCOLUMNW {
+			pub mask: u32,
+			pub fmt: i32,
+			pub cx: i32,
+			pub pszText: windows_core::PWSTR,
+			pub cchTextMax: i32,
+			pub iSubItem: i32,
+			pub iImage: i32,
+			pub iOrder: i32,
+			pub cxMin: i32,
+			pub cxDefault: i32,
+			pub cxIdeal: i32,
+		}
+		pub const LVIF_TEXT: i32 = 1;
+		pub const LVIS_FOCUSED: i32 = 1;
+		pub const LVIS_SELECTED: i32 = 2;
+		pub const LVIS_STATEIMAGEMASK: i32 = 61440;
+		#[repr(C)]
+		#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+		pub struct LVITEMW {
+			pub mask: u32,
+			pub iItem: i32,
+			pub iSubItem: i32,
+			pub state: u32,
+			pub stateMask: u32,
+			pub pszText: windows_core::PWSTR,
+			pub cchTextMax: i32,
+			pub iImage: i32,
+			pub lParam: LPARAM,
+			pub iIndent: i32,
+			pub iGroupId: i32,
+			pub cColumns: u32,
+			pub puColumns: PUINT,
+			pub piColFmt: *mut i32,
+			pub iGroup: i32,
+		}
+		pub const LVM_DELETEALLITEMS: i32 = 4105;
+		pub const LVM_GETCOLUMNWIDTH: i32 = 4125;
+		pub const LVM_GETITEMCOUNT: i32 = 4100;
+		pub const LVM_GETITEMSTATE: i32 = 4140;
+		pub const LVM_GETITEMTEXTW: i32 = 4211;
+		pub const LVM_GETNEXTITEM: i32 = 4108;
+		pub const LVM_INSERTCOLUMNW: i32 = 4193;
+		pub const LVM_INSERTITEMW: i32 = 4173;
+		pub const LVM_SETEXTENDEDLISTVIEWSTYLE: i32 = 4150;
+		pub const LVM_SETITEMSTATE: i32 = 4139;
+		pub const LVNI_SELECTED: i32 = 2;
+		pub const LVS_EX_CHECKBOXES: i32 = 4;
+		pub const LVS_EX_FULLROWSELECT: i32 = 32;
+		pub const LVS_NOCOLUMNHEADER: i32 = 16384;
+		pub const LVS_REPORT: i32 = 1;
+		pub const LVS_SHOWSELALWAYS: i32 = 8;
+		pub const LVS_SINGLESEL: i32 = 4;
 		pub type LiveSetting = i32;
 		#[repr(C, align(16))]
 		#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2020,7 +2095,16 @@ pub mod Windows {
 		pub type PRUNTIME_FUNCTION = *mut RUNTIME_FUNCTION;
 		#[cfg(target_arch = "aarch64")]
 		pub type PRUNTIME_FUNCTION = *mut ARM64_RUNTIME_FUNCTION;
+		pub type PUINT = *mut u32;
 		pub const Polite: LiveSetting = 1;
+		#[repr(C)]
+		#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+		pub struct RECT {
+			pub left: i32,
+			pub top: i32,
+			pub right: i32,
+			pub bottom: i32,
+		}
 		#[repr(C)]
 		#[cfg(any(target_arch = "arm64ec", target_arch = "x86_64"))]
 		#[derive(Clone, Copy)]

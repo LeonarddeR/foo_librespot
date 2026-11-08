@@ -5,18 +5,24 @@
 
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Once;
 
-use windows_core::PCWSTR;
+use windows_core::{PCWSTR, PWSTR};
 
-use super::template::DialogTemplate;
+use super::template::{ControlClass, DialogTemplate};
 use crate::bindings::Windows::Win32::{
 	BM_GETCHECK, BM_SETCHECK, BST_CHECKED, BST_UNCHECKED, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL,
 	CreateDialogIndirectParamW, DWLP_MSGRESULT, DestroyWindow, EnableWindow, GWL_STYLE,
-	GetDlgCtrlID, GetDlgItem, GetFocus, GetNextDlgTabItem, GetWindowLongPtrW, GetWindowTextLengthW,
-	GetWindowTextW, HWND, IsWindow, IsWindowEnabled, LB_ADDSTRING, LB_GETCOUNT, LB_GETCURSEL,
-	LB_GETTEXT, LB_GETTEXTLEN, LB_RESETCONTENT, LB_SETCURSEL, LPARAM, PostMessageW, SW_HIDE,
-	SW_SHOW, SW_SHOWNA, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW,
-	ShowWindow, WM_APP, WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY, WM_NEXTDLGCTL, WPARAM, WS_VISIBLE,
+	GetClientRect, GetDlgCtrlID, GetDlgItem, GetFocus, GetNextDlgTabItem, GetWindowLongPtrW,
+	GetWindowTextLengthW, GetWindowTextW, HWND, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX,
+	InitCommonControlsEx, IsWindow, IsWindowEnabled, LB_ADDSTRING, LB_GETCOUNT, LB_GETCURSEL,
+	LB_GETTEXT, LB_GETTEXTLEN, LB_RESETCONTENT, LB_SETCURSEL, LPARAM, LVCF_WIDTH, LVCOLUMNW,
+	LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVIS_STATEIMAGEMASK, LVITEMW, LVM_DELETEALLITEMS,
+	LVM_GETITEMCOUNT, LVM_GETITEMSTATE, LVM_GETITEMTEXTW, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW,
+	LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVNI_SELECTED,
+	LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT, PostMessageW, RECT, SW_HIDE, SW_SHOW, SW_SHOWNA,
+	SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, WM_APP,
+	WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY, WM_NEXTDLGCTL, WPARAM, WS_VISIBLE,
 };
 use crate::console;
 use crate::cxx::ExceptionKind;
@@ -182,6 +188,96 @@ impl Dialog {
 	/// The text of every item, in order.
 	pub fn list_texts(&self, id: u16) -> Vec<String> {
 		(0..self.list_count(id)).map(|index| self.list_text(id, index)).collect()
+	}
+
+	/// Makes list view `id` a list of rows with a checkbox each, in one column as wide as the
+	/// list. Clicking anywhere on a row selects it. Call it once, before adding rows.
+	pub fn check_list_init(&self, id: u16) {
+		const STYLES: i32 = LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT;
+		self.send(id, LVM_SETEXTENDEDLISTVIEWSTYLE, STYLES as usize, STYLES as isize);
+		let mut client = RECT::default();
+		unsafe {
+			let _ = GetClientRect(self.control(id), &raw mut client);
+		}
+		let column =
+			LVCOLUMNW { mask: LVCF_WIDTH as u32, cx: client.right, ..LVCOLUMNW::default() };
+		self.send(id, LVM_INSERTCOLUMNW, 0, (&raw const column) as isize);
+	}
+
+	pub fn check_list_clear(&self, id: u16) {
+		self.send(id, LVM_DELETEALLITEMS, 0, 0);
+	}
+
+	/// Adds a row after the last one, checked or not.
+	pub fn check_list_add(&self, id: u16, text: &str, checked: bool) {
+		let mut text = wide(text);
+		let row = LVITEMW {
+			mask: LVIF_TEXT as u32,
+			iItem: i32::try_from(self.check_list_count(id)).unwrap_or(i32::MAX),
+			pszText: PWSTR(text.as_mut_ptr()),
+			..LVITEMW::default()
+		};
+		let added = self.send(id, LVM_INSERTITEMW, 0, (&raw const row) as isize);
+		if let Ok(index) = usize::try_from(added) {
+			self.set_row_checked(id, index, checked);
+		}
+	}
+
+	pub fn check_list_count(&self, id: u16) -> usize {
+		usize::try_from(self.send(id, LVM_GETITEMCOUNT, 0, 0)).unwrap_or(0)
+	}
+
+	/// The text of row `index`, or an empty string when there is no such row.
+	pub fn check_list_text(&self, id: u16, index: usize) -> String {
+		// A list view doesn't say how long a row's text is, so the buffer grows until the text
+		// fits with room to spare.
+		let mut buffer = vec![0u16; 256];
+		loop {
+			let mut row = LVITEMW {
+				pszText: PWSTR(buffer.as_mut_ptr()),
+				cchTextMax: i32::try_from(buffer.len()).unwrap_or(i32::MAX),
+				..LVITEMW::default()
+			};
+			let copied = self.send(id, LVM_GETITEMTEXTW, index, (&raw mut row) as isize);
+			let copied = usize::try_from(copied).unwrap_or(0);
+			if copied + 1 < buffer.len() {
+				return String::from_utf16_lossy(&buffer[..copied]);
+			}
+			buffer.resize(buffer.len() * 2, 0);
+		}
+	}
+
+	/// The text of every row, in order.
+	pub fn check_list_texts(&self, id: u16) -> Vec<String> {
+		(0..self.check_list_count(id)).map(|index| self.check_list_text(id, index)).collect()
+	}
+
+	/// Whether row `index` is checked: its state image is the second, the checked box.
+	pub fn is_row_checked(&self, id: u16, index: usize) -> bool {
+		self.send(id, LVM_GETITEMSTATE, index, LVIS_STATEIMAGEMASK as isize) >> 12 == 2
+	}
+
+	pub fn set_row_checked(&self, id: u16, index: usize, checked: bool) {
+		let image: u32 = if checked { 2 } else { 1 };
+		self.set_row_state(id, index, image << 12, LVIS_STATEIMAGEMASK as u32);
+	}
+
+	/// The selected row, or `None` when no row is selected.
+	pub fn check_list_selection(&self, id: u16) -> Option<usize> {
+		// Searching from -1 starts at the first row.
+		usize::try_from(self.send(id, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize)).ok()
+	}
+
+	/// Selects row `index` and makes it the row the arrow keys and Space act on.
+	pub fn check_list_select(&self, id: u16, index: usize) {
+		let state = (LVIS_SELECTED | LVIS_FOCUSED) as u32;
+		self.set_row_state(id, index, state, state);
+	}
+
+	/// Sets the bits of row `index`'s state that `mask` names.
+	fn set_row_state(self, id: u16, index: usize, state: u32, mask: u32) {
+		let row = LVITEMW { state, stateMask: mask, ..LVITEMW::default() };
+		self.send(id, LVM_SETITEMSTATE, index, (&raw const row) as isize);
 	}
 
 	pub fn is_checked(&self, id: u16) -> bool {
@@ -373,11 +469,31 @@ fn claiming<R>(create: impl FnOnce() -> R) -> (R, usize) {
 	(result, CLAIMED.replace(outer))
 }
 
+/// Registers the common controls' list view class, once per process, as their documentation
+/// asks before a list view is created. Current Windows would also register it on demand, when
+/// the dialog asks for the class, with or without a manifest.
+fn register_list_view() {
+	static REGISTERED: Once = Once::new();
+	REGISTERED.call_once(|| {
+		#[allow(clippy::cast_possible_truncation, reason = "the structure is 8 bytes")]
+		let controls = INITCOMMONCONTROLSEX {
+			dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+			dwICC: ICC_LISTVIEW_CLASSES as u32,
+		};
+		unsafe {
+			let _ = InitCommonControlsEx(&raw const controls);
+		}
+	});
+}
+
 fn create(
 	parent: isize,
 	template: &DialogTemplate,
 	handler: Box<dyn DialogHandler>,
 ) -> Result<Dialog> {
+	if template.items.iter().any(|item| item.class == ControlClass::ListView) {
+		register_list_view();
+	}
 	let words = template.to_bytes();
 	// Windows reads templates from DWORD-aligned memory.
 	let mut aligned = vec![0u32; words.len().div_ceil(2)];
@@ -445,9 +561,11 @@ pub(crate) mod tests {
 	use super::{Dialog, DialogHandler, create_child_dialog, create_modeless_dialog, destroy};
 	use crate::bindings::Windows::Win32::{
 		BN_CLICKED, BS_AUTOCHECKBOX, CBS_DROPDOWNLIST, DS_CONTROL, DS_MODALFRAME, ES_MULTILINE,
-		ES_READONLY, GetWindowTextW, HWND, LBS_NOTIFY, LPARAM, SendMessageW, WM_CLOSE, WM_COMMAND,
-		WPARAM, WS_BORDER, WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
+		ES_READONLY, GetClientRect, GetWindowTextW, HWND, LBS_NOTIFY, LPARAM, LVM_GETCOLUMNWIDTH,
+		RECT, SendMessageW, WM_CLOSE, WM_COMMAND, WPARAM, WS_BORDER, WS_CAPTION, WS_CHILD,
+		WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
 	};
+	use crate::dialog::style;
 	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
 	use crate::testing::wants_all_keys;
 
@@ -674,6 +792,80 @@ pub(crate) mod tests {
 		assert_eq!(dialog.list_count(109), 0);
 		assert!(dialog.list_texts(109).is_empty());
 		assert_eq!(dialog.list_selection(109), None);
+		destroy(dialog);
+	}
+
+	const LIST: u16 = 111;
+
+	fn check_list() -> DialogItem {
+		let style = style::LVS_REPORT
+			| style::LVS_NOCOLUMNHEADER
+			| style::LVS_SINGLESEL
+			| style::LVS_SHOWSELALWAYS
+			| style::WS_TABSTOP
+			| style::WS_BORDER;
+		DialogItem { style, cy: 60, ..item(LIST, ControlClass::ListView, "", 0) }
+	}
+
+	fn check_list_dialog(items: Vec<DialogItem>) -> Dialog {
+		let template = DialogTemplate { items, ..template(MODELESS) };
+		create_modeless_dialog(hidden_parent(), &template, Box::new(Recorder::default())).unwrap()
+	}
+
+	#[test]
+	fn a_check_list_holds_rows_and_their_ticks() {
+		let dialog = check_list_dialog(vec![check_list()]);
+		dialog.check_list_init(LIST);
+		dialog.check_list_add(LIST, "Liked Songs", true);
+		dialog.check_list_add(LIST, "Church / Sunday set", false);
+		assert_eq!(dialog.check_list_count(LIST), 2);
+		assert_eq!(dialog.check_list_text(LIST, 1), "Church / Sunday set");
+		assert_eq!(dialog.check_list_texts(LIST), ["Liked Songs", "Church / Sunday set"]);
+		assert!(dialog.is_row_checked(LIST, 0));
+		assert!(!dialog.is_row_checked(LIST, 1));
+		dialog.set_row_checked(LIST, 1, true);
+		dialog.set_row_checked(LIST, 0, false);
+		assert!(!dialog.is_row_checked(LIST, 0) && dialog.is_row_checked(LIST, 1));
+		assert_eq!(dialog.check_list_selection(LIST), None);
+		dialog.check_list_select(LIST, 1);
+		assert_eq!(dialog.check_list_selection(LIST), Some(1));
+		dialog.check_list_clear(LIST);
+		assert_eq!(dialog.check_list_count(LIST), 0);
+		assert_eq!(dialog.check_list_selection(LIST), None);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_check_list_reads_rows_of_any_length() {
+		let dialog = check_list_dialog(vec![check_list()]);
+		dialog.check_list_init(LIST);
+		let long = "In Christ Alone ".repeat(40);
+		dialog.check_list_add(LIST, &long, false);
+		assert_eq!(dialog.check_list_text(LIST, 0), long);
+		assert_eq!(dialog.check_list_text(LIST, 1), "", "there is no second row");
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_check_list_has_one_column_as_wide_as_the_list() {
+		let dialog = check_list_dialog(vec![check_list()]);
+		dialog.check_list_init(LIST);
+		let mut client = RECT::default();
+		assert!(unsafe { GetClientRect(dialog.control(LIST), &raw mut client) }.as_bool());
+		let width = unsafe {
+			SendMessageW(dialog.control(LIST), LVM_GETCOLUMNWIDTH as u32, WPARAM(0), LPARAM(0))
+		};
+		assert!(client.right > 0);
+		assert_eq!(width.0, isize::try_from(client.right).unwrap());
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_check_list_follows_its_label_in_tab_order() {
+		let mut items = template(MODELESS).items;
+		items.splice(2..2, [item(110, ControlClass::Static, "&Playlists:", 0), check_list()]);
+		let dialog = check_list_dialog(items);
+		assert_eq!(dialog.tab_order(), [102, LIST, 104, 107, 2]);
 		destroy(dialog);
 	}
 

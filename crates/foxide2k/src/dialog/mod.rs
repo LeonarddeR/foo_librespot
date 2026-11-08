@@ -34,6 +34,12 @@ pub mod style {
 	pub const LBS_NOTIFY: u32 = win::LBS_NOTIFY.cast_unsigned();
 	/// A push button that Enter presses while focus is on a control that doesn't use Enter.
 	pub const BS_DEFPUSHBUTTON: u32 = win::BS_DEFPUSHBUTTON.cast_unsigned();
+	/// A list view that shows its rows one below the other, in columns.
+	pub const LVS_REPORT: u32 = win::LVS_REPORT.cast_unsigned();
+	pub const LVS_NOCOLUMNHEADER: u32 = win::LVS_NOCOLUMNHEADER.cast_unsigned();
+	pub const LVS_SINGLESEL: u32 = win::LVS_SINGLESEL.cast_unsigned();
+	/// Keeps a list view's selection shown while another control has focus.
+	pub const LVS_SHOWSELALWAYS: u32 = win::LVS_SHOWSELALWAYS.cast_unsigned();
 }
 
 /// `WM_COMMAND` notification codes and the ids Windows gives meaning to.
@@ -73,5 +79,14 @@ mod tests {
 		assert_eq!((notify::BN_SETFOCUS, notify::EN_SETFOCUS), (6, 0x0100));
 		assert_eq!((style::LBS_NOTIFY, style::BS_DEFPUSHBUTTON), (1, 1));
 		assert_eq!((notify::LBN_DBLCLK, notify::IDOK), (2, 1));
+		assert_eq!(
+			(
+				style::LVS_REPORT,
+				style::LVS_NOCOLUMNHEADER,
+				style::LVS_SINGLESEL,
+				style::LVS_SHOWSELALWAYS
+			),
+			(1, 0x4000, 4, 8)
+		);
 	}
 }

@@ -3,7 +3,8 @@
 
 use crate::bindings::Windows::Win32::{DS_FIXEDSYS, DS_SETFONT, WS_CHILD, WS_VISIBLE};
 
-/// The predefined window classes a template item can name by atom.
+/// The window classes a template item can name: the predefined ones, by atom, and the common
+/// controls' list view, by its class name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlClass {
 	Button,
@@ -11,16 +12,21 @@ pub enum ControlClass {
 	Static,
 	ComboBox,
 	ListBox,
+	/// `SysListView32`. A dialog that holds one registers the class before it is created.
+	ListView,
 }
 
 impl ControlClass {
-	const fn atom(self) -> u16 {
+	/// The class as an item names it: `0xFFFF` and the atom of a predefined class, or the
+	/// class name.
+	fn push(self, words: &mut Vec<u16>) {
 		match self {
-			Self::Button => 0x0080,
-			Self::Edit => 0x0081,
-			Self::Static => 0x0082,
-			Self::ComboBox => 0x0085,
-			Self::ListBox => 0x0083,
+			Self::Button => words.extend([0xFFFF, 0x0080]),
+			Self::Edit => words.extend([0xFFFF, 0x0081]),
+			Self::Static => words.extend([0xFFFF, 0x0082]),
+			Self::ComboBox => words.extend([0xFFFF, 0x0085]),
+			Self::ListBox => words.extend([0xFFFF, 0x0083]),
+			Self::ListView => push_string(words, "SysListView32"),
 		}
 	}
 }
@@ -94,7 +100,7 @@ impl DialogTemplate {
 			push_dword(&mut words, item.style | (WS_CHILD | WS_VISIBLE) as u32);
 			words.extend([word(item.x), word(item.y), word(item.cx), word(item.cy)]);
 			push_dword(&mut words, u32::from(item.id));
-			words.extend([0xFFFF, item.class.atom()]);
+			item.class.push(&mut words);
 			push_string(&mut words, &item.text);
 			words.push(0); // no creation data
 		}
@@ -148,8 +154,11 @@ mod tests {
 		for _ in 0..count {
 			at += at % 2;
 			starts.push(at);
-			// Fixed part (12 words), then 0xFFFF and the class atom, the title, the extra count.
-			at = skip_string(words, at + 14) + 1;
+			// Fixed part (12 words), then the class: 0xFFFF and an atom, or a name.
+			at += 12;
+			at = if words[at] == 0xFFFF { at + 2 } else { skip_string(words, at) };
+			// The title, then the extra count.
+			at = skip_string(words, at) + 1;
 		}
 		starts
 	}
@@ -204,6 +213,21 @@ mod tests {
 			let words = template(vec![item(1, class, "")]).to_bytes();
 			assert_eq!(words[item_starts(&words)[0] + 13], atom);
 		}
+	}
+
+	#[test]
+	fn a_list_view_item_names_its_class() {
+		let words = template(vec![
+			item(111, ControlClass::ListView, ""),
+			item(109, ControlClass::ListBox, ""),
+		])
+		.to_bytes();
+		let starts = item_starts(&words);
+		assert_eq!(dword(&words, starts[0] + 10), 111);
+		let class = utf16("SysListView32");
+		assert_eq!(words[starts[0] + 12..starts[0] + 12 + class.len()], class[..]);
+		assert_eq!(dword(&words, starts[1] + 10), 109);
+		assert_eq!(words[starts[1] + 12..starts[1] + 14], [0xFFFF, 0x0083]);
 	}
 
 	#[test]
