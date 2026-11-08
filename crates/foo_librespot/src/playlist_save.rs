@@ -222,6 +222,18 @@ mod tests {
 	}
 
 	#[test]
+	fn leaving_out_several_episodes_says_episodes() {
+		let (api, fake) = installed_api_and_backend();
+		fake.change_with(|_| Ok(Change { changed: 1, unchanged: 0, episodes_left_out: 2 }));
+		saved(&fake, vec![liked(Edit::Add)]);
+		assert!(
+			printed(api, "foo_librespot: left out 2 episodes: Liked Songs holds songs only"),
+			"{:?}",
+			api.console_lines()
+		);
+	}
+
+	#[test]
 	fn one_failure_among_several_shows_one_popup_for_it() {
 		let (api, fake) = installed_api_and_backend();
 		fake.change_with(|target| {
