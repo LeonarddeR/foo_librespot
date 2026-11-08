@@ -20,6 +20,7 @@ mod login_window;
 mod open_playlist;
 mod playing_menu;
 mod playlist_menu;
+mod playlist_save;
 #[cfg_attr(not(test), expect(dead_code, reason = "no menu command opens the window yet"))]
 mod playlist_window;
 mod prefs;

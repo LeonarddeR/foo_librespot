@@ -1,6 +1,7 @@
 //! The window "Add to playlist…" opens: a checkable list of Liked Songs and the playlists the
 //! account can change. A row starts ticked when its playlist holds every item the window works
-//! on. The user ticks and unticks rows; OK and Cancel close the window.
+//! on. The user ticks and unticks rows. OK saves the rows the user changed and closes the
+//! window; Cancel closes it.
 //!
 //! The items live in a main-thread [`ITEMS`]: [`show_for`] sets them, and the window's handler
 //! reads them whenever it lists the library. The window follows Open playlist…'s states while
@@ -23,6 +24,7 @@ use foxide2k::host::host;
 use crate::errors::report_failure;
 use crate::library_watch::LibraryWatch;
 use crate::link_list::{self, Controls, Ids};
+use crate::playlist_save::save;
 use crate::status_line::StatusLine;
 use crate::window::SingleWindow;
 
@@ -208,6 +210,10 @@ impl DialogHandler for PlaylistWindow {
 	}
 
 	fn command(&mut self, dialog: &Dialog, id: u16, _notification: u16) {
+		if id == IDOK {
+			let planned = self.planned(*dialog);
+			ITEMS.with_borrow(|items| save(items, planned));
+		}
 		if id == IDOK || id == IDCANCEL {
 			destroy(*dialog);
 		}
@@ -562,6 +568,54 @@ mod tests {
 		send_close(&WINDOW.current().unwrap());
 		pump_messages();
 		assert_eq!(WINDOW.current(), None);
+	}
+
+	/// The changes sent so far: what, where and for which items.
+	fn sent(fake: &FakeBackend) -> Vec<(Edit, Target, Vec<ItemId>)> {
+		fake.changes().into_iter().map(|(edit, target, items, _)| (edit, target, items)).collect()
+	}
+
+	#[test]
+	fn ok_saves_the_changed_rows_and_closes() {
+		let library = library_holding(&[t1(), t2()], &[], &[]);
+		let (fake, dialog) = shown_for(library, vec![t1(), t2()]);
+		dialog.set_row_checked(LIST, 2, true);
+		dialog.set_row_checked(LIST, 1, false);
+		send_command(&dialog, IDOK, BN_CLICKED);
+		assert!(!dialog.is_alive());
+		assert_eq!(WINDOW.current(), None);
+		assert_eq!(
+			sent(&fake),
+			[
+				(Edit::Remove, Target::Playlist(sunday_set_id()), vec![t1(), t2()]),
+				(Edit::Add, Target::Playlist(shared_playlist().id), vec![t1(), t2()]),
+			]
+		);
+	}
+
+	#[test]
+	fn cancel_and_escape_send_nothing() {
+		let (fake, dialog) = shown_for(library_holding(&[t1()], &[], &[]), vec![t1()]);
+		dialog.set_row_checked(LIST, 1, false);
+		dialog.set_row_checked(LIST, 2, true);
+		send_command(&dialog, IDCANCEL, BN_CLICKED);
+		assert!(!dialog.is_alive());
+		show_for(vec![t1()]);
+		let dialog = WINDOW.current().expect("showing opens the window");
+		dialog.set_row_checked(LIST, 2, true);
+		send_close(&dialog);
+		pump_messages();
+		assert_eq!(WINDOW.current(), None);
+		assert_eq!(sent(&fake), []);
+	}
+
+	#[test]
+	fn ok_while_loading_sends_nothing_and_closes() {
+		let (fake, dialog) = shown_for(LibraryState::Loading, vec![t1()]);
+		send_command(&dialog, IDOK, BN_CLICKED);
+		assert!(!dialog.is_alive());
+		assert_eq!(WINDOW.current(), None);
+		assert_eq!(sent(&fake), []);
 	}
 
 	#[test]

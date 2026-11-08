@@ -23,7 +23,8 @@ use foxide2k::popup;
 use crate::backend::backend;
 use crate::errors::report_failure;
 use crate::first_use::ask_for_login;
-use crate::links::plural;
+use crate::playlist_save::report;
+use crate::playlist_window::Planned;
 use crate::spotify_menu::SpotifyGroup;
 
 const NAME: &str = "Add to playlist";
@@ -164,52 +165,18 @@ impl Pick {
 
 	fn end(&self, edit: Edit, result: std::result::Result<Change, CoreError>) {
 		match result {
-			Ok(change) => self.report(edit, change),
+			Ok(change) => {
+				let planned = Planned { edit, target: self.target, name: self.name.to_string() };
+				report(&planned, change);
+			}
 			Err(CoreError::Aborted) => {}
 			Err(error) => self.fail(&error),
-		}
-	}
-
-	fn report(&self, edit: Edit, change: Change) {
-		let tracks = count_tracks(change.changed);
-		match edit {
-			Edit::Remove => {
-				console::print(&format!("foo_librespot: removed {tracks} from {}", self.name));
-			}
-			Edit::Add => {
-				let verb = if self.target == Target::LikedSongs { "saved" } else { "added" };
-				console::print(&format!(
-					"foo_librespot: {verb} {tracks} to {}{}",
-					self.name,
-					already_there(change.unchanged)
-				));
-				let left_out = change.episodes_left_out;
-				if left_out > 0 {
-					console::print(&format!(
-						"foo_librespot: left out {left_out} {}: Liked Songs holds songs only",
-						plural(left_out, "episode", "episodes")
-					));
-				}
-			}
 		}
 	}
 
 	fn fail(&self, error: &CoreError) {
 		let failed = format!("can't change {}", self.name);
 		report_failure(&failed, "Can't change the Spotify playlist", &self.name, error);
-	}
-}
-
-fn count_tracks(n: usize) -> String {
-	format!("{n} {}", plural(n, "track", "tracks"))
-}
-
-/// `; 2 were already there`, or nothing when none were.
-fn already_there(unchanged: usize) -> String {
-	match unchanged {
-		0 => String::new(),
-		1 => "; 1 was already there".to_owned(),
-		m => format!("; {m} were already there"),
 	}
 }
 
@@ -398,7 +365,7 @@ mod tests {
 	#[test]
 	fn picking_an_unchecked_playlist_adds_the_selection() {
 		let (api, fake) = setup(library_holding(&[], &[], &[]));
-		fake.change_with(|| Ok(Change { changed: 2, unchanged: 1, episodes_left_out: 0 }));
+		fake.change_with(|_| Ok(Change { changed: 2, unchanged: 1, episodes_left_out: 0 }));
 		let (root, data) = open(&[t1(), t2()]);
 		pick(&root, &data, "Church / Sunday set");
 		wait_until(|| {
@@ -413,7 +380,7 @@ mod tests {
 	#[test]
 	fn saving_to_liked_songs_says_what_was_left_out() {
 		let (api, fake) = setup(library_holding(&[], &[], &[]));
-		fake.change_with(|| Ok(Change { changed: 1, unchanged: 2, episodes_left_out: 1 }));
+		fake.change_with(|_| Ok(Change { changed: 1, unchanged: 2, episodes_left_out: 1 }));
 		let (root, data) = open(&[t1(), episode()]);
 		pick(&root, &data, "Liked Songs");
 		wait_until(|| {
@@ -473,7 +440,7 @@ mod tests {
 	#[test]
 	fn leaving_out_several_episodes_says_episodes() {
 		let (api, fake) = setup(library_holding(&[], &[], &[]));
-		fake.change_with(|| Ok(Change { changed: 1, unchanged: 0, episodes_left_out: 2 }));
+		fake.change_with(|_| Ok(Change { changed: 1, unchanged: 0, episodes_left_out: 2 }));
 		let (root, data) = open(&[t1(), episode()]);
 		pick(&root, &data, "Liked Songs");
 		wait_until(|| {
@@ -484,7 +451,7 @@ mod tests {
 	#[test]
 	fn a_failed_change_shows_a_popup_saying_why() {
 		let (api, fake) = setup(library_holding(&[], &[], &[]));
-		fake.change_with(|| Err(CoreError::Unavailable("Spotify said no".to_owned())));
+		fake.change_with(|_| Err(CoreError::Unavailable("Spotify said no".to_owned())));
 		let (root, data) = open(&[t1()]);
 		pick(&root, &data, "Church / Sunday set");
 		wait_until(|| !api.popups().is_empty());
@@ -510,7 +477,7 @@ mod tests {
 	#[test]
 	fn an_aborted_change_reports_nothing() {
 		let (api, fake) = setup(library_holding(&[], &[], &[]));
-		fake.change_with(|| Err(CoreError::Aborted));
+		fake.change_with(|_| Err(CoreError::Aborted));
 		let (root, data) = open(&[t1()]);
 		pick(&root, &data, "Shared");
 		wait_until(|| fake.changes().len() == 1);

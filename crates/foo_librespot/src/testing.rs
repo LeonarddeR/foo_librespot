@@ -192,14 +192,16 @@ struct State {
 	library_calls: AtomicUsize,
 	changes: Mutex<Vec<RecordedChange>>,
 	change_result: Mutex<Option<ChangeResult>>,
+	/// How many changes have ended and called back.
+	changes_answered: AtomicUsize,
 	related_calls: Mutex<Vec<(ItemId, Related)>>,
 	related_result: Mutex<Option<RelatedResult>>,
 	/// How many lookups have ended and called back.
 	related_answered: AtomicUsize,
 }
 
-/// What a change ends with.
-pub type ChangeResult = fn() -> Result<Change, CoreError>;
+/// What a change of a target ends with.
+pub type ChangeResult = fn(Target) -> Result<Change, CoreError>;
 
 /// A change that was asked for, and the thread it ran and reported on.
 pub type RecordedChange = (Edit, Target, Vec<ItemId>, std::thread::ThreadId);
@@ -342,9 +344,14 @@ impl FakeBackend {
 		self.0.changes.lock().unwrap_or_else(PoisonError::into_inner).clone()
 	}
 
-	/// Makes later changes end with `result()`; by default every item counts as changed.
+	/// Makes later changes end with `result(target)`; by default every item counts as changed.
 	pub fn change_with(&self, result: ChangeResult) {
 		*self.0.change_result.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
+	}
+
+	/// How many changes have ended and called back, so what they reported is there.
+	pub fn changes_answered(&self) -> usize {
+		self.0.changes_answered.load(Ordering::SeqCst)
 	}
 
 	/// Makes later lookups end with `result(item, what)`.
@@ -540,7 +547,7 @@ impl Backend for FakeBackend {
 	}
 
 	/// Runs the change and `on_done` on a thread of its own, which starts once the change is
-	/// recorded.
+	/// recorded. A change that lands tells the library's subscribers first, as Spotify's does.
 	fn change(&self, edit: Edit, target: Target, items: &[ItemId], on_done: OnChanged) {
 		let (fake, count) = (self.clone(), items.len());
 		let (recorded, wait) = std::sync::mpsc::channel::<()>();
@@ -550,10 +557,14 @@ impl Backend for FakeBackend {
 				let result = *fake.0.change_result.lock().unwrap_or_else(PoisonError::into_inner);
 				result.map_or_else(
 					|| Ok(Change { changed: count, ..Change::default() }),
-					|result| result(),
+					|result| result(target),
 				)
 			});
+			if result.as_ref().is_ok_and(|change| change.changed > 0) {
+				fake.0.library_subscribers.notify();
+			}
 			on_done(result);
+			fake.0.changes_answered.fetch_add(1, Ordering::SeqCst);
 		});
 		self.0.changes.lock().unwrap_or_else(PoisonError::into_inner).push((
 			edit,
