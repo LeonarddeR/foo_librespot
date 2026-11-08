@@ -162,31 +162,45 @@ impl PlaylistWindow {
 	}
 
 	/// Lists the rows `library` gives the items. A row the user changed keeps the user's tick,
-	/// unless `new_items` drops the user's ticks; every other row shows its start. The selected
-	/// playlist stays selected while it is listed, otherwise the first row is. A list whose rows
-	/// stay the same is left alone.
+	/// unless `new_items` drops the user's ticks; every other row shows its start. When the rows
+	/// name the same playlists in the same order, only the ticks that must change do, and the
+	/// selection and scroll position stay. Otherwise the list is filled again: the selected
+	/// playlist stays selected while it is listed, otherwise the first row is.
 	fn fill(&mut self, dialog: Dialog, library: &Library, new_items: bool) {
 		let rows = rows_of(library, &self.items);
 		self.filled = true;
-		if rows == self.rows && !new_items {
-			return;
-		}
 		let changed = if new_items { Vec::new() } else { self.planned(dialog) };
-		let selected_target = dialog
-			.check_list_selection(LIST)
-			.and_then(|index| self.rows.get(index))
-			.map(|row| row.target);
-		dialog.check_list_clear(LIST);
-		for row in &rows {
+		let ticks = rows.iter().map(|row| {
 			let change = changed.iter().find(|change| change.target == row.target);
-			let ticked = change.map_or(row.start, |change| change.edit == Edit::Add);
-			dialog.check_list_add(LIST, &row.name, ticked);
+			change.map_or(row.start, |change| change.edit == Edit::Add)
+		});
+		let same_rows = rows.len() == self.rows.len()
+			&& rows
+				.iter()
+				.zip(&self.rows)
+				.all(|(new, old)| (new.target, &new.name) == (old.target, &old.name));
+		if same_rows {
+			for (index, ticked) in ticks.enumerate() {
+				if dialog.is_row_checked(LIST, index) != ticked {
+					dialog.set_row_checked(LIST, index, ticked);
+				}
+			}
+		} else {
+			let selected_target = dialog
+				.check_list_selection(LIST)
+				.and_then(|index| self.rows.get(index))
+				.map(|row| row.target);
+			dialog.check_list_clear(LIST);
+			for (row, ticked) in rows.iter().zip(ticks) {
+				dialog.check_list_add(LIST, &row.name, ticked);
+			}
+			if !rows.is_empty() {
+				let selected_index =
+					rows.iter().position(|row| Some(row.target) == selected_target);
+				dialog.check_list_select(LIST, selected_index.unwrap_or(0));
+			}
 		}
-		let selected_index = rows.iter().position(|row| Some(row.target) == selected_target);
 		self.rows = rows;
-		if !self.rows.is_empty() {
-			dialog.check_list_select(LIST, selected_index.unwrap_or(0));
-		}
 	}
 
 	/// Empties the list, which drops the user's ticks; the list then counts as not filled yet.
@@ -500,6 +514,29 @@ mod tests {
 		refresh(dialog);
 		assert_eq!(dialog.check_list_count(LIST), 4);
 		assert_eq!(dialog.check_list_text(LIST, 3), "Marker");
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_refresh_that_only_changes_ticks_keeps_the_list_and_its_selection() {
+		let (fake, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t1()]);
+		dialog.check_list_select(LIST, 2);
+		dialog.set_row_checked(LIST, 0, true);
+		// A rebuild would clear this row.
+		dialog.check_list_add(LIST, "Marker", false);
+		fake.set_library(library_holding(&[t1()], &[], &[]));
+		refresh(dialog);
+		assert_eq!(
+			dialog.check_list_texts(LIST),
+			["Liked Songs", "Church / Sunday set", "Shared", "Marker"]
+		);
+		assert_eq!(ticks(dialog), [true, true, false, false]);
+		assert_eq!(dialog.check_list_selection(LIST), Some(2));
+		show_for(vec![t2()]);
+		pump_messages();
+		assert_eq!(dialog.check_list_count(LIST), 4, "new items with the same rows keep the list");
+		assert_eq!(ticks(dialog), [false, false, false, false]);
+		assert_eq!(dialog.check_list_selection(LIST), Some(2));
 		destroy(dialog);
 	}
 
