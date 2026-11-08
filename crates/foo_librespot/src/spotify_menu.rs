@@ -12,14 +12,11 @@
 //! track ([`crate::playing_menu`]) follows them for the playing track.
 
 use std::ops::ControlFlow;
-use std::sync::Arc;
 
 use foo_librespot_core::link::{ItemId, parse_item};
 use foo_librespot_core::related::Related;
 use foxide2k::abi::contextmenu::GROUP_ROOT;
-use foxide2k::contextmenu::{
-	ContextMenuCommand, ContextMenuGroup, ContextMenuItem, MenuNode, RunFn, Shown,
-};
+use foxide2k::contextmenu::{ContextMenuCommand, ContextMenuGroup, Shown};
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
 use foxide2k::metadb::{HandleList, Track};
@@ -59,42 +56,16 @@ impl ContextMenuCommand for OpenAlbum {
 	}
 }
 
-/// Opens an artist of the selected track: a submenu of its stored artists when it has several,
-/// or else one command that asks Spotify for them. The submenu's entries change from track to
-/// track, so none can be bound to a key; [`OpenArtistShortcut`] can.
+/// Opens the selected track's artist when Spotify names one, or lists its artists in the artist
+/// window.
 pub struct OpenArtist;
 
-impl ContextMenuItem for OpenArtist {
-	const GUID: Guid = Guid::from_u128(0x1c41af7c_af4c_42d2_8f16_54dc7b4f752c);
-	const NAME: &'static str = "Open artist";
-	const DESCRIPTION: &'static str =
-		"Opens an artist of the selected Spotify track in a playlist tab.";
-	const PARENT: Guid = SpotifyGroup::GUID;
-	const SORT_PRIORITY: f64 = 1.0;
-
-	fn build(selection: &HandleList<'_>) -> Option<MenuNode> {
-		match shown_for(selection, Kind::Track) {
-			Shown::Hidden => None,
-			Shown::Greyed => Some(MenuNode::command(Self::NAME, false, Box::new(|| Ok(())))),
-			Shown::Enabled => {
-				let (item, track) = spotify_items(selection).next()?;
-				Some(artist_node(item, &track))
-			}
-		}
-	}
-}
-
-/// The shortcut-only "Open artist…": opens the selected track's artist when Spotify names one,
-/// or lists its artists in the artist window.
-pub struct OpenArtistShortcut;
-
-impl ContextMenuCommand for OpenArtistShortcut {
+impl ContextMenuCommand for OpenArtist {
 	const GUID: Guid = Guid::from_u128(0xc240e9cc_4c76_4ba1_9c64_85246758c4e5);
 	const NAME: &'static str = "Open artist…";
 	const DESCRIPTION: &'static str = "Opens the artist of the selected Spotify track in a playlist tab, or lists its artists to pick from.";
 	const PARENT: Guid = SpotifyGroup::GUID;
-	const SORT_PRIORITY: f64 = 1.5;
-	const SHORTCUT_ONLY: bool = true;
+	const SORT_PRIORITY: f64 = 1.0;
 
 	fn shown(selection: &HandleList<'_>) -> Shown {
 		shown_for(selection, Kind::Track)
@@ -167,7 +138,7 @@ impl Kind {
 	const fn opening(what: &Related) -> Self {
 		match what {
 			Related::Show => Self::Episode,
-			Related::Album | Related::Artist(_) | Related::Radio => Self::Track,
+			Related::Album | Related::Artist | Related::Radio => Self::Track,
 		}
 	}
 }
@@ -287,8 +258,8 @@ pub fn open(
 }
 
 /// Asks Spotify for every artist of the one Spotify track in `items`, taken from `source`, as
-/// [`OpenArtistShortcut`] does: one opens in its tab, several fill the artist window. When
-/// foobar2000 stores two or more for the track, the window says "Loading…" meanwhile.
+/// [`OpenArtist`] does: one opens in its tab, several fill the artist window. When foobar2000
+/// stores two or more for the track, the window says "Loading…" meanwhile.
 pub fn open_artists(items: impl IntoIterator<Item = SpotifyItem>, source: Source, command: &str) {
 	if let Some((item, track)) = the_one(items, Kind::Track, source, command) {
 		let ticket = if stored_artists(&track).len() >= 2 {
@@ -296,58 +267,7 @@ pub fn open_artists(items: impl IntoIterator<Item = SpotifyItem>, source: Source
 		} else {
 			artist_window::take_ticket()
 		};
-		open_related(item, Related::Artist(None), title_of(item, &track), Some(ticket));
-	}
-}
-
-/// What the artist submenu of a track offers; each entry runs without failing.
-pub enum ArtistPicks {
-	/// One entry, for a track that stores fewer than two artists, that does what
-	/// [`OpenArtistShortcut`] does.
-	Every(RunFn),
-	/// An entry per stored artist, in Spotify's order, named after it and opening it.
-	Each(Vec<(Arc<str>, RunFn)>),
-}
-
-/// What the artist submenu of `track`, the Spotify track `item`, offers.
-pub fn artist_picks(item: ItemId, track: &Track) -> ArtistPicks {
-	let title = Arc::<str>::from(title_of(item, track));
-	let artists = stored_artists(track);
-	if artists.len() < 2 {
-		return ArtistPicks::Every(Box::new(move || {
-			let ticket = artist_window::take_ticket();
-			open_related(item, Related::Artist(None), title.to_string(), Some(ticket));
-			Ok(())
-		}));
-	}
-	let picks = artists
-		.into_iter()
-		.map(|artist| {
-			let (name, title) = (Arc::<str>::from(artist), Arc::clone(&title));
-			let picked = Arc::clone(&name);
-			let pick: RunFn = Box::new(move || {
-				let artist = Related::Artist(Some(picked.to_string()));
-				open_related(item, artist, title.to_string(), None);
-				Ok(())
-			});
-			(name, pick)
-		})
-		.collect();
-	ArtistPicks::Each(picks)
-}
-
-/// The submenu of `track`'s stored artists when it has several, each opening that artist; or
-/// else the command that asks Spotify for every artist.
-fn artist_node(item: ItemId, track: &Track) -> MenuNode {
-	match artist_picks(item, track) {
-		ArtistPicks::Every(pick) => MenuNode::command(OpenArtist::NAME, true, pick),
-		ArtistPicks::Each(picks) => MenuNode::Popup {
-			name: OpenArtist::NAME.into(),
-			children: picks
-				.into_iter()
-				.map(|(name, pick)| MenuNode::command(name, true, pick))
-				.collect(),
-		},
+		open_related(item, Related::Artist, title_of(item, &track), Some(ticket));
 	}
 }
 
@@ -373,8 +293,7 @@ mod tests {
 	use foo_librespot_core::related::{Found, Opened, Related};
 	use foo_librespot_core::{CoreError, SpotifyId};
 	use foxide2k::abi::contextmenu::{
-		ENABLED_DEFAULT_ON, ENABLED_FORCE_OFF, FLAG_DISABLED, FLAG_GRAYED, GROUP_ROOT,
-		TYPE_COMMAND, TYPE_GROUP,
+		ENABLED_DEFAULT_ON, FLAG_DISABLED, FLAG_GRAYED, GROUP_ROOT, TYPE_COMMAND,
 	};
 	use foxide2k::contextmenu::{
 		ContextMenuCommand, ContextMenuGroup, Shown, context_menu_command_service,
@@ -387,15 +306,12 @@ mod tests {
 		ContextMenuGroupHandle, ContextMenuHandle, FakeFields, FakeHandleList, pump_messages,
 	};
 
-	use super::{
-		Kind, OpenAlbum, OpenArtist, OpenArtistShortcut, OpenShow, SpotifyGroup, TrackRadio,
-		shown_among,
-	};
+	use super::{Kind, OpenAlbum, OpenArtist, OpenShow, SpotifyGroup, TrackRadio, shown_among};
 	use crate::artist_window::{self, LIST, STATUS, WINDOW};
 	use crate::playlist_menu::AddToSpotifyPlaylist;
 	use crate::testing::{
-		BOTH_GETTYS, EPISODE, GETTY_TRACK, KRISTYN_ID, LOCAL, NO_FIELDS, ONE_ARTIST, TRACK_ID,
-		entry, episode_id, getty_artists, getty_track, installed_api_and_backend, wait_until,
+		BOTH_GETTYS, EPISODE, GETTY_TRACK, LOCAL, NO_FIELDS, ONE_ARTIST, TRACK_ID, entry,
+		episode_id, getty_artists, getty_track, installed_api_and_backend, wait_until,
 	};
 	use crate::window::brought_up;
 
@@ -412,21 +328,21 @@ mod tests {
 		ContextMenuHandle::new(context_menu_command_service::<T>())
 	}
 
-	fn open_artist() -> ContextMenuHandle {
-		ContextMenuHandle::new(context_menu_service::<OpenArtist>())
-	}
-
 	/// Runs `T` as a key bound to it does, on `data`.
 	fn press<T: ContextMenuCommand>(data: &FakeHandleList) {
 		command::<T>().execute_simple_on(&Guid::NULL, data).unwrap();
 	}
 
+	/// Runs `T` from the right-click menu opened on `data`.
+	fn choose<T: ContextMenuCommand>(data: &FakeHandleList) {
+		command::<T>().instantiate(data).node().execute(data).unwrap();
+	}
+
 	/// The open entries the Spotify submenu shows for `data`, in menu order, with their flags.
 	fn shown(data: &FakeHandleList) -> Vec<(String, u32)> {
-		let artist = open_artist().instantiate(data);
 		[
 			command::<OpenAlbum>().instantiate(data).node().display(data),
-			artist.node().display(data),
+			command::<OpenArtist>().instantiate(data).node().display(data),
 			command::<TrackRadio>().instantiate(data).node().display(data),
 			command::<OpenShow>().instantiate(data).node().display(data),
 		]
@@ -460,18 +376,11 @@ mod tests {
 				0.0,
 			),
 			(
-				open_artist(),
-				0x1c41af7c_af4c_42d2_8f16_54dc7b4f752c,
-				"Open artist",
-				"Opens an artist of the selected Spotify track in a playlist tab.",
-				1.0,
-			),
-			(
-				command::<OpenArtistShortcut>(),
+				command::<OpenArtist>(),
 				0xc240e9cc_4c76_4ba1_9c64_85246758c4e5,
 				"Open artist…",
 				"Opens the artist of the selected Spotify track in a playlist tab, or lists its artists to pick from.",
-				1.5,
+				1.0,
 			),
 			(
 				command::<TrackRadio>(),
@@ -510,7 +419,7 @@ mod tests {
 		let data = select(&[(GETTY_TRACK, BOTH_GETTYS)]);
 		assert_eq!(
 			shown(&data),
-			[entry("Open album", 0), entry("Open artist", 0), entry("Track radio", 0)]
+			[entry("Open album", 0), entry("Open artist…", 0), entry("Track radio", 0)]
 		);
 	}
 
@@ -524,8 +433,6 @@ mod tests {
 	fn nothing_selected_shows_nothing() {
 		let data = FakeHandleList::new(&[]);
 		assert!(shown(&data).is_empty());
-		let shortcut = command::<OpenArtistShortcut>().instantiate(&data);
-		assert_eq!(shortcut.node().display(&data), None);
 	}
 
 	#[test]
@@ -535,18 +442,16 @@ mod tests {
 			shown(&tracks),
 			[
 				entry("Open album", GREYED),
-				entry("Open artist", GREYED),
+				entry("Open artist…", GREYED),
 				entry("Track radio", GREYED)
 			]
 		);
-		let root = open_artist().instantiate(&tracks);
-		assert_eq!(root.node().kind(), TYPE_COMMAND);
 		let mixed = select(&[(GETTY_TRACK, BOTH_GETTYS), (EPISODE, NO_FIELDS)]);
 		assert_eq!(
 			shown(&mixed),
 			[
 				entry("Open album", GREYED),
-				entry("Open artist", GREYED),
+				entry("Open artist…", GREYED),
 				entry("Track radio", GREYED),
 				entry("Open show", GREYED),
 			]
@@ -563,58 +468,28 @@ mod tests {
 		let data = select(&[(LOCAL, NO_FIELDS), (GETTY_TRACK, BOTH_GETTYS), (LOCAL, NO_FIELDS)]);
 		assert_eq!(
 			shown(&data),
-			[entry("Open album", 0), entry("Open artist", 0), entry("Track radio", 0)]
+			[entry("Open album", 0), entry("Open artist…", 0), entry("Track radio", 0)]
 		);
 		press::<OpenAlbum>(&data);
 		assert_eq!(fake.related_calls(), [(getty_track(), Related::Album)]);
 	}
 
 	#[test]
-	fn a_track_with_two_artists_gets_an_artist_submenu() {
+	fn a_track_with_several_stored_artists_shows_one_open_artist_command() {
 		let data = select(&[(GETTY_TRACK, BOTH_GETTYS)]);
-		let root = open_artist().instantiate(&data);
+		let root = command::<OpenArtist>().instantiate(&data);
 		let node = root.node();
-		assert_eq!(node.kind(), TYPE_GROUP);
-		assert_eq!(node.display(&data), Some(entry("Open artist", 0)));
-		let children = node.children();
-		let names: Vec<_> = children.iter().map(|child| child.display(&data).unwrap()).collect();
-		assert_eq!(names, [entry("Keith Getty", 0), entry("Kristyn Getty", 0)]);
-		assert!(
-			children
-				.iter()
-				.all(|child| child.kind() == TYPE_COMMAND && !child.is_mappable_shortcut())
-		);
+		assert_eq!(node.kind(), TYPE_COMMAND);
+		assert_eq!(node.display(&data), Some(entry("Open artist…", 0)));
+		assert!(node.children().is_empty());
 	}
 
 	#[test]
-	fn picking_an_artist_looks_up_that_artist() {
-		let (api, fake) = installed_api_and_backend();
-		let data = select(&[(GETTY_TRACK, BOTH_GETTYS)]);
-		let root = open_artist().instantiate(&data);
-		root.node().child("Kristyn Getty").unwrap().execute(&data).unwrap();
-		assert_eq!(
-			fake.related_calls(),
-			[(getty_track(), Related::Artist(Some("Kristyn Getty".to_owned())))]
-		);
-		assert!(WINDOW.current().is_none());
-		wait_until(|| api.run_main_thread() > 0);
-		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KRISTYN_ID}")]]);
-	}
-
-	#[test]
-	fn a_track_with_one_stored_artist_gets_a_command_that_asks_spotify() {
+	fn open_artist_for_fewer_than_two_stored_artists_asks_spotify_without_a_window() {
 		let (_, fake) = installed_api_and_backend();
-		for fields in [ONE_ARTIST, NO_FIELDS] {
-			let data = select(&[(GETTY_TRACK, fields)]);
-			let root = open_artist().instantiate(&data);
-			assert_eq!(root.node().kind(), TYPE_COMMAND);
-			assert_eq!(root.node().display(&data), Some(entry("Open artist", 0)));
-			root.node().execute(&data).unwrap();
-		}
-		assert_eq!(
-			fake.related_calls(),
-			[(getty_track(), Related::Artist(None)), (getty_track(), Related::Artist(None))]
-		);
+		choose::<OpenArtist>(&select(&[(GETTY_TRACK, ONE_ARTIST)]));
+		press::<OpenArtist>(&select(&[(GETTY_TRACK, NO_FIELDS)]));
+		assert_eq!(fake.related_calls(), vec![(getty_track(), Related::Artist); 2]);
 		assert!(WINDOW.current().is_none(), "no window says Loading…");
 	}
 
@@ -654,7 +529,7 @@ mod tests {
 		let (api, fake) = installed_api_and_backend();
 		let data = select(&[(GETTY_TRACK, BOTH_GETTYS), (OTHER_TRACK, BOTH_GETTYS)]);
 		press::<OpenAlbum>(&data);
-		press::<OpenArtistShortcut>(&data);
+		press::<OpenArtist>(&data);
 		press::<TrackRadio>(&data);
 		press::<OpenShow>(&data);
 		assert_eq!(
@@ -690,7 +565,7 @@ mod tests {
 	fn a_shortcut_without_a_spotify_item_says_select_one() {
 		let (api, fake) = installed_api_and_backend();
 		press::<TrackRadio>(&select(&[(LOCAL, BOTH_GETTYS)]));
-		press::<OpenArtistShortcut>(&FakeHandleList::new(&[]));
+		press::<OpenArtist>(&FakeHandleList::new(&[]));
 		assert_eq!(
 			api.popups(),
 			[select_one("Track radio", "track"), select_one("Open artist…", "track")]
@@ -727,42 +602,32 @@ mod tests {
 	}
 
 	#[test]
-	fn the_shortcut_only_open_artist_is_forced_off_and_mappable() {
-		let shortcut = command::<OpenArtistShortcut>();
-		assert_eq!(shortcut.enabled_state(), ENABLED_FORCE_OFF);
-		assert_eq!(shortcut.name(), "Open artist…");
+	fn every_open_command_is_on_by_default_and_mappable() {
 		let data = select(&[(GETTY_TRACK, BOTH_GETTYS)]);
-		let root = shortcut.instantiate(&data);
-		assert!(root.node().is_mappable_shortcut());
-		assert_eq!(root.node().display(&data), Some(entry("Open artist…", 0)));
-		for open in [command::<OpenAlbum>(), command::<TrackRadio>(), command::<OpenShow>()] {
+		for open in [
+			command::<OpenAlbum>(),
+			command::<OpenArtist>(),
+			command::<TrackRadio>(),
+			command::<OpenShow>(),
+		] {
 			assert_eq!(open.enabled_state(), ENABLED_DEFAULT_ON, "{}", open.name());
 			assert!(open.instantiate(&data).node().is_mappable_shortcut(), "{}", open.name());
 		}
-		assert_eq!(open_artist().enabled_state(), ENABLED_DEFAULT_ON);
 	}
 
 	#[test]
-	fn open_artist_shortcut_shows_loading_for_two_stored_artists_then_lists_them() {
+	fn open_artist_shows_loading_for_two_stored_artists_then_lists_them() {
 		let (api, fake) = installed_api_and_backend();
-		press::<OpenArtistShortcut>(&select(&[(GETTY_TRACK, BOTH_GETTYS)]));
+		choose::<OpenArtist>(&select(&[(GETTY_TRACK, BOTH_GETTYS)]));
 		let dialog = WINDOW.current().expect("the artist window is open");
 		assert_eq!(dialog.text(STATUS), "Loading…");
 		assert_eq!(brought_up(), 1);
-		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist(None))]);
+		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist)]);
 		wait_until(|| api.run_main_thread() > 0);
 		pump_messages();
 		assert_eq!(artist_window::WINDOW.current(), Some(dialog));
 		assert_eq!(dialog.list_texts(LIST), ["Keith Getty", "Kristyn Getty"]);
 		destroy(dialog);
-	}
-
-	#[test]
-	fn open_artist_shortcut_for_one_stored_artist_asks_spotify_without_a_window() {
-		let (_, fake) = installed_api_and_backend();
-		press::<OpenArtistShortcut>(&select(&[(GETTY_TRACK, ONE_ARTIST)]));
-		assert!(WINDOW.current().is_none());
-		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist(None))]);
 	}
 
 	/// The artists of a track other than "In Christ Alone": Stuart Townend and Keith Getty.
@@ -771,9 +636,9 @@ mod tests {
 		vec![Opened::new("Stuart Townend", LinkKind::Artist, townend), getty_artists().remove(0)]
 	}
 
-	/// Right-click Open artist on a track that stores one artist, whose lookup runs without the
-	/// window, then the Open artist… shortcut on "In Christ Alone", which stores two and shows
-	/// "Loading…". Spotify lists several artists for each, and the first lookup answers first.
+	/// Open artist… on a track that stores one artist, whose lookup runs without the window,
+	/// then on "In Christ Alone", which stores two and shows "Loading…". Spotify lists several
+	/// artists for each, and the first lookup answers first.
 	#[test]
 	fn the_newest_artist_lookup_wins_when_an_older_one_answers_first() {
 		let (api, fake) = installed_api_and_backend();
@@ -781,10 +646,9 @@ mod tests {
 			let artists = if item == getty_track() { getty_artists() } else { townend_and_keith() };
 			Ok(Found::Artists(artists))
 		});
-		let other = select(&[(OTHER_TRACK, ONE_ARTIST)]);
-		open_artist().instantiate(&other).node().execute(&other).unwrap();
+		choose::<OpenArtist>(&select(&[(OTHER_TRACK, ONE_ARTIST)]));
 		wait_until(|| fake.related_answered() == 1);
-		press::<OpenArtistShortcut>(&select(&[(GETTY_TRACK, BOTH_GETTYS)]));
+		press::<OpenArtist>(&select(&[(GETTY_TRACK, BOTH_GETTYS)]));
 		let dialog = WINDOW.current().expect("the artist window says Loading…");
 		wait_until(|| fake.related_answered() == 2);
 		assert_eq!(api.run_main_thread(), 2, "the older lookup's answer is settled first");

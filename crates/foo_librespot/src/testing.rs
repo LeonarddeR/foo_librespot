@@ -226,7 +226,7 @@ fn related_by_default(item: ItemId, what: &Related) -> Result<Found, CoreError> 
 /// The artists of "In Christ Alone", in the track's order, as a lookup of every artist of
 /// [`GETTY_TRACK`] finds them by default.
 pub fn getty_artists() -> Vec<Opened> {
-	match related_by_default(getty_track(), &Related::Artist(None)) {
+	match related_by_default(getty_track(), &Related::Artist) {
 		Ok(Found::Artists(artists)) => artists,
 		other => panic!("the Getty track has several artists: {other:?}"),
 	}

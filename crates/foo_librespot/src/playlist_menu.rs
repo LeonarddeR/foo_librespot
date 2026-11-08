@@ -231,9 +231,7 @@ mod tests {
 	use foxide2k::testing::{ContextMenuHandle, FakeApi, FakeHandleList, NodeHandle};
 
 	use super::AddToSpotifyPlaylist;
-	use crate::spotify_menu::{
-		OpenAlbum, OpenArtist, OpenArtistShortcut, OpenShow, SpotifyGroup, TrackRadio,
-	};
+	use crate::spotify_menu::{OpenAlbum, OpenArtist, OpenShow, SpotifyGroup, TrackRadio};
 	use crate::testing::{
 		FakeBackend, episode_id, getty_favourites, installed_api_and_backend, installed_prompt,
 		shared_playlist, sunday_set, sunday_set_id, track_id, wait_until,
@@ -323,7 +321,6 @@ mod tests {
 			OpenArtist::SORT_PRIORITY,
 			TrackRadio::SORT_PRIORITY,
 			OpenShow::SORT_PRIORITY,
-			OpenArtistShortcut::SORT_PRIORITY,
 		] {
 			assert!(open < item.sort_priority());
 		}

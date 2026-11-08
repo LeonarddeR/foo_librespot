@@ -35,7 +35,7 @@ pub fn open_related(item: ItemId, what: Related, title: String, ticket: Option<T
 const fn noun(what: &Related) -> &'static str {
 	match what {
 		Related::Album => "album",
-		Related::Artist(_) => "artist",
+		Related::Artist => "artist",
 		Related::Radio => "radio",
 		Related::Show => "show",
 	}
@@ -150,12 +150,12 @@ mod tests {
 		let fake = installed_backend();
 		open_related(
 			getty_track(),
-			Related::Artist(None),
+			Related::Artist,
 			"In Christ Alone".to_owned(),
 			Some(artist_window::take_ticket()),
 		);
 		run_main_thread_work(api);
-		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist(None))]);
+		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist)]);
 		let dialog = artist_window::WINDOW.current().expect("the artist window is open");
 		assert_eq!(dialog.list_texts(artist_window::LIST), ["Keith Getty", "Kristyn Getty"]);
 		assert_eq!(brought_up(), 1);
@@ -170,16 +170,11 @@ mod tests {
 	}
 
 	/// Shows the artist window saying "Loading…" and starts looking up every artist of the
-	/// Getty track, as the shortcut-only Open artist… does.
+	/// Getty track, as Open artist… does for a track that stores two artists.
 	fn look_up_artists_while_loading() -> Dialog {
 		let wait = artist_window::show_loading();
 		let dialog = artist_window::WINDOW.current().unwrap();
-		open_related(
-			getty_track(),
-			Related::Artist(None),
-			"In Christ Alone".to_owned(),
-			Some(wait),
-		);
+		open_related(getty_track(), Related::Artist, "In Christ Alone".to_owned(), Some(wait));
 		dialog
 	}
 
@@ -272,7 +267,7 @@ mod tests {
 		assert_eq!(dialog.list_texts(artist_window::LIST), ["Keith Getty", "Kristyn Getty"]);
 		let look_up = |ticket| {
 			let title = "In Christ Alone".to_owned();
-			open_related(getty_track(), Related::Artist(None), title, Some(ticket));
+			open_related(getty_track(), Related::Artist, title, Some(ticket));
 		};
 		fake.related_with(|_, _| Ok(keith_alone()));
 		look_up(earlier);
@@ -314,7 +309,7 @@ mod tests {
 		fake.related_with(|_, _| Ok(keith_alone()));
 		open_related(
 			getty_track(),
-			Related::Artist(None),
+			Related::Artist,
 			"In Christ Alone".to_owned(),
 			Some(artist_window::take_ticket()),
 		);
@@ -323,7 +318,7 @@ mod tests {
 		fake.related_with(|_, _| Err(CoreError::Unavailable("gone".to_owned())));
 		open_related(
 			getty_track(),
-			Related::Artist(None),
+			Related::Artist,
 			"In Christ Alone".to_owned(),
 			Some(artist_window::take_ticket()),
 		);
@@ -353,33 +348,6 @@ mod tests {
 		assert!(api.console_lines().contains(
 			&"foo_librespot: can't close the artist window: foobar2000 has no main_thread_callback_manager".to_owned()
 		));
-	}
-
-	#[test]
-	fn a_failure_shows_a_popup_naming_the_track() {
-		let api = installed_api();
-		let fake = installed_backend();
-		fake.related_with(|_, _| {
-			Err(CoreError::Unavailable(
-				"Spotify no longer lists Someone Else on this track".to_owned(),
-			))
-		});
-		let artist = Related::Artist(Some("Someone Else".to_owned()));
-		open_related(getty_track(), artist.clone(), "In Christ Alone".to_owned(), None);
-		wait_until(|| !api.popups().is_empty());
-		assert_eq!(fake.related_calls(), [(getty_track(), artist)]);
-		assert_eq!(
-			api.popups(),
-			[(
-				"Can't open this artist".to_owned(),
-				"In Christ Alone\n\nSpotify no longer lists Someone Else on this track.".to_owned(),
-				PopupIcon::Error
-			)]
-		);
-		assert!(api.console_lines().contains(
-			&"foo_librespot: can't open the artist of In Christ Alone: Spotify no longer lists Someone Else on this track".to_owned()
-		));
-		assert!(api.location_requests().is_empty());
 	}
 
 	#[test]

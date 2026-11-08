@@ -8,8 +8,8 @@ use crate::{CoreError, SpotifyId, SpotifyUri};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Related {
 	Album,
-	/// The artist with this name, as the track lists it; every artist when `None`.
-	Artist(Option<String>),
+	/// Every artist of a track.
+	Artist,
 	/// The playlist Spotify makes from a track.
 	Radio,
 	/// An episode's show.
@@ -60,24 +60,13 @@ pub fn related_in(info: &TrackInfo, what: &Related) -> Result<Found, CoreError> 
 				links.album.ok_or_else(|| unavailable("Spotify names no album for this track"))?;
 			Ok(Found::One(Opened::new(&info.album, LinkKind::Album, album)))
 		}
-		Related::Artist(pick) => {
+		Related::Artist => {
 			let mut artists: Vec<Opened> = info
 				.artists
 				.iter()
 				.zip(&links.artists)
 				.map(|(artist, id)| Opened::new(artist, LinkKind::Artist, *id))
 				.collect();
-			if let Some(name) = pick {
-				return artists
-					.into_iter()
-					.find(|artist| artist.name == *name)
-					.map(Found::One)
-					.ok_or_else(|| {
-						CoreError::Unavailable(format!(
-							"Spotify no longer lists {name} on this track"
-						))
-					});
-			}
 			match artists.len() {
 				0 => Err(unavailable("Spotify names no artist for this track")),
 				1 => Ok(Found::One(artists.remove(0))),
@@ -183,23 +172,9 @@ mod tests {
 	}
 
 	#[test]
-	fn a_picked_artist_opens_that_artist() {
+	fn artist_lists_every_artist_or_opens_the_only_one() {
 		assert_eq!(
-			related_in(&getty(), &Related::Artist(Some("Kristyn Getty".to_owned()))).unwrap(),
-			Found::One(opened("Kristyn Getty", LinkKind::Artist, KRISTYN))
-		);
-	}
-
-	#[test]
-	fn a_picked_artist_spotify_no_longer_lists_fails() {
-		let result = related_in(&getty(), &Related::Artist(Some("Someone Else".to_owned())));
-		assert_eq!(unavailable(result), "Spotify no longer lists Someone Else on this track");
-	}
-
-	#[test]
-	fn artist_without_a_pick_lists_every_artist() {
-		assert_eq!(
-			related_in(&getty(), &Related::Artist(None)).unwrap(),
+			related_in(&getty(), &Related::Artist).unwrap(),
 			Found::Artists(vec![
 				opened("Keith Getty", LinkKind::Artist, KEITH),
 				opened("Kristyn Getty", LinkKind::Artist, KRISTYN),
@@ -211,7 +186,7 @@ mod tests {
 			..getty()
 		};
 		assert_eq!(
-			related_in(&solo, &Related::Artist(None)).unwrap(),
+			related_in(&solo, &Related::Artist).unwrap(),
 			Found::One(opened("Keith Getty", LinkKind::Artist, KEITH))
 		);
 	}

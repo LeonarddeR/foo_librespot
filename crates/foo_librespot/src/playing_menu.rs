@@ -3,25 +3,21 @@
 //!
 //! The commands follow the right-click rules ([`crate::spotify_menu`]) for the playing track
 //! alone, except that they are greyed out rather than hidden when nothing plays or the playing
-//! track isn't from Spotify. Open artist builds its entry, a submenu or a command, each time the
-//! menu opens. A bound key runs a command whatever the menu would show, so each command reads
-//! the playing track again when it runs; when that isn't a Spotify item of its kind, a popup
-//! says to play one, and nothing is looked up.
+//! track isn't from Spotify. A bound key runs a command whatever the menu would show, so each
+//! command reads the playing track again when it runs; when that isn't a Spotify item of its
+//! kind, a popup says to play one, and nothing is looked up.
 
-use foo_librespot_core::link::ItemId;
 use foo_librespot_core::related::Related;
 use foxide2k::abi::mainmenu::SORT_PRIORITY_BASE;
 use foxide2k::contextmenu::Shown;
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
-use foxide2k::mainmenu::{MainMenuCommand, MainMenuDynamicCommand, MainMenuNode, MainMenuPopup};
-use foxide2k::metadb::Track;
+use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
 use foxide2k::playback;
 
 use crate::open_playlist::SpotifyMenu;
 use crate::spotify_menu::{
-	ArtistPicks, Kind, Source, SpotifyItem, artist_picks, open, open_artists, shown_among,
-	spotify_item,
+	Kind, Source, SpotifyItem, open, open_artists, shown_among, spotify_item,
 };
 
 /// The File > Spotify > Playing track submenu, after Open playlist….
@@ -54,28 +50,16 @@ impl MainMenuCommand for PlayingAlbum {
 	}
 }
 
-/// The Open artist command that asks Spotify for every artist.
-const EVERY_ARTIST: Guid = Guid::from_u128(0x5dcdad74_570f_4798_b8c1_55d891328120);
-
-/// The GUID of the stored artist at `index` in the Open artist submenu: a fixed GUID with
-/// `index` in its last byte.
-const fn artist_guid(index: u8) -> Guid {
-	let mut guid = Guid::from_u128(0x6cebbc10_071b_4103_8289_c104cdff9e51);
-	guid.data4[7] = index;
-	guid
-}
-
-/// Opens an artist of the playing track: a submenu of its stored artists when it has several,
-/// or else one command that asks Spotify for them. A key bound to it does what the
-/// shortcut-only right-click "Open artist…" does.
+/// Opens the playing track's artist when Spotify names one, or lists its artists in the artist
+/// window, as the right-click "Open artist…" does.
 pub struct PlayingArtist;
 
 impl MainMenuCommand for PlayingArtist {
 	const GUID: Guid = Guid::from_u128(0x00fbed21_419c_4b8a_905f_b0047d78b2ac);
 	const PARENT: Guid = PlayingTrack::GUID;
 	const SORT_PRIORITY: u32 = SORT_PRIORITY_BASE + 1;
-	const NAME: &'static str = "Open artist";
-	const DESCRIPTION: &'static str = "Opens an artist of the playing Spotify track in a playlist tab, or lists its artists to pick from.";
+	const NAME: &'static str = "Open artist…";
+	const DESCRIPTION: &'static str = "Opens the artist of the playing Spotify track in a playlist tab, or lists its artists to pick from.";
 
 	fn shown() -> Shown {
 		shown(playing().as_ref(), Kind::Track)
@@ -84,24 +68,6 @@ impl MainMenuCommand for PlayingArtist {
 	fn execute() -> Result<()> {
 		open_artists(playing(), Source::Playing, Self::NAME);
 		Ok(())
-	}
-}
-
-impl MainMenuDynamicCommand for PlayingArtist {
-	fn build() -> MainMenuNode {
-		let now = playing();
-		match (shown(now.as_ref(), Kind::Track), now) {
-			(Shown::Enabled, Some((item, track))) => artist_node(item, &track),
-			_ => MainMenuNode::command(
-				Self::NAME,
-				EVERY_ARTIST,
-				false,
-				Box::new(|| {
-					open_artists(playing(), Source::Playing, Self::NAME);
-					Ok(())
-				}),
-			),
-		}
 	}
 }
 
@@ -158,95 +124,48 @@ fn shown(playing: Option<&SpotifyItem>, kind: Kind) -> Shown {
 	playing.map_or(Shown::Greyed, |(item, _)| shown_among([*item], kind))
 }
 
-/// The submenu of `track`'s stored artists when it has several, each opening that artist; or
-/// else the command that asks Spotify for every artist. The submenu lists the first 256, one
-/// for each value of the GUID's last byte.
-fn artist_node(item: ItemId, track: &Track) -> MainMenuNode {
-	match artist_picks(item, track) {
-		ArtistPicks::Every(pick) => {
-			MainMenuNode::command(PlayingArtist::NAME, EVERY_ARTIST, true, pick)
-		}
-		ArtistPicks::Each(picks) => MainMenuNode::Group {
-			name: PlayingArtist::NAME.into(),
-			children: picks
-				.into_iter()
-				.zip(0..=u8::MAX)
-				.map(|((name, pick), index)| {
-					MainMenuNode::command(name, artist_guid(index), true, pick)
-				})
-				.collect(),
-		},
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use foo_librespot_core::link::ItemId;
 	use foo_librespot_core::related::Related;
-	use foxide2k::abi::mainmenu::{FLAG_DISABLED, SORT_PRIORITY_BASE, TYPE_COMMAND, TYPE_GROUP};
+	use foxide2k::abi::mainmenu::{COMMANDS_V2_IID, FLAG_DISABLED, SORT_PRIORITY_BASE};
 	use foxide2k::dialog::host::destroy;
 	use foxide2k::guid::Guid;
 	use foxide2k::mainmenu::{
-		MainMenuCommand, MainMenuPopup, mainmenu_command_service, mainmenu_dynamic_service,
-		mainmenu_popup_service,
+		MainMenuCommand, MainMenuPopup, mainmenu_command_service, mainmenu_popup_service,
 	};
 	use foxide2k::popup::PopupIcon;
-	use foxide2k::testing::{MainMenuHandle, MainMenuNodeHandle};
+	use foxide2k::testing::MainMenuHandle;
 
 	use super::{PlayingAlbum, PlayingArtist, PlayingRadio, PlayingShow, PlayingTrack};
 	use crate::artist_window::{STATUS, WINDOW};
 	use crate::open_playlist::{OpenPlaylist, SpotifyMenu};
 	use crate::testing::{
-		BOTH_GETTYS, EPISODE, GETTY_TRACK, KRISTYN_ID, LOCAL, NO_FIELDS, ONE_ARTIST, entry,
-		episode_id, getty_track, installed_api, installed_api_and_backend, wait_until,
+		BOTH_GETTYS, EPISODE, GETTY_TRACK, LOCAL, NO_FIELDS, ONE_ARTIST, entry, episode_id,
+		getty_track, installed_api, installed_api_and_backend,
 	};
 	use crate::window::brought_up;
-
-	/// The GUID of the Open artist command that asks Spotify for every artist.
-	const EVERY_ARTIST: Guid = Guid::from_u128(0x5dcdad74_570f_4798_b8c1_55d891328120);
-	/// The GUIDs of the first and second stored artists in the Open artist submenu.
-	const FIRST_ARTIST: Guid = Guid::from_u128(0x6cebbc10_071b_4103_8289_c104cdff9e00);
-	const SECOND_ARTIST: Guid = Guid::from_u128(0x6cebbc10_071b_4103_8289_c104cdff9e01);
 
 	fn command<T: MainMenuCommand>() -> MainMenuHandle {
 		MainMenuHandle::new(mainmenu_command_service::<T>())
 	}
 
-	fn open_artist() -> MainMenuHandle {
-		MainMenuHandle::new(mainmenu_dynamic_service::<PlayingArtist>())
-	}
-
-	/// Runs `T` as a key bound to it does.
+	/// Runs `T` as the menu or a key bound to it does.
 	fn press<T: MainMenuCommand>() {
 		command::<T>().execute(0, None).unwrap();
-	}
-
-	/// Runs Open artist as a key bound to it does.
-	fn press_open_artist() {
-		open_artist().execute(0, None).unwrap();
 	}
 
 	/// The entries Playing track shows, in menu order, with their flags.
 	fn shown() -> Vec<(String, u32)> {
 		[
 			command::<PlayingAlbum>().display(0),
-			artist_shown(),
+			command::<PlayingArtist>().display(0),
 			command::<PlayingRadio>().display(0),
 			command::<PlayingShow>().display(0),
 		]
 		.into_iter()
 		.flatten()
 		.collect()
-	}
-
-	/// How Open artist shows: its own display, which the entry it builds agrees with when it
-	/// shows.
-	fn artist_shown() -> Option<(String, u32)> {
-		let shown = open_artist().display(0);
-		if let Some(display) = &shown {
-			assert_eq!(&open_artist().instantiate(0).display(), display, "the built entry");
-		}
-		shown
 	}
 
 	/// The popup a command shows when the playing track isn't a Spotify `what`.
@@ -257,7 +176,7 @@ mod tests {
 	fn every_command_greyed() -> [(String, u32); 4] {
 		[
 			entry("Open album", FLAG_DISABLED),
-			entry("Open artist", FLAG_DISABLED),
+			entry("Open artist…", FLAG_DISABLED),
 			entry("Track radio", FLAG_DISABLED),
 			entry("Open show", FLAG_DISABLED),
 		]
@@ -285,10 +204,10 @@ mod tests {
 				SORT_PRIORITY_BASE,
 			),
 			(
-				open_artist(),
+				command::<PlayingArtist>(),
 				0x00fbed21_419c_4b8a_905f_b0047d78b2ac,
-				"Open artist",
-				"Opens an artist of the playing Spotify track in a playlist tab, or lists its artists to pick from.",
+				"Open artist…",
+				"Opens the artist of the playing Spotify track in a playlist tab, or lists its artists to pick from.",
 				SORT_PRIORITY_BASE + 1,
 			),
 			(
@@ -314,16 +233,22 @@ mod tests {
 			assert_eq!(entry.parent(), PlayingTrack::GUID, "{name}");
 			assert_eq!(entry.sort_priority(), sort_priority, "{name}");
 		}
-		assert!(open_artist().is_dynamic(0));
+	}
+
+	#[test]
+	fn open_artist_is_a_plain_command_even_for_several_stored_artists() {
+		let api = installed_api();
+		api.set_now_playing(Some((GETTY_TRACK, BOTH_GETTYS)));
+		let open_artist = command::<PlayingArtist>();
+		assert!(!open_artist.answers(&COMMANDS_V2_IID), "not built as the menu opens");
+		assert_eq!(open_artist.command_count(), 1);
+		assert_eq!(open_artist.display(0), Some(entry("Open artist…", 0)));
 	}
 
 	#[test]
 	fn nothing_playing_greys_every_command() {
 		installed_api();
 		assert_eq!(shown(), every_command_greyed());
-		let root = open_artist().instantiate(0);
-		assert_eq!(root.kind(), TYPE_COMMAND);
-		assert_eq!(root.guid(), EVERY_ARTIST);
 	}
 
 	#[test]
@@ -331,7 +256,6 @@ mod tests {
 		let api = installed_api();
 		api.set_now_playing(Some((LOCAL, BOTH_GETTYS)));
 		assert_eq!(shown(), every_command_greyed());
-		assert_eq!(open_artist().instantiate(0).kind(), TYPE_COMMAND);
 	}
 
 	#[test]
@@ -340,7 +264,7 @@ mod tests {
 		api.set_now_playing(Some((GETTY_TRACK, BOTH_GETTYS)));
 		assert_eq!(
 			shown(),
-			[entry("Open album", 0), entry("Open artist", 0), entry("Track radio", 0)]
+			[entry("Open album", 0), entry("Open artist…", 0), entry("Track radio", 0)]
 		);
 	}
 
@@ -349,59 +273,16 @@ mod tests {
 		let api = installed_api();
 		api.set_now_playing(Some((EPISODE, &[("ARTIST", &["Sing! Podcast"])])));
 		assert_eq!(shown(), [entry("Open show", 0)]);
-		let root = open_artist().instantiate(0);
-		assert_eq!(root.kind(), TYPE_COMMAND);
-		assert_eq!(root.display(), entry("Open artist", FLAG_DISABLED));
-		assert_eq!(root.guid(), EVERY_ARTIST);
 	}
 
 	#[test]
-	fn a_playing_track_with_two_artists_gets_an_artist_submenu() {
-		let api = installed_api();
-		api.set_now_playing(Some((GETTY_TRACK, BOTH_GETTYS)));
-		let root = open_artist().instantiate(0);
-		assert_eq!(root.kind(), TYPE_GROUP);
-		assert_eq!(root.display(), entry("Open artist", 0));
-		let children = root.children();
-		let names: Vec<_> = children.iter().map(MainMenuNodeHandle::display).collect();
-		assert_eq!(names, [entry("Keith Getty", 0), entry("Kristyn Getty", 0)]);
-		let guids: Vec<_> = children.iter().map(MainMenuNodeHandle::guid).collect();
-		assert_eq!(guids, [FIRST_ARTIST, SECOND_ARTIST]);
-		assert!(children.iter().all(|child| child.kind() == TYPE_COMMAND));
-	}
-
-	#[test]
-	fn picking_one_looks_it_up() {
-		let (api, fake) = installed_api_and_backend();
-		api.set_now_playing(Some((GETTY_TRACK, BOTH_GETTYS)));
-		assert!(open_artist().dynamic_execute(0, &SECOND_ARTIST).unwrap());
-		assert_eq!(
-			fake.related_calls(),
-			[(getty_track(), Related::Artist(Some("Kristyn Getty".to_owned())))]
-		);
-		wait_until(|| api.run_main_thread() > 0);
-		assert_eq!(api.location_requests(), [[format!("sptf://spotify:artist:{KRISTYN_ID}")]]);
-		open_artist().instantiate(0).child(0).unwrap().execute(None).unwrap();
-		assert_eq!(
-			fake.related_calls().last(),
-			Some(&(getty_track(), Related::Artist(Some("Keith Getty".to_owned()))))
-		);
-		assert!(WINDOW.current().is_none());
-	}
-
-	#[test]
-	fn a_playing_track_with_one_stored_artist_gets_a_command_that_asks_spotify() {
+	fn open_artist_for_fewer_than_two_stored_artists_asks_spotify_without_a_window() {
 		let (api, fake) = installed_api_and_backend();
 		for fields in [ONE_ARTIST, NO_FIELDS] {
 			api.set_now_playing(Some((GETTY_TRACK, fields)));
-			let root = open_artist().instantiate(0);
-			assert_eq!(root.kind(), TYPE_COMMAND);
-			assert_eq!(root.display(), entry("Open artist", 0));
-			assert_eq!(root.guid(), EVERY_ARTIST);
-			root.execute(None).unwrap();
+			press::<PlayingArtist>();
 		}
-		assert!(open_artist().dynamic_execute(0, &EVERY_ARTIST).unwrap());
-		assert_eq!(fake.related_calls(), vec![(getty_track(), Related::Artist(None)); 3]);
+		assert_eq!(fake.related_calls(), vec![(getty_track(), Related::Artist); 2]);
 		assert!(WINDOW.current().is_none(), "no window says Loading…");
 	}
 
@@ -424,42 +305,31 @@ mod tests {
 	}
 
 	#[test]
-	fn open_artist_by_its_shortcut_shows_loading_for_two_stored_artists() {
+	fn open_artist_shows_loading_for_two_stored_artists() {
 		let (api, fake) = installed_api_and_backend();
 		api.set_now_playing(Some((GETTY_TRACK, BOTH_GETTYS)));
-		press_open_artist();
+		press::<PlayingArtist>();
 		let dialog = WINDOW.current().expect("the artist window is open");
 		assert_eq!(dialog.text(STATUS), "Loading…");
 		assert_eq!(brought_up(), 1);
-		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist(None))]);
+		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist)]);
 		destroy(dialog);
-	}
-
-	#[test]
-	fn open_artist_by_its_shortcut_for_one_stored_artist_asks_spotify_without_a_window() {
-		let (api, fake) = installed_api_and_backend();
-		api.set_now_playing(Some((GETTY_TRACK, ONE_ARTIST)));
-		press_open_artist();
-		assert!(WINDOW.current().is_none());
-		assert_eq!(fake.related_calls(), [(getty_track(), Related::Artist(None))]);
 	}
 
 	#[test]
 	fn a_shortcut_with_nothing_playing_says_play_a_spotify_track_first() {
 		let (api, fake) = installed_api_and_backend();
 		press::<PlayingAlbum>();
-		press_open_artist();
+		press::<PlayingArtist>();
 		press::<PlayingRadio>();
 		press::<PlayingShow>();
-		assert!(open_artist().dynamic_execute(0, &EVERY_ARTIST).unwrap());
 		assert_eq!(
 			api.popups(),
 			[
 				play_one("Open album", "track"),
-				play_one("Open artist", "track"),
+				play_one("Open artist…", "track"),
 				play_one("Track radio", "track"),
 				play_one("Open show", "episode"),
-				play_one("Open artist", "track"),
 			]
 		);
 		assert!(fake.related_calls().is_empty());
@@ -473,17 +343,15 @@ mod tests {
 		press::<PlayingShow>();
 		api.set_now_playing(Some((EPISODE, NO_FIELDS)));
 		press::<PlayingAlbum>();
-		press_open_artist();
+		press::<PlayingArtist>();
 		press::<PlayingRadio>();
-		open_artist().instantiate(0).execute(None).unwrap();
 		assert_eq!(
 			api.popups(),
 			[
 				play_one("Open show", "episode"),
 				play_one("Open album", "track"),
-				play_one("Open artist", "track"),
+				play_one("Open artist…", "track"),
 				play_one("Track radio", "track"),
-				play_one("Open artist", "track"),
 			]
 		);
 		assert!(fake.related_calls().is_empty());

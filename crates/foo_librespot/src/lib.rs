@@ -39,9 +39,7 @@ use foxide2k::contextmenu::{
 use foxide2k::filesystem_service::filesystem_factory;
 use foxide2k::initquit::{InitQuit, InitQuitService};
 use foxide2k::input::input_factory;
-use foxide2k::mainmenu::{
-	mainmenu_command_factory, mainmenu_dynamic_factory, mainmenu_popup_factory,
-};
+use foxide2k::mainmenu::{mainmenu_command_factory, mainmenu_popup_factory};
 use foxide2k::playlist_loader::playlist_loader_factory;
 use foxide2k::preferences::preferences_page_factory;
 use foxide2k::service::Singleton;
@@ -85,13 +83,12 @@ foxide2k::component! {
 		mainmenu_command_factory::<open_playlist::OpenPlaylist>(),
 		mainmenu_popup_factory::<playing_menu::PlayingTrack>(),
 		mainmenu_command_factory::<playing_menu::PlayingAlbum>(),
-		mainmenu_dynamic_factory::<playing_menu::PlayingArtist>(),
+		mainmenu_command_factory::<playing_menu::PlayingArtist>(),
 		mainmenu_command_factory::<playing_menu::PlayingRadio>(),
 		mainmenu_command_factory::<playing_menu::PlayingShow>(),
 		context_menu_group_factory::<spotify_menu::SpotifyGroup>(),
 		context_menu_command_factory::<spotify_menu::OpenAlbum>(),
-		context_menu_factory::<spotify_menu::OpenArtist>(),
-		context_menu_command_factory::<spotify_menu::OpenArtistShortcut>(),
+		context_menu_command_factory::<spotify_menu::OpenArtist>(),
 		context_menu_command_factory::<spotify_menu::TrackRadio>(),
 		context_menu_command_factory::<spotify_menu::OpenShow>(),
 		context_menu_factory::<playlist_menu::AddToSpotifyPlaylist>(),

@@ -5,14 +5,13 @@
 //! cargo run -p foo_librespot_core --example spotify_dev -- resolve <link> [--popular]
 //! cargo run -p foo_librespot_core --example spotify_dev -- decode <track link> <seconds> [--seek <seconds>]
 //! cargo run -p foo_librespot_core --example spotify_dev -- library
-//! cargo run -p foo_librespot_core --example spotify_dev -- related <track link> album|artist [<name>]|radio|show
+//! cargo run -p foo_librespot_core --example spotify_dev -- related <track link> album|artist|radio|show
 //! cargo run -p foo_librespot_core --example spotify_dev -- logout
 //! ```
 //!
 //! `library` lists the account's playlists, saying which it can change, and the size of Liked Songs.
 //! `related` prints the album, artist or show a track or episode belongs to, or a track's radio
-//! playlist: each name with its link. `artist` lists every artist of the track, or, given a name,
-//! that one.
+//! playlist: each name with its link. `artist` lists every artist of the track.
 //! The login is kept in `.spotify-dev` in the current folder, or in `--profile <folder>`.
 //! An artist link resolves to the artist's whole discography, as in foobar2000, or to their
 //! popular tracks with `--popular`.
@@ -31,7 +30,7 @@ use foo_librespot_core::related::{Found, Opened, Related};
 use foo_librespot_core::resolve::ArtistTracks;
 use foo_librespot_core::{Core, CoreError};
 
-const USAGE: &str = "usage: spotify_dev [--profile <folder>] login | logout | library | resolve <link> [--popular] | decode <track link> <seconds> [--seek <seconds>] | related <track link> album|artist [<name>]|radio|show";
+const USAGE: &str = "usage: spotify_dev [--profile <folder>] login | logout | library | resolve <link> [--popular] | decode <track link> <seconds> [--seek <seconds>] | related <track link> album|artist|radio|show";
 
 fn main() -> ExitCode {
 	init_logger();
@@ -59,10 +58,7 @@ fn main() -> ExitCode {
 		["resolve", link] => resolve(&core, link, artist_tracks),
 		["decode", link, seconds] => decode(&core, link, seconds, seek.as_deref()),
 		["related", link, "album"] => related(&core, link, &Related::Album),
-		["related", link, "artist"] => related(&core, link, &Related::Artist(None)),
-		["related", link, "artist", name] => {
-			related(&core, link, &Related::Artist(Some((*name).to_owned())))
-		}
+		["related", link, "artist"] => related(&core, link, &Related::Artist),
 		["related", link, "radio"] => related(&core, link, &Related::Radio),
 		["related", link, "show"] => related(&core, link, &Related::Show),
 		_ => {

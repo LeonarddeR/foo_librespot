@@ -59,15 +59,15 @@ Right-click Spotify tracks and choose Spotify > Add to playlist to add them to L
 
 ## A track's album, artist, radio or show
 
-Right-click a Spotify track and open the Spotify submenu: Open album, Open artist and Track radio open the track's album, its artist and Spotify's radio for it. For a podcast episode, the submenu has Open show instead. Each opens in a new tab named after the album, the artist, the show or the radio playlist, such as "In Christ Alone Radio", filled as pasting its link would. If that tab already exists, it comes to the front. An artist's tab holds what an artist link adds: the whole discography, or the popular tracks when "Artist links add the whole discography" is unchecked.
+Right-click a Spotify track and open the Spotify submenu: Open album, Open artist… and Track radio open the track's album, its artist and Spotify's radio for it. For a podcast episode, the submenu has Open show instead. Each opens in a new tab named after the album, the artist, the show or the radio playlist, such as "In Christ Alone Radio", filled as pasting its link would. If that tab already exists, it comes to the front. An artist's tab holds what an artist link adds: the whole discography, or the popular tracks when "Artist links add the whole discography" is unchecked.
 
-When a track has several artists, Open artist is a submenu that lists them, in the order the track lists them. The names come from the track's info in foobar2000; if Spotify no longer lists one of them on the track, a popup says so instead of opening another artist.
+When Spotify lists several artists for a track, Open artist… opens a window that lists them, in the order the track lists them. When foobar2000 stores two or more artists for the track, the window says "Loading…" while it asks Spotify. Choose an artist with the arrow keys and press Enter, or press Escape to close the window.
 
 These commands work on one track or episode at a time. With several Spotify tracks or episodes selected, they are greyed out. Local files in the selection don't count.
 
 File > Spotify > Playing track has the same commands for the track or episode that is playing. They are greyed out when nothing plays or the playing track isn't from Spotify. In both menus, when you're logged out, a command opens the login window instead; once you're logged in, choose it again.
 
-In File > Preferences > Keyboard Shortcuts, you can bind keys to Open album, Track radio and Open show, for the selected track or for the playing one. The artists in Open artist change from track to track, so they can't have keys. Instead, the shortcut list has Open artist…, which isn't in the right-click menu: it opens the track's artist, or, when the track has several, a window that lists them. The menus' Open artist shows the same window when foobar2000 stores one artist for a track but Spotify lists several. When foobar2000 stores two or more artists for the track, the window says "Loading…" while it asks Spotify. Choose an artist with the arrow keys and press Enter, or press Escape to close the window.
+In File > Preferences > Keyboard Shortcuts, you can bind keys to Open album, Open artist…, Track radio and Open show, for the selected track or for the playing one.
 
 A key pressed where its command doesn't apply, such as Open show on a track, shows a message saying why, for example "Select one Spotify episode first." There is one exception. When nothing plays, foobar2000 doesn't call a right-click command bound for the playing track, so its key does nothing. The commands in File > Spotify > Playing track can be bound to keys too, and they say why, for example "Play a Spotify track first."
 

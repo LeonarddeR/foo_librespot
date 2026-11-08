@@ -460,7 +460,7 @@ mod tests {
 		let dir = tempfile::tempdir().unwrap();
 		let core = Core::new(dir.path()).unwrap();
 		let track = ItemId::Track(SpotifyId::from_base62("2hQxLiI93xdjqENJuKeXjO").unwrap());
-		for what in [Related::Album, Related::Artist(None), Related::Radio] {
+		for what in [Related::Album, Related::Artist, Related::Radio] {
 			let result = core.related(track, &what, &|| false);
 			assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{what:?}: {result:?}");
 		}

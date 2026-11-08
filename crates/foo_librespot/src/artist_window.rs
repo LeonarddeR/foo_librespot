@@ -1,6 +1,6 @@
-//! The shortcut-only "Open artist…": a window that lists a track's artists, as Spotify names
-//! them, and opens the one picked as a playlist tab named after it, as [`open_in_tab`] opens any
-//! link.
+//! The window "Open artist…" shows for a track with several artists: it lists them, as Spotify
+//! names them, and opens the one picked as a playlist tab named after it, as [`open_in_tab`]
+//! opens any link.
 //!
 //! What the window lists lives in a main-thread [`CHOICES`]: showing the window sets it, and the
 //! window's handler reads it when the window opens and on each refresh. A window that says
