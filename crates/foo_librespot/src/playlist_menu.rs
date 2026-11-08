@@ -8,16 +8,14 @@
 
 use std::ops::ControlFlow;
 
-use foo_librespot_core::link::{ItemId, parse_item};
+use foo_librespot_core::link::parse_item;
 use foxide2k::contextmenu::{ContextMenuCommand, ContextMenuGroup, Shown};
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
 use foxide2k::metadb::HandleList;
-use foxide2k::popup::PopupIcon;
 
-use crate::errors::show_message;
-use crate::playlist_window::show_for;
-use crate::spotify_menu::{SpotifyGroup, spotify_items};
+use crate::playlist_window;
+use crate::spotify_menu::{Source, SpotifyGroup, spotify_items};
 
 /// The last entry of the right-click Spotify submenu.
 pub struct AddToPlaylist;
@@ -40,13 +38,7 @@ impl ContextMenuCommand for AddToPlaylist {
 	}
 
 	fn execute(selection: &HandleList<'_>) -> Result<()> {
-		let items: Vec<ItemId> = spotify_items(selection).map(|(item, _)| item).collect();
-		if items.is_empty() {
-			let select = "Select a Spotify track or episode first.";
-			show_message(Self::NAME, select, PopupIcon::Information);
-		} else {
-			show_for(items);
-		}
+		playlist_window::open(spotify_items(selection), Source::Selection, Self::NAME);
 		Ok(())
 	}
 }

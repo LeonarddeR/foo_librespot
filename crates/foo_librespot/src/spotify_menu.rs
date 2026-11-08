@@ -143,7 +143,7 @@ impl Kind {
 	}
 }
 
-/// Where an open command finds the item it opens from.
+/// Where a command finds the Spotify items it works on.
 #[derive(Clone, Copy)]
 pub enum Source {
 	/// The tracks a right-click menu, or a key bound to one of its commands, passes.
@@ -160,6 +160,14 @@ impl Source {
 			(Self::Selection, Kind::Episode) => "Select one Spotify episode first.",
 			(Self::Playing, Kind::Track) => "Play a Spotify track first.",
 			(Self::Playing, Kind::Episode) => "Play a Spotify episode first.",
+		}
+	}
+
+	/// What a command that takes tracks and episodes alike says when this holds no Spotify item.
+	pub const fn wants_any(self) -> &'static str {
+		match self {
+			Self::Selection => "Select a Spotify track or episode first.",
+			Self::Playing => "Play a Spotify track or episode first.",
 		}
 	}
 }

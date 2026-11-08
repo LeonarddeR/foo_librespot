@@ -14,12 +14,10 @@
 use std::cell::{Cell, RefCell};
 
 use foo_librespot_core::related::Opened;
-use foxide2k::dialog::host::{Dialog, DialogHandler, destroy, refresh_poster};
+use foxide2k::dialog::host::{Dialog, DialogHandler, destroy};
 use foxide2k::dialog::notify::IDCANCEL;
 use foxide2k::dialog::template::DialogTemplate;
-use foxide2k::host::host;
 
-use crate::errors::report_failure;
 use crate::link_list::{self, Ids, LinkList, is_pick};
 use crate::status_line::StatusLine;
 use crate::window::SingleWindow;
@@ -120,12 +118,7 @@ pub fn settle(ticket: Ticket, artists: Option<Vec<Opened>>) {
 /// console and a popup when it can't open.
 fn show(choices: Option<Vec<Opened>>) {
 	CHOICES.set(choices);
-	if let Some(dialog) = WINDOW.current() {
-		refresh_poster(&dialog).post();
-	}
-	if let Err(error) = WINDOW.show(host().main_window()) {
-		report_failure("can't open the artist window", CANT_OPEN, TITLE, &error.message);
-	}
+	WINDOW.show_fresh("can't open the artist window", CANT_OPEN);
 }
 
 #[derive(Default)]
@@ -489,17 +482,13 @@ mod tests {
 		destroy(Dialog::from_hwnd(gone));
 		api.set_main_window(gone);
 		list_getty_artists();
-		assert!(WINDOW.current().is_none());
-		assert_eq!(brought_up(), 0);
 		let popups = api.popups();
-		assert_eq!(popups.len(), 1, "{popups:?}");
-		let (title, message, icon) = &popups[0];
+		let (title, message, _) = &popups[0];
 		assert_eq!(title, "Can't open this artist");
 		assert!(
 			message.starts_with("Open a Spotify artist\n\ncan't create a dialog: "),
 			"{message}"
 		);
-		assert_eq!(*icon, PopupIcon::Error);
 		assert!(
 			api.console_lines().iter().any(|line| line.starts_with(
 				"foo_librespot: can't open the artist window: can't create a dialog: "

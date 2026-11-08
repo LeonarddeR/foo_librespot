@@ -5,10 +5,13 @@ use std::any::TypeId;
 use std::cell::RefCell;
 use std::marker::PhantomData;
 
-use foxide2k::dialog::host::{Dialog, DialogHandler, create_modeless_dialog};
+use foxide2k::dialog::host::{Dialog, DialogHandler, create_modeless_dialog, refresh_poster};
 use foxide2k::dialog::template::DialogTemplate;
 use foxide2k::error::Result;
+use foxide2k::host::host;
 use foxide2k::main_thread::{add_modeless, remove_modeless};
+
+use crate::errors::report_failure;
 
 thread_local! {
 	/// The open window of each kind, by the type of its handler. Only foobar2000's main thread
@@ -57,6 +60,18 @@ impl<H: DialogHandler + Default> SingleWindow<H> {
 	pub fn show(&self, owner: isize) -> Result<()> {
 		bring_up(self.open(owner)?);
 		Ok(())
+	}
+
+	/// Brings the open window up to date with a refresh, or opens it, owned by foobar2000's main
+	/// window, and brings it up. When it can't open, says in the console "`failed`: why", and
+	/// shows the window's title and why in an error popup titled `title`. Main thread only.
+	pub fn show_fresh(&self, failed: &str, title: &str) {
+		if let Some(dialog) = self.current() {
+			refresh_poster(&dialog).post();
+		}
+		if let Err(error) = self.show(host().main_window()) {
+			report_failure(failed, title, &(self.template)().title, &error.message);
+		}
 	}
 
 	/// What `look` finds in the open window's handler, run on it as the window's own messages
@@ -136,9 +151,11 @@ mod tests {
 	use foxide2k::dialog::host::{Dialog, DialogHandler, destroy};
 	use foxide2k::dialog::style::{WS_CAPTION, WS_POPUP};
 	use foxide2k::dialog::template::{DialogTemplate, shell_font};
+	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::{hidden_window, pump_messages, send_close};
 
 	use super::{SingleWindow, brought_up};
+	use crate::testing::installed_api;
 
 	fn template() -> DialogTemplate {
 		DialogTemplate {
@@ -151,9 +168,11 @@ mod tests {
 		}
 	}
 
-	/// Closes its window on Escape and the close box.
+	/// Closes its window on Escape and the close box, and counts its refreshes.
 	#[derive(Default)]
-	struct Closing;
+	struct Closing {
+		refreshes: usize,
+	}
 
 	impl DialogHandler for Closing {
 		fn init(&mut self, _dialog: &Dialog) -> Option<u16> {
@@ -166,7 +185,9 @@ mod tests {
 			}
 		}
 
-		fn refresh(&mut self, _dialog: &Dialog) {}
+		fn refresh(&mut self, _dialog: &Dialog) {
+			self.refreshes += 1;
+		}
 	}
 
 	#[derive(Default)]
@@ -213,6 +234,44 @@ mod tests {
 		assert_eq!(ONE.current(), Some(shown));
 		assert_eq!(brought_up(), 2);
 		destroy(shown);
+	}
+
+	#[test]
+	fn showing_fresh_refreshes_the_open_window_and_brings_it_up() {
+		installed_api().set_main_window(hidden_window());
+		ONE.show_fresh("can't open the window", "Can't open it");
+		let shown = ONE.current().expect("showing opens the window");
+		assert_eq!(ONE.inspect(|one, _| one.refreshes), Some(0));
+		ONE.show_fresh("can't open the window", "Can't open it");
+		pump_messages();
+		assert_eq!(ONE.current(), Some(shown));
+		assert_eq!(ONE.inspect(|one, _| one.refreshes), Some(1));
+		assert_eq!(brought_up(), 2);
+		destroy(shown);
+	}
+
+	#[test]
+	fn a_window_that_cant_open_says_why_in_the_console_and_an_error_popup() {
+		let api = installed_api();
+		let gone = hidden_window();
+		destroy(Dialog::from_hwnd(gone));
+		api.set_main_window(gone);
+		ONE.show_fresh("can't open the window", "Can't open it");
+		assert!(ONE.current().is_none());
+		assert_eq!(brought_up(), 0);
+		let popups = api.popups();
+		assert_eq!(popups.len(), 1, "{popups:?}");
+		let (title, message, icon) = &popups[0];
+		assert_eq!(title, "Can't open it");
+		assert!(message.starts_with("A window\n\ncan't create a dialog: "), "{message}");
+		assert_eq!(*icon, PopupIcon::Error);
+		let console = api.console_lines();
+		assert!(
+			console.iter().any(|line| {
+				line.starts_with("foo_librespot: can't open the window: can't create a dialog: ")
+			}),
+			"{console:?}"
+		);
 	}
 
 	#[test]

@@ -28,15 +28,15 @@ pub struct Ids {
 
 /// A window's list, by its class and style, and what its two buttons say.
 #[derive(Clone, Copy)]
-pub struct Controls<'a> {
+pub struct Controls {
 	pub list_class: ControlClass,
 	pub list_style: u32,
-	pub ok: &'a str,
-	pub cancel: &'a str,
+	pub ok: &'static str,
+	pub cancel: &'static str,
 }
 
 /// A list box that tells its window of double clicks, with Open and Close.
-const LINKS: Controls<'static> = Controls {
+const LINKS: Controls = Controls {
 	list_class: ControlClass::ListBox,
 	list_style: WS_TABSTOP | WS_VSCROLL | WS_BORDER | LBS_NOTIFY,
 	ok: "&Open",
@@ -61,7 +61,7 @@ pub fn template_with(
 	title: &str,
 	label: &str,
 	ids: Ids,
-	controls: Controls<'_>,
+	controls: Controls,
 	(cx, cy): (i16, i16),
 	list_height: i16,
 ) -> DialogTemplate {

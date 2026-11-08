@@ -68,6 +68,18 @@ impl LibraryWatch {
 	}
 }
 
+/// What the status line of a window that lists the library says for `state`: nothing once the
+/// library is ready, "Loading…" while it loads, why it couldn't load, or that the user should
+/// log in.
+pub fn status(state: &LibraryState) -> String {
+	match state {
+		LibraryState::Ready(_) => String::new(),
+		LibraryState::Loading => "Loading…".to_owned(),
+		LibraryState::Failed(reason) => format!("Couldn't load your playlists: {reason}."),
+		LibraryState::LoggedOut => "Log in to Spotify to see your playlists.".to_owned(),
+	}
+}
+
 impl Drop for LibraryWatch {
 	/// Runs when the window is destroyed, also when foobar2000 quits with it open.
 	fn drop(&mut self) {

@@ -12,13 +12,20 @@ use foxide2k::console;
 use foxide2k::popup::PopupIcon;
 
 use crate::backend::backend;
-use crate::errors::{show_failure, show_message};
+use crate::errors::{log_failure, show_failure, show_message};
 use crate::links::plural;
-use crate::playlist_window::Planned;
 
 /// The title of the popups that say a playlist can't be changed: the one that says which
 /// changes failed, and the one that says the Add to playlist window can't open.
 pub const CANT_CHANGE: &str = "Can't change the Spotify playlist";
+
+/// A change the user made: the items go to `target`, or out of it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Planned {
+	pub edit: Edit,
+	pub target: Target,
+	pub name: String,
+}
 
 /// Starts each of `planned` with `items`, and returns at once.
 pub fn save(items: &[ItemId], planned: Vec<Planned>) {
@@ -49,7 +56,7 @@ fn ended(saving: &Mutex<Saving>, index: usize, change: Planned, result: Result<C
 		}
 		Err(CoreError::Aborted) => None,
 		Err(error) => {
-			console::print(&format!("foo_librespot: can't change {}: {error}", change.name));
+			log_failure(&format!("can't change {}", change.name), &error);
 			Some((change.name, error))
 		}
 	};
@@ -130,9 +137,8 @@ mod tests {
 	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::FakeApi;
 
-	use super::save;
+	use super::{Planned, save};
 	use crate::backend::backend;
-	use crate::playlist_window::Planned;
 	use crate::testing::{
 		FakeBackend, getty_track, installed_api_and_backend, shared_playlist, sunday_set_id,
 		wait_until,

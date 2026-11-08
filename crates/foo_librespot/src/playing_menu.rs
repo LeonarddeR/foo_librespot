@@ -14,11 +14,9 @@ use foxide2k::error::Result;
 use foxide2k::guid::Guid;
 use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
 use foxide2k::playback;
-use foxide2k::popup::PopupIcon;
 
-use crate::errors::show_message;
 use crate::open_playlist::SpotifyMenu;
-use crate::playlist_window::show_for;
+use crate::playlist_window;
 use crate::spotify_menu::{
 	Kind, Source, SpotifyItem, open, open_artists, shown_among, spotify_item,
 };
@@ -131,12 +129,7 @@ impl MainMenuCommand for PlayingAddToPlaylist {
 	}
 
 	fn execute() -> Result<()> {
-		if let Some((item, _)) = playing() {
-			show_for(vec![item]);
-		} else {
-			let play = "Play a Spotify track or episode first.";
-			show_message(Self::NAME, play, PopupIcon::Information);
-		}
+		playlist_window::open(playing(), Source::Playing, Self::NAME);
 		Ok(())
 	}
 }

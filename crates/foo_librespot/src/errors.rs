@@ -61,10 +61,15 @@ pub fn show_failure(title: &str, icon: PopupIcon, subject: &str, why: &dyn Displ
 	show_message(title, &format!("{subject}\n\n{why}."), icon);
 }
 
+/// Says in the console "`failed`: `why`".
+pub fn log_failure(failed: &str, why: &dyn Display) {
+	console::print(&format!("foo_librespot: {failed}: {why}"));
+}
+
 /// Says in the console "`failed`: `why`", and shows `subject` and `why` in an error popup titled
 /// `title`.
 pub fn report_failure(failed: &str, title: &str, subject: &str, why: &dyn Display) {
-	console::print(&format!("foo_librespot: {failed}: {why}"));
+	log_failure(failed, why);
 	show_failure(title, PopupIcon::Error, subject, why);
 }
 

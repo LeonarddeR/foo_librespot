@@ -15,7 +15,7 @@ use foxide2k::guid::Guid;
 use foxide2k::host::host;
 use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
 
-use crate::library_watch::LibraryWatch;
+use crate::library_watch::{self, LibraryWatch};
 use crate::link_list::{self, Entry, Ids, LinkList, is_pick};
 use crate::status_line::StatusLine;
 use crate::window::SingleWindow;
@@ -83,20 +83,14 @@ pub struct OpenPlaylistWindow {
 impl OpenPlaylistWindow {
 	/// Shows `state` in the list, keeping the entry picked selected, and in the status line; a
 	/// new status is announced.
-	fn render(&mut self, dialog: Dialog, state: LibraryState) {
-		let (entries, status) = match state {
-			LibraryState::Ready(library) => (entries_of(&library), String::new()),
-			LibraryState::Loading => (Vec::new(), "Loading…".to_owned()),
-			LibraryState::Failed(reason) => {
-				(Vec::new(), format!("Couldn't load your playlists: {reason}."))
-			}
-			LibraryState::LoggedOut => {
-				(Vec::new(), "Log in to Spotify to see your playlists.".to_owned())
-			}
+	fn render(&mut self, dialog: Dialog, state: &LibraryState) {
+		let entries = match state {
+			LibraryState::Ready(library) => entries_of(library),
+			LibraryState::Loading | LibraryState::Failed(_) | LibraryState::LoggedOut => Vec::new(),
 		};
 		self.entries.fill(dialog, LIST, entries, true);
 		if let Some(line) = &mut self.status {
-			line.show(dialog, status);
+			line.show(dialog, library_watch::status(state));
 		}
 	}
 }
@@ -105,7 +99,7 @@ impl DialogHandler for OpenPlaylistWindow {
 	fn init(&mut self, dialog: &Dialog) -> Option<u16> {
 		self.status = Some(StatusLine::new(*dialog, STATUS, String::new()));
 		let state = self.library.start(*dialog);
-		self.render(*dialog, state);
+		self.render(*dialog, &state);
 		Some(LIST)
 	}
 
@@ -119,7 +113,7 @@ impl DialogHandler for OpenPlaylistWindow {
 
 	fn refresh(&mut self, dialog: &Dialog) {
 		let state = self.library.refreshed();
-		self.render(*dialog, state);
+		self.render(*dialog, &state);
 	}
 }
 

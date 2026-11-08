@@ -3,26 +3,27 @@
 //! on. The user ticks and unticks rows. OK saves the rows the user changed and closes the
 //! window; Cancel closes it.
 //!
-//! The items live in a main-thread [`ITEMS`]: [`show_for`] sets them, and the window's handler
-//! reads them whenever it lists the library. The window follows Open playlist…'s states while
-//! the library loads, is logged out or failed, and lists it again after every change of it,
-//! keeping the ticks the user gave.
+//! [`open`] hands the window its items through a main-thread [`PENDING`], and the window takes
+//! them the next time it lists the library, which drops the ticks the user gave before. The
+//! window follows Open playlist…'s states while the library loads, is logged out or failed, and
+//! lists it again after every change of it, keeping the ticks the user gave.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashSet;
 
-use foo_librespot_core::library::{Edit, LIKED_SONGS, Library, LibraryState, Target, tracks_of};
+use foo_librespot_core::library::{Edit, LIKED_SONGS, Library, LibraryState, Target};
 use foo_librespot_core::link::ItemId;
-use foxide2k::dialog::host::{Dialog, DialogHandler, destroy, refresh_poster};
+use foxide2k::dialog::host::{Dialog, DialogHandler, destroy};
 use foxide2k::dialog::notify::{IDCANCEL, IDOK};
 use foxide2k::dialog::style::CHECK_LIST;
 use foxide2k::dialog::template::{ControlClass, DialogTemplate};
-use foxide2k::host::host;
+use foxide2k::popup::PopupIcon;
 
-use crate::errors::report_failure;
-use crate::library_watch::LibraryWatch;
+use crate::errors::show_message;
+use crate::library_watch::{self, LibraryWatch};
 use crate::link_list::{self, Controls, Ids};
-use crate::playlist_save::{CANT_CHANGE, save};
+use crate::playlist_save::{CANT_CHANGE, Planned, save};
+use crate::spotify_menu::{Source, SpotifyItem};
 use crate::status_line::StatusLine;
 use crate::window::SingleWindow;
 
@@ -47,67 +48,63 @@ pub fn window_template() -> DialogTemplate {
 pub static WINDOW: SingleWindow<PlaylistWindow> = SingleWindow::new(window_template);
 
 thread_local! {
-	/// The items the window works on, each once, in order. Only foobar2000's main thread sets
-	/// and reads it.
-	static ITEMS: RefCell<Vec<ItemId>> = const { RefCell::new(Vec::new()) };
-	/// How often [`show_for`] gave the window items. Only foobar2000's main thread sets and
-	/// reads it.
-	static SHOWINGS: Cell<u64> = const { Cell::new(0) };
+	/// The items [`show_for`] gave the window that it hasn't taken yet, each once, in order.
+	/// Only foobar2000's main thread sets and reads it.
+	static PENDING: RefCell<Option<Vec<ItemId>>> = const { RefCell::new(None) };
+}
+
+/// Opens the window for the Spotify `items`, taken from `source`, as [`show_for`] does. When
+/// there are none, a popup titled `command` says what `source` should hold instead. Main thread
+/// only.
+pub fn open(items: impl IntoIterator<Item = SpotifyItem>, source: Source, command: &str) {
+	let items: Vec<ItemId> = items.into_iter().map(|(item, _)| item).collect();
+	if items.is_empty() {
+		show_message(command, source.wants_any(), PopupIcon::Information);
+	} else {
+		show_for(items);
+	}
 }
 
 /// Makes the window work on `items`, each once, in their order, and drops the ticks the user
 /// gave before; opens the window if it is closed, and brings it up. Says in the console and a
 /// popup when it can't open. Main thread only.
-pub fn show_for(items: Vec<ItemId>) {
+fn show_for(items: Vec<ItemId>) {
 	let mut seen = HashSet::new();
-	ITEMS.set(items.into_iter().filter(|item| seen.insert(*item)).collect());
-	SHOWINGS.set(SHOWINGS.get() + 1);
-	if let Some(dialog) = WINDOW.current() {
-		refresh_poster(&dialog).post();
-	}
-	if let Err(error) = WINDOW.show(host().main_window()) {
-		report_failure("can't open the Add to playlist window", CANT_CHANGE, TITLE, &error.message);
-	}
+	PENDING.set(Some(items.into_iter().filter(|item| seen.insert(*item)).collect()));
+	WINDOW.show_fresh("can't open the Add to playlist window", CANT_CHANGE);
 }
 
 /// One row of the list: where its changes go, the name it shows, and whether it starts ticked.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Row {
-	pub target: Target,
-	pub name: String,
-	pub start: bool,
+struct Row {
+	target: Target,
+	name: String,
+	start: bool,
 }
 
 /// Liked Songs, when `items` hold a track, then every playlist of `library` the account can
 /// change. A row starts ticked when its playlist holds every one of `items`.
-pub fn rows_of(library: &Library, items: &[ItemId]) -> Vec<Row> {
+fn rows_of(library: &Library, items: &[ItemId]) -> Vec<Row> {
 	let row =
 		|target, name| Row { target, name, start: library.holds(target, items) == Some(true) };
-	let liked = (!tracks_of(items).is_empty()).then(|| row(Target::LikedSongs, LIKED_SONGS.into()));
+	let has_track = items.iter().any(|item| matches!(item, ItemId::Track(_)));
+	let liked = has_track.then(|| row(Target::LikedSongs, LIKED_SONGS.into()));
 	let playlists = library
 		.editable()
 		.map(|playlist| row(Target::Playlist(playlist.id), playlist.display_name()));
 	liked.into_iter().chain(playlists).collect()
 }
 
-/// A change the user made: the items go to `target`, or out of it.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Planned {
-	pub edit: Edit,
-	pub target: Target,
-	pub name: String,
-}
-
 #[derive(Default)]
 pub struct PlaylistWindow {
+	/// The items the window works on, each once, in order.
+	items: Vec<ItemId>,
 	/// The rows the list shows, in order.
 	rows: Vec<Row>,
 	/// The list was filled since the window opened, the account last logged out, or new items
 	/// last came with no library to list them from. Until it is, the window says "Loading…" and
 	/// waits for a complete library.
 	filled: bool,
-	/// The [`SHOWINGS`] whose items the rows are for.
-	showing: u64,
 	status: Option<StatusLine>,
 	library: LibraryWatch,
 }
@@ -116,15 +113,16 @@ impl PlaylistWindow {
 	/// The changes the user made: each row whose tick differs from its start, in row order. A
 	/// ticked row adds the items; an unticked one removes them.
 	fn planned(&self, dialog: Dialog) -> Vec<Planned> {
-		let ticked = |index| dialog.is_row_checked(LIST, index);
 		self.rows
 			.iter()
 			.enumerate()
-			.filter(|&(index, row)| ticked(index) != row.start)
-			.map(|(index, row)| Planned {
-				edit: if ticked(index) { Edit::Add } else { Edit::Remove },
-				target: row.target,
-				name: row.name.clone(),
+			.filter_map(|(index, row)| {
+				let ticked = dialog.is_row_checked(LIST, index);
+				(ticked != row.start).then(|| Planned {
+					edit: if ticked { Edit::Add } else { Edit::Remove },
+					target: row.target,
+					name: row.name.clone(),
+				})
 			})
 			.collect()
 	}
@@ -132,26 +130,31 @@ impl PlaylistWindow {
 	/// Shows `state` in the list and the status line; a new status is announced. Once filled,
 	/// the list stays while the library loads or fails. New items without a library to list
 	/// them from empty it. A filled list without rows says why.
-	fn render(&mut self, dialog: Dialog, state: LibraryState) {
-		let new_items = self.showing != SHOWINGS.get();
-		self.showing = SHOWINGS.get();
+	fn render(&mut self, dialog: Dialog, state: &LibraryState) {
+		let new_items = if let Some(items) = PENDING.take() {
+			self.items = items;
+			true
+		} else {
+			false
+		};
 		if new_items && !matches!(state, LibraryState::Ready(_)) {
 			self.empty(dialog);
 		}
 		let status = match state {
 			LibraryState::Ready(library) if self.filled || library.is_complete() => {
-				self.fill(dialog, &library, new_items);
+				self.fill(dialog, library, new_items);
 				// Only episodes, which Liked Songs can't hold, and no playlist to change.
 				let none = "You have no Spotify playlists you can change.";
 				if self.rows.is_empty() { none.to_owned() } else { String::new() }
 			}
 			LibraryState::Loading if self.filled => return,
-			LibraryState::Ready(_) | LibraryState::Loading => "Loading…".to_owned(),
-			LibraryState::Failed(reason) => format!("Couldn't load your playlists: {reason}."),
+			// Until the list is filled, a library that isn't complete counts as loading.
+			LibraryState::Ready(_) => library_watch::status(&LibraryState::Loading),
 			LibraryState::LoggedOut => {
 				self.empty(dialog);
-				"Log in to Spotify to see your playlists.".to_owned()
+				library_watch::status(state)
 			}
+			LibraryState::Loading | LibraryState::Failed(_) => library_watch::status(state),
 		};
 		if let Some(line) = &mut self.status {
 			line.show(dialog, status);
@@ -163,24 +166,26 @@ impl PlaylistWindow {
 	/// playlist stays selected while it is listed, otherwise the first row is. A list whose rows
 	/// stay the same is left alone.
 	fn fill(&mut self, dialog: Dialog, library: &Library, new_items: bool) {
-		let rows = ITEMS.with_borrow(|items| rows_of(library, items));
+		let rows = rows_of(library, &self.items);
 		self.filled = true;
 		if rows == self.rows && !new_items {
 			return;
 		}
 		let changed = if new_items { Vec::new() } else { self.planned(dialog) };
-		let selected = dialog.check_list_selection(LIST).and_then(|row| self.rows.get(row));
-		let selected = selected.map(|row| row.target);
+		let selected_target = dialog
+			.check_list_selection(LIST)
+			.and_then(|index| self.rows.get(index))
+			.map(|row| row.target);
 		dialog.check_list_clear(LIST);
 		for row in &rows {
 			let change = changed.iter().find(|change| change.target == row.target);
 			let ticked = change.map_or(row.start, |change| change.edit == Edit::Add);
 			dialog.check_list_add(LIST, &row.name, ticked);
 		}
-		let selected = rows.iter().position(|row| Some(row.target) == selected);
+		let selected_index = rows.iter().position(|row| Some(row.target) == selected_target);
 		self.rows = rows;
 		if !self.rows.is_empty() {
-			dialog.check_list_select(LIST, selected.unwrap_or(0));
+			dialog.check_list_select(LIST, selected_index.unwrap_or(0));
 		}
 	}
 
@@ -197,23 +202,24 @@ impl DialogHandler for PlaylistWindow {
 		dialog.check_list_init(LIST);
 		self.status = Some(StatusLine::new(*dialog, STATUS, String::new()));
 		let state = self.library.start(*dialog);
-		self.render(*dialog, state);
+		self.render(*dialog, &state);
 		Some(LIST)
 	}
 
 	fn command(&mut self, dialog: &Dialog, id: u16, _notification: u16) {
-		if id == IDOK {
-			let planned = self.planned(*dialog);
-			ITEMS.with_borrow(|items| save(items, planned));
-		}
-		if id == IDOK || id == IDCANCEL {
-			destroy(*dialog);
+		match id {
+			IDOK => {
+				save(&self.items, self.planned(*dialog));
+				destroy(*dialog);
+			}
+			IDCANCEL => destroy(*dialog),
+			_ => {}
 		}
 	}
 
 	fn refresh(&mut self, dialog: &Dialog) {
 		let state = self.library.refreshed();
-		self.render(*dialog, state);
+		self.render(*dialog, &state);
 	}
 }
 
@@ -229,12 +235,10 @@ mod tests {
 	use foxide2k::dialog::notify::{BN_CLICKED, IDCANCEL, IDOK};
 	use foxide2k::dialog::style::{BS_DEFPUSHBUTTON, CHECK_LIST};
 	use foxide2k::dialog::template::ControlClass;
-	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::{hidden_window, pump_messages, send_close, send_command};
 
-	use super::{
-		ITEMS, LABEL, LIST, Planned, PlaylistWindow, STATUS, WINDOW, show_for, window_template,
-	};
+	use super::{LABEL, LIST, PlaylistWindow, STATUS, WINDOW, show_for, window_template};
+	use crate::playlist_save::Planned;
 	use crate::testing::{
 		FakeBackend, contents_of, episode_id, getty_favourites, getty_track, installed_api,
 		installed_backend, installed_prompt, library_holding, library_with, shared_playlist,
@@ -385,7 +389,7 @@ mod tests {
 	#[test]
 	fn showing_keeps_each_item_once_in_order() {
 		let (_, dialog) = shown_for(library_holding(&[], &[], &[]), vec![t2(), t1(), t2()]);
-		assert_eq!(ITEMS.with_borrow(Clone::clone), [t2(), t1()]);
+		assert_eq!(WINDOW.inspect(|window, _| window.items.clone()), Some(vec![t2(), t1()]));
 		destroy(dialog);
 	}
 
@@ -671,17 +675,13 @@ mod tests {
 		destroy(Dialog::from_hwnd(gone));
 		api.set_main_window(gone);
 		show_for(vec![t1()]);
-		assert!(WINDOW.current().is_none());
-		assert_eq!(brought_up(), 0);
 		let popups = api.popups();
-		assert_eq!(popups.len(), 1, "{popups:?}");
-		let (title, message, icon) = &popups[0];
+		let (title, message, _) = &popups[0];
 		assert_eq!(title, "Can't change the Spotify playlist");
 		assert!(
 			message.starts_with("Add to a Spotify playlist\n\ncan't create a dialog: "),
 			"{message}"
 		);
-		assert_eq!(*icon, PopupIcon::Error);
 		assert!(
 			api.console_lines().iter().any(|line| line.starts_with(
 				"foo_librespot: can't open the Add to playlist window: can't create a dialog: "
