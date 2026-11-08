@@ -59,6 +59,7 @@
     GetDlgItem
     GetFocus
     GetNextDlgTabItem
+    GetSystemMetrics
     GetWindowLongPtrW
     GWL_STYLE
     GetWindowTextLengthW
@@ -117,6 +118,7 @@
     SetWindowTextW
     ShellExecuteW
     ShowWindow
+    SM_CXVSCROLL
     SS_NOPREFIX
     SW_HIDE
     SW_SHOW

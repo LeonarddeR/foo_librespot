@@ -13,16 +13,17 @@ use super::template::{ControlClass, DialogTemplate};
 use crate::bindings::Windows::Win32::{
 	BM_GETCHECK, BM_SETCHECK, BST_CHECKED, BST_UNCHECKED, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL,
 	CreateDialogIndirectParamW, DWLP_MSGRESULT, DestroyWindow, EnableWindow, GWL_STYLE,
-	GetClientRect, GetDlgCtrlID, GetDlgItem, GetFocus, GetNextDlgTabItem, GetWindowLongPtrW,
-	GetWindowTextLengthW, GetWindowTextW, HWND, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX,
-	InitCommonControlsEx, IsWindow, IsWindowEnabled, LB_ADDSTRING, LB_GETCOUNT, LB_GETCURSEL,
-	LB_GETTEXT, LB_GETTEXTLEN, LB_RESETCONTENT, LB_SETCURSEL, LPARAM, LVCF_WIDTH, LVCOLUMNW,
-	LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVIS_STATEIMAGEMASK, LVITEMW, LVM_DELETEALLITEMS,
-	LVM_GETITEMCOUNT, LVM_GETITEMSTATE, LVM_GETITEMTEXTW, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW,
-	LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVNI_SELECTED,
-	LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT, PostMessageW, RECT, SW_HIDE, SW_SHOW, SW_SHOWNA,
-	SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, WM_APP,
-	WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY, WM_NEXTDLGCTL, WPARAM, WS_VISIBLE,
+	GetClientRect, GetDlgCtrlID, GetDlgItem, GetFocus, GetNextDlgTabItem, GetSystemMetrics,
+	GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HWND, ICC_LISTVIEW_CLASSES,
+	INITCOMMONCONTROLSEX, InitCommonControlsEx, IsWindow, IsWindowEnabled, LB_ADDSTRING,
+	LB_GETCOUNT, LB_GETCURSEL, LB_GETTEXT, LB_GETTEXTLEN, LB_RESETCONTENT, LB_SETCURSEL, LPARAM,
+	LVCF_WIDTH, LVCOLUMNW, LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVIS_STATEIMAGEMASK, LVITEMW,
+	LVM_DELETEALLITEMS, LVM_GETITEMCOUNT, LVM_GETITEMSTATE, LVM_GETITEMTEXTW, LVM_GETNEXTITEM,
+	LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE,
+	LVNI_SELECTED, LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT, PostMessageW, RECT, SM_CXVSCROLL,
+	SW_HIDE, SW_SHOW, SW_SHOWNA, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
+	SetWindowTextW, ShowWindow, WM_APP, WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY, WM_NEXTDLGCTL,
+	WPARAM, WS_VISIBLE,
 };
 use crate::console;
 use crate::cxx::ExceptionKind;
@@ -191,7 +192,8 @@ impl Dialog {
 	}
 
 	/// Makes list view `id` a list of rows with a checkbox each, in one column as wide as the
-	/// list. Clicking anywhere on a row selects it. Call it once, before adding rows.
+	/// list less a vertical scroll bar. Clicking anywhere on a row selects it. Call it once,
+	/// before adding rows.
 	pub fn check_list_init(&self, id: u16) {
 		const STYLES: i32 = LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT;
 		self.send(id, LVM_SETEXTENDEDLISTVIEWSTYLE, STYLES as usize, STYLES as isize);
@@ -199,8 +201,9 @@ impl Dialog {
 		unsafe {
 			let _ = GetClientRect(self.control(id), &raw mut client);
 		}
-		let column =
-			LVCOLUMNW { mask: LVCF_WIDTH as u32, cx: client.right, ..LVCOLUMNW::default() };
+		// Room for the vertical scroll bar a long list gets, so it never needs a horizontal one.
+		let width = client.right - unsafe { GetSystemMetrics(SM_CXVSCROLL) };
+		let column = LVCOLUMNW { mask: LVCF_WIDTH as u32, cx: width, ..LVCOLUMNW::default() };
 		self.send(id, LVM_INSERTCOLUMNW, 0, (&raw const column) as isize);
 	}
 
@@ -561,9 +564,9 @@ pub(crate) mod tests {
 	use super::{Dialog, DialogHandler, create_child_dialog, create_modeless_dialog, destroy};
 	use crate::bindings::Windows::Win32::{
 		BN_CLICKED, BS_AUTOCHECKBOX, CBS_DROPDOWNLIST, DS_CONTROL, DS_MODALFRAME, ES_MULTILINE,
-		ES_READONLY, GetClientRect, GetWindowTextW, HWND, LBS_NOTIFY, LPARAM, LVM_GETCOLUMNWIDTH,
-		RECT, SendMessageW, WM_CLOSE, WM_COMMAND, WPARAM, WS_BORDER, WS_CAPTION, WS_CHILD,
-		WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
+		ES_READONLY, GetClientRect, GetSystemMetrics, GetWindowTextW, HWND, LBS_NOTIFY, LPARAM,
+		LVM_GETCOLUMNWIDTH, RECT, SM_CXVSCROLL, SendMessageW, WM_CLOSE, WM_COMMAND, WPARAM,
+		WS_BORDER, WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
 	};
 	use crate::dialog::style;
 	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
@@ -847,16 +850,17 @@ pub(crate) mod tests {
 	}
 
 	#[test]
-	fn a_check_list_has_one_column_as_wide_as_the_list() {
+	fn a_check_list_column_leaves_room_for_the_scroll_bar() {
 		let dialog = check_list_dialog(vec![check_list()]);
 		dialog.check_list_init(LIST);
 		let mut client = RECT::default();
 		assert!(unsafe { GetClientRect(dialog.control(LIST), &raw mut client) }.as_bool());
+		let scroll_bar = unsafe { GetSystemMetrics(SM_CXVSCROLL) };
 		let width = unsafe {
 			SendMessageW(dialog.control(LIST), LVM_GETCOLUMNWIDTH as u32, WPARAM(0), LPARAM(0))
 		};
-		assert!(client.right > 0);
-		assert_eq!(width.0, isize::try_from(client.right).unwrap());
+		assert!(client.right > scroll_bar && scroll_bar > 0);
+		assert_eq!(width.0, isize::try_from(client.right - scroll_bar).unwrap());
 		destroy(dialog);
 	}
 

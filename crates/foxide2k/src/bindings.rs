@@ -149,6 +149,11 @@ pub mod Windows {
 				GetNextDlgTabItem(hdlg, hctl.unwrap_or(core::mem::zeroed()) as _, bprevious.into())
 			}
 		}
+		#[inline]
+		pub unsafe fn GetSystemMetrics(nindex: i32) -> i32 {
+			windows_core::link!("user32.dll" "system" fn GetSystemMetrics(nindex : i32) -> i32);
+			unsafe { GetSystemMetrics(nindex) }
+		}
 		#[cfg(any(target_arch = "aarch64", target_arch = "arm64ec", target_arch = "x86_64"))]
 		#[inline]
 		pub unsafe fn GetWindowLongPtrW(hwnd: HWND, nindex: i32) -> isize {
@@ -2167,6 +2172,7 @@ pub mod Windows {
 		}
 		pub const SEM_FAILCRITICALERRORS: i32 = 1;
 		pub const SEM_NOGPFAULTERRORBOX: i32 = 2;
+		pub const SM_CXVSCROLL: i32 = 2;
 		pub const SS_NOPREFIX: i32 = 128;
 		pub const SW_HIDE: i32 = 0;
 		pub const SW_SHOW: i32 = 5;
