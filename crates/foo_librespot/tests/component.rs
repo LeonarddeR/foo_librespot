@@ -77,13 +77,13 @@ fn component_registers_all_services() {
 	);
 	for (iid, name, count) in [
 		(MAINMENU_GROUP, "mainmenu_group", 2),
-		(MAINMENU_COMMANDS, "mainmenu_commands", 5),
+		(MAINMENU_COMMANDS, "mainmenu_commands", 6),
 		(CONTEXTMENU_GROUP, "contextmenu_group", 1),
 		(CONTEXTMENU_ITEM, "contextmenu_item", 5),
 	] {
 		assert_eq!(factories.iter().filter(|guid| **guid == iid).count(), count, "{name}");
 	}
-	assert_eq!(factories.len(), 22);
+	assert_eq!(factories.len(), 23);
 }
 
 #[test]

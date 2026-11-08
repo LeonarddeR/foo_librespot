@@ -1,11 +1,11 @@
 //! File > Spotify > Playing track: opens the album, an artist, the radio or the show of the
-//! Spotify track or episode playing now.
+//! Spotify track or episode playing now, or adds it to a playlist.
 //!
 //! The commands follow the right-click rules ([`crate::spotify_menu`]) for the playing track
 //! alone, except that they are greyed out rather than hidden when nothing plays or the playing
-//! track isn't from Spotify. A bound key runs a command whatever the menu would show, so each
-//! command reads the playing track again when it runs; when that isn't a Spotify item of its
-//! kind, a popup says to play one, and nothing is looked up.
+//! track isn't from Spotify. "Add to playlist…" takes a track or an episode alike. A bound key
+//! runs a command whatever the menu would show, so each command reads the playing track again
+//! when it runs; when that isn't a Spotify item of its kind, a popup says to play one instead.
 
 use foo_librespot_core::related::Related;
 use foxide2k::abi::mainmenu::SORT_PRIORITY_BASE;
@@ -14,8 +14,11 @@ use foxide2k::error::Result;
 use foxide2k::guid::Guid;
 use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
 use foxide2k::playback;
+use foxide2k::popup::PopupIcon;
 
+use crate::errors::show_message;
 use crate::open_playlist::SpotifyMenu;
+use crate::playlist_window::show_for;
 use crate::spotify_menu::{
 	Kind, Source, SpotifyItem, open, open_artists, shown_among, spotify_item,
 };
@@ -112,6 +115,32 @@ impl MainMenuCommand for PlayingShow {
 	}
 }
 
+/// Opens the Add to playlist window for the playing track or episode, as the right-click "Add to
+/// playlist…" does for the selection.
+pub struct PlayingAddToPlaylist;
+
+impl MainMenuCommand for PlayingAddToPlaylist {
+	const GUID: Guid = Guid::from_u128(0x5586b6ac_c3a2_4a6c_9b98_773c8aca259b);
+	const PARENT: Guid = PlayingTrack::GUID;
+	const SORT_PRIORITY: u32 = SORT_PRIORITY_BASE + 4;
+	const NAME: &'static str = "Add to playlist…";
+	const DESCRIPTION: &'static str = "Adds the playing Spotify track to Liked Songs or your Spotify playlists, or removes it, in a window that saves on OK.";
+
+	fn shown() -> Shown {
+		if playing().is_some() { Shown::Enabled } else { Shown::Greyed }
+	}
+
+	fn execute() -> Result<()> {
+		if let Some((item, _)) = playing() {
+			show_for(vec![item]);
+		} else {
+			let play = "Play a Spotify track or episode first.";
+			show_message(Self::NAME, play, PopupIcon::Information);
+		}
+		Ok(())
+	}
+}
+
 /// The playing track, when it is a Spotify track or episode; `None` when nothing plays, the
 /// playing track isn't from Spotify, or foobar2000 can't say what plays. Main thread only.
 fn playing() -> Option<SpotifyItem> {
@@ -135,14 +164,17 @@ mod tests {
 		MainMenuCommand, MainMenuPopup, mainmenu_command_service, mainmenu_popup_service,
 	};
 	use foxide2k::popup::PopupIcon;
-	use foxide2k::testing::MainMenuHandle;
+	use foxide2k::testing::{MainMenuHandle, pump_messages};
 
-	use super::{PlayingAlbum, PlayingArtist, PlayingRadio, PlayingShow, PlayingTrack};
+	use super::{
+		PlayingAddToPlaylist, PlayingAlbum, PlayingArtist, PlayingRadio, PlayingShow, PlayingTrack,
+	};
 	use crate::artist_window::{STATUS, WINDOW};
 	use crate::open_playlist::{OpenPlaylist, SpotifyMenu};
+	use crate::playlist_window;
 	use crate::testing::{
 		BOTH_GETTYS, EPISODE, GETTY_TRACK, LOCAL, NO_FIELDS, ONE_ARTIST, entry, episode_id,
-		getty_track, installed_api, installed_api_and_backend,
+		getty_track, installed_api, installed_api_and_backend, library_holding,
 	};
 	use crate::window::brought_up;
 
@@ -223,6 +255,13 @@ mod tests {
 				"Open show",
 				"Opens the playing Spotify episode's show in a playlist tab.",
 				SORT_PRIORITY_BASE + 3,
+			),
+			(
+				command::<PlayingAddToPlaylist>(),
+				0x5586b6ac_c3a2_4a6c_9b98_773c8aca259b,
+				"Add to playlist…",
+				"Adds the playing Spotify track to Liked Songs or your Spotify playlists, or removes it, in a window that saves on OK.",
+				SORT_PRIORITY_BASE + 4,
 			),
 		];
 		for (entry, guid, name, description, sort_priority) in entries {
@@ -368,5 +407,51 @@ mod tests {
 			[play_one("Open album", "track"), play_one("Open show", "episode")]
 		);
 		assert!(fake.related_calls().is_empty());
+	}
+
+	#[test]
+	fn add_to_playlist_for_the_playing_item_opens_the_window() {
+		let (api, fake) = installed_api_and_backend();
+		fake.set_library(library_holding(&[getty_track()], &[], &[]));
+		let add = command::<PlayingAddToPlaylist>();
+		api.set_now_playing(Some((GETTY_TRACK, BOTH_GETTYS)));
+		assert_eq!(add.display(0), Some(entry("Add to playlist…", 0)));
+		press::<PlayingAddToPlaylist>();
+		let dialog = playlist_window::WINDOW.current().expect("the Add to playlist window is open");
+		assert_eq!(brought_up(), 1);
+		let list = playlist_window::LIST;
+		assert_eq!(dialog.check_list_texts(list), ["Liked Songs", "Church / Sunday set", "Shared"]);
+		assert!(dialog.is_row_checked(list, 1), "Sunday set holds the playing track");
+		api.set_now_playing(Some((EPISODE, NO_FIELDS)));
+		assert_eq!(add.display(0), Some(entry("Add to playlist…", 0)));
+		press::<PlayingAddToPlaylist>();
+		pump_messages();
+		assert_eq!(brought_up(), 2);
+		assert_eq!(
+			dialog.check_list_texts(list),
+			["Church / Sunday set", "Shared"],
+			"Liked Songs holds songs only"
+		);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn with_nothing_playing_it_is_greyed_and_a_key_says_what_to_play() {
+		let (api, _) = installed_api_and_backend();
+		let add = command::<PlayingAddToPlaylist>();
+		let greyed = Some(entry("Add to playlist…", FLAG_DISABLED));
+		assert_eq!(add.display(0), greyed);
+		press::<PlayingAddToPlaylist>();
+		api.set_now_playing(Some((LOCAL, BOTH_GETTYS)));
+		assert_eq!(add.display(0), greyed);
+		press::<PlayingAddToPlaylist>();
+		let play_one = (
+			"Add to playlist…".to_owned(),
+			"Play a Spotify track or episode first.".to_owned(),
+			PopupIcon::Information,
+		);
+		assert_eq!(api.popups(), [play_one.clone(), play_one]);
+		assert!(playlist_window::WINDOW.current().is_none());
+		assert_eq!(brought_up(), 0);
 	}
 }

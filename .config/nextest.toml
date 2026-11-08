@@ -17,5 +17,5 @@ store-failure-output = true
 windows = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = '(package(foo_librespot) & test(/^(prefs|login_window|window|open_playlist|playlist_window|status_line|artist_window|related|spotify_menu|playing_menu)::/)) | (package(foxide2k) & test(/^(dialog|preferences)::/))'
+filter = '(package(foo_librespot) & test(/^(prefs|login_window|window|open_playlist|playlist_window|status_line|artist_window|related|spotify_menu|playlist_menu|playing_menu)::/)) | (package(foxide2k) & test(/^(dialog|preferences)::/))'
 test-group = 'windows'

@@ -81,7 +81,7 @@ fn show_failures(failures: &[(String, CoreError)]) {
 }
 
 /// Says in the console what `planned` did, as `change` tells.
-pub fn report(planned: &Planned, change: Change) {
+fn report(planned: &Planned, change: Change) {
 	let tracks = count_tracks(change.changed);
 	match planned.edit {
 		Edit::Remove => {

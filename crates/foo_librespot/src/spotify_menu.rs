@@ -1,5 +1,5 @@
 //! Right-click > Spotify: opens the album, an artist, the radio or the show of the one Spotify
-//! track or episode selected, and holds "Add to playlist".
+//! track or episode selected, and holds "Add to playlist…" ([`crate::playlist_menu`]).
 //!
 //! An open command shows only for the kind of item it opens from, a track or an episode, and is
 //! greyed out when several Spotify items are selected. Local files in the selection are left
@@ -174,7 +174,7 @@ pub fn spotify_item(track: Track) -> Option<SpotifyItem> {
 
 /// The Spotify tracks and episodes in `selection`, in order; an item's path is read only when the
 /// item is asked for. Local files, and items whose path can't be read, are left out.
-fn spotify_items(selection: &HandleList<'_>) -> impl Iterator<Item = SpotifyItem> {
+pub fn spotify_items(selection: &HandleList<'_>) -> impl Iterator<Item = SpotifyItem> {
 	selection.tracks().unwrap_or_default().into_iter().filter_map(spotify_item)
 }
 
@@ -297,7 +297,7 @@ mod tests {
 	};
 	use foxide2k::contextmenu::{
 		ContextMenuCommand, ContextMenuGroup, Shown, context_menu_command_service,
-		context_menu_group_service, context_menu_service,
+		context_menu_group_service,
 	};
 	use foxide2k::dialog::host::destroy;
 	use foxide2k::guid::Guid;
@@ -308,7 +308,7 @@ mod tests {
 
 	use super::{Kind, OpenAlbum, OpenArtist, OpenShow, SpotifyGroup, TrackRadio, shown_among};
 	use crate::artist_window::{self, LIST, STATUS, WINDOW};
-	use crate::playlist_menu::AddToSpotifyPlaylist;
+	use crate::playlist_menu::AddToPlaylist;
 	use crate::testing::{
 		BOTH_GETTYS, EPISODE, GETTY_TRACK, LOCAL, NO_FIELDS, ONE_ARTIST, TRACK_ID, entry,
 		episode_id, getty_artists, getty_track, installed_api_and_backend, wait_until,
@@ -408,10 +408,10 @@ mod tests {
 
 	#[test]
 	fn add_to_playlist_keeps_its_guid_and_moves_into_the_spotify_submenu() {
-		let item = ContextMenuHandle::new(context_menu_service::<AddToSpotifyPlaylist>());
+		let item = command::<AddToPlaylist>();
 		assert_eq!(item.guid(), Guid::from_u128(0x9dde669c_a508_460e_b0df_c4e8e681592b));
 		assert_eq!(item.parent(), SpotifyGroup::GUID);
-		assert_eq!(item.name(), "Add to playlist");
+		assert_eq!(item.name(), "Add to playlist…");
 	}
 
 	#[test]
