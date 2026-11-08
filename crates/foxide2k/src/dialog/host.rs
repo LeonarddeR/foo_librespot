@@ -3,6 +3,7 @@
 //! The dialog procedure is `extern "system"` and must never unwind into user32: every handler
 //! call runs inside `catch_unwind`, and a panic is reported on the console.
 
+use std::any::Any;
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Once;
@@ -42,7 +43,8 @@ const NC_DESTROY: u32 = WM_NCDESTROY as u32;
 const CHECK_LIST_STYLES: i32 = LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT;
 
 /// What a dialog does with its messages. Every call runs on the thread that made the dialog.
-pub trait DialogHandler: 'static {
+/// A test can reach a dialog's handler, as its own type, through `testing::with_handler`.
+pub trait DialogHandler: Any {
 	/// The dialog's controls exist. Returns the control to focus first, or `None` to leave
 	/// focus where it is, as a preferences page must.
 	fn init(&mut self, dialog: &Dialog) -> Option<u16>;
@@ -394,7 +396,10 @@ fn slot_of(window: HWND) -> *mut Slot {
 }
 
 /// Calls the handler, unless it is busy with another message or the dialog has none.
-fn call<R>(window: HWND, f: impl FnOnce(&mut dyn DialogHandler, &Dialog) -> R) -> Option<R> {
+pub(crate) fn call<R>(
+	window: HWND,
+	f: impl FnOnce(&mut dyn DialogHandler, &Dialog) -> R,
+) -> Option<R> {
 	let slot = slot_of(window);
 	if slot.is_null() {
 		return None;
@@ -572,6 +577,7 @@ pub fn destroy(dialog: Dialog) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+	use std::any::Any;
 	use std::cell::RefCell;
 	use std::rc::Rc;
 
@@ -1002,6 +1008,18 @@ pub(crate) mod tests {
 		pump();
 		assert_eq!(record.borrow().refreshes, 1);
 		destroy(dialog);
+	}
+
+	#[test]
+	fn a_test_reaches_the_handler_as_its_own_type_until_the_dialog_is_gone() {
+		let (dialog, _record) = child(Recorder::default());
+		let found = crate::testing::with_handler(&dialog, |handler, seen| {
+			let handler: &dyn Any = handler;
+			(handler.is::<Recorder>(), *seen)
+		});
+		assert_eq!(found, Some((true, dialog)));
+		destroy(dialog);
+		assert_eq!(crate::testing::with_handler(&dialog, |_, _| ()), None);
 	}
 
 	#[test]

@@ -59,7 +59,9 @@ pub use live_info::FakeLiveInfoList;
 pub use mainmenu::{MainMenuHandle, MainMenuNodeHandle};
 pub use playlists::FakeTab;
 pub use preferences::{FakePageCallback, PageInstanceHandle, PreferencesHandle};
-pub use windows::{hidden_window, pump_messages, send_close, send_command, wants_all_keys};
+pub use windows::{
+	hidden_window, pump_messages, send_close, send_command, wants_all_keys, with_handler,
+};
 
 static API_VTBL: ApiVtbl = ApiVtbl {
 	service_enum_find_class: find_class,

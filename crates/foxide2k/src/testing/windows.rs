@@ -54,6 +54,16 @@ pub fn pump_messages() {
 	}
 }
 
+/// Runs `look` on `dialog`'s handler, as the dialog runs it for one of its own messages, and
+/// answers what `look` returns. `None` when the dialog is gone, its handler is busy with a message,
+/// or `look` panicked. A handler is a [`std::any::Any`], so `look` can downcast it to its type.
+pub fn with_handler<R>(
+	dialog: &Dialog,
+	look: impl FnOnce(&mut dyn DialogHandler, &Dialog) -> R,
+) -> Option<R> {
+	crate::dialog::host::call(HWND(dialog.hwnd() as _), look)
+}
+
 /// Sends `WM_COMMAND` from control `id`, as a click or a selection change does.
 pub fn send_command(dialog: &Dialog, id: u16, notification: u16) {
 	let wparam = usize::from(id) | (usize::from(notification) << 16);
