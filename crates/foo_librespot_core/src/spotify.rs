@@ -148,8 +148,9 @@ impl Core {
 		if self.is_logged_in() { self.library.held() } else { LibraryState::LoggedOut }
 	}
 
-	/// Calls `notify` after each publish and failure of a library read, on a runtime thread, and
-	/// after each logout and login, on the thread that makes it. Returns the id to
+	/// Calls `notify` after each publish and failure of a library read and after each
+	/// [`change`](Self::change) that changed something, on a runtime thread, and after each logout
+	/// and login, on the thread that makes it. Returns the id to
 	/// [`unsubscribe_library`](Self::unsubscribe_library) with.
 	pub fn subscribe_library(&self, notify: Box<dyn Fn() + Send + Sync>) -> u64 {
 		self.library.subscribe(notify)
@@ -302,9 +303,11 @@ impl Core {
 
 	/// Starts adding `items` to a playlist or Liked Songs, or removing them, every copy of each,
 	/// once every change begun before has ended, and returns at once. Playlists are read first,
-	/// so an add sends only what they lack. `on_done` gets what was done, on a runtime thread;
-	/// it fails when Spotify hasn't answered within a minute of the change's turn. A change still
-	/// running at [`shutdown`](Self::shutdown) is dropped, and `on_done` with it.
+	/// so an add sends only what they lack. When the change lands and changed something, library
+	/// subscribers hear it, on a runtime thread, before `on_done` runs. `on_done` gets what was
+	/// done, on a runtime thread; it fails when Spotify hasn't answered within a minute of the
+	/// change's turn. A change still running at [`shutdown`](Self::shutdown) is dropped, and
+	/// `on_done` with it.
 	pub fn change(&self, edit: Edit, target: Target, items: &[ItemId], on_done: OnChanged) {
 		let (library, sessions) = (self.library.clone(), Arc::clone(&self.sessions));
 		let items = items.to_vec();

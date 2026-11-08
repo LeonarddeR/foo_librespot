@@ -952,7 +952,8 @@ impl LibraryCache {
 	}
 
 	/// Makes `edit` with `items` to `target`, as [`add`](Self::add) and [`remove`](Self::remove)
-	/// describe. Run it through [`in_turn`](Self::in_turn).
+	/// describe. Subscribers hear once when the change lands and changed something; a change
+	/// that fails or changes nothing tells nobody. Run it through [`in_turn`](Self::in_turn).
 	pub(crate) async fn change<S: LibrarySource>(
 		&self,
 		source: &S,
@@ -960,10 +961,14 @@ impl LibraryCache {
 		target: Target,
 		items: &[ItemId],
 	) -> Result<Change, CoreError> {
-		match edit {
+		let change = match edit {
 			Edit::Add => self.add(source, target, items).await,
 			Edit::Remove => self.remove(source, target, items).await,
+		}?;
+		if change.changed > 0 {
+			self.subscribers.notify();
 		}
+		Ok(change)
 	}
 
 	/// What is held, and the fetch the caller must now [`run`](Fetch::run). A fetch starts when
@@ -988,8 +993,9 @@ impl LibraryCache {
 		self.lock().state()
 	}
 
-	/// Calls `notify` after each publish and failure of a fetch, and after each
-	/// [`clear`](Self::clear), on the thread that made it, outside the lock. Returns the id to
+	/// Calls `notify` after each publish and failure of a fetch, after each
+	/// [`change`](Self::change) that changed something, and after each [`clear`](Self::clear), on
+	/// the thread that made it, outside the lock. Returns the id to
 	/// [`unsubscribe`](Self::unsubscribe) with.
 	pub(crate) fn subscribe(&self, notify: Box<dyn Fn() + Send + Sync>) -> u64 {
 		self.subscribers.subscribe(notify)
@@ -3023,6 +3029,42 @@ mod tests {
 		cache.clear();
 		assert_eq!(calls.load(Ordering::SeqCst), 0);
 		assert_eq!(other.load(Ordering::SeqCst), 3);
+	}
+
+	#[tokio::test]
+	async fn a_change_that_lands_tells_the_listeners() {
+		let source = fake();
+		let cache = loaded(&source).await;
+		let (_, calls) = counting(&cache);
+		for (edit, target, item) in [
+			(Edit::Add, Target::Playlist(id(1)), track(1)),
+			(Edit::Remove, Target::Playlist(id(1)), t1()),
+			(Edit::Add, Target::LikedSongs, track(1)),
+		] {
+			let before = calls.load(Ordering::SeqCst);
+			let change = cache.change(&source, edit, target, &[item]).await.unwrap();
+			assert_eq!(change.changed, 1, "{edit:?} {target:?}");
+			assert_eq!(calls.load(Ordering::SeqCst), before + 1, "{edit:?} {target:?}");
+		}
+	}
+
+	#[tokio::test]
+	async fn a_change_that_changes_nothing_tells_nobody() {
+		let source = fake();
+		let cache = loaded(&source).await;
+		let (_, calls) = counting(&cache);
+		let before = calls.load(Ordering::SeqCst);
+		let change =
+			cache.change(&source, Edit::Add, Target::Playlist(id(1)), &[t1()]).await.unwrap();
+		assert_eq!(change.changed, 0);
+		assert_eq!(calls.load(Ordering::SeqCst), before);
+		// A change that fails changes nothing either.
+		let cut = PlaylistContents { truncated: true, ..contents("r1", &[t1()]) };
+		source.contents.lock().unwrap().insert(id(1), cut);
+		let before = calls.load(Ordering::SeqCst);
+		let failed = cache.change(&source, Edit::Add, Target::Playlist(id(1)), &[track(4)]).await;
+		assert!(failed.is_err(), "{failed:?}");
+		assert_eq!(calls.load(Ordering::SeqCst), before);
 	}
 
 	#[tokio::test]
