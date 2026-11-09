@@ -12,6 +12,7 @@ use foxide2k::guid::Guid;
 use foxide2k::metadb::HandleList;
 use foxide2k::playlist;
 
+use crate::errors::log_failure;
 use crate::links::canonical;
 
 /// The tab property that keeps the Spotify URI of the link a tab was opened from.
@@ -30,7 +31,8 @@ fn done_loading(uri: &str) {
 
 /// Brings the tab holding `link` to the front. Without one, loads `link` as pasting it would,
 /// unless that load runs already; the tab, named `name`, appears once the tracks have arrived.
-/// Main thread only.
+/// An error is returned only when the load can't start; a tab that can't be filled once the
+/// tracks arrive is reported in the console. Main thread only.
 pub fn open_in_tab(name: &str, link: &Link) -> Result<()> {
 	let uri = link.uri();
 	if let Some(index) = playlist::find_by_property(&TAB_PROPERTY, uri.as_bytes())? {
@@ -46,9 +48,14 @@ pub fn open_in_tab(name: &str, link: &Link) -> Result<()> {
 	let (name, done_uri, aborted_uri) = (name.to_owned(), uri.clone(), uri.clone());
 	let loaded = playlist::load_locations(
 		&[canonical(link)],
+		// A failure here would reach foobar2000 as an exception from the loader's callback, which
+		// it may not survive, so the console says why instead.
 		Box::new(move |items| {
 			done_loading(&done_uri);
-			fill(&name, &done_uri, items)
+			if let Err(error) = fill(&name, &done_uri, items) {
+				log_failure(&format!("can't open {name}"), &error.message);
+			}
+			Ok(())
 		}),
 		Box::new(move || done_loading(&aborted_uri)),
 	);
@@ -195,6 +202,23 @@ mod tests {
 		api.finish_locations(0, &[GETTY_TRACK]).unwrap();
 		assert_eq!(api.tabs().len(), 1);
 		assert_eq!(api.tabs()[index].paths, [GETTY_TRACK]);
+	}
+
+	#[test]
+	fn a_tab_that_refuses_the_tracks_is_reported_in_the_console_without_an_error() {
+		let api = installed_api();
+		open_sunday();
+		let index = add_sunday_tab(api);
+		api.lock_tab(index);
+		api.finish_locations(0, &[GETTY_TRACK]).expect("no error reaches foobar2000");
+		assert!(api.tabs()[index].paths.is_empty());
+		let console = api.console_lines();
+		assert!(
+			console.contains(
+				&"foo_librespot: can't open Sunday set: the playlist refused the tracks".to_owned()
+			),
+			"{console:?}"
+		);
 	}
 
 	#[test]

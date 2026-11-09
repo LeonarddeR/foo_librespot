@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - When File > Spotify > Open playlist… can't open its window, it says why in a popup instead of handing the error to foobar2000.
+- When a Spotify playlist, album, artist or radio opens in a tab of its own and the tracks can't be put in that tab, for example because the tab is locked, the console says why instead of handing the error to foobar2000.
 
 ## [0.3.1] - 2026-11-09
 
