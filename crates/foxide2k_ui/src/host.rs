@@ -11,19 +11,21 @@ use std::sync::Once;
 use windows_core::{PCWSTR, PWSTR};
 
 use crate::bindings::Windows::Win32::{
-	BM_GETCHECK, BM_SETCHECK, BST_CHECKED, BST_UNCHECKED, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL,
+	BM_GETCHECK, BM_SETCHECK, BST_CHECKED, BST_UNCHECKED, CB_ADDSTRING, CB_GETCOUNT, CB_GETCURSEL,
+	CB_GETLBTEXT, CB_GETLBTEXTLEN, CB_RESETCONTENT, CB_SETCURSEL, CB_SETEDITSEL,
 	CreateDialogIndirectParamW, DWLP_MSGRESULT, DestroyWindow, EnableWindow, GWL_STYLE,
 	GetClientRect, GetDlgCtrlID, GetDlgItem, GetFocus, GetNextDlgTabItem, GetSystemMetrics,
 	GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HWND, ICC_LISTVIEW_CLASSES,
-	INITCOMMONCONTROLSEX, InitCommonControlsEx, IsWindow, IsWindowEnabled, LB_ADDSTRING,
+	INITCOMMONCONTROLSEX, InitCommonControlsEx, IsChild, IsWindow, IsWindowEnabled, LB_ADDSTRING,
 	LB_GETCOUNT, LB_GETCURSEL, LB_GETTEXT, LB_GETTEXTLEN, LB_RESETCONTENT, LB_SETCURSEL, LPARAM,
-	LVCF_WIDTH, LVCOLUMNW, LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVIS_STATEIMAGEMASK, LVITEMW,
-	LVM_DELETEALLITEMS, LVM_ENSUREVISIBLE, LVM_GETEXTENDEDLISTVIEWSTYLE, LVM_GETITEMCOUNT,
-	LVM_GETITEMSTATE, LVM_GETITEMTEXTW, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
-	LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVNI_SELECTED, LVS_EX_CHECKBOXES,
-	LVS_EX_FULLROWSELECT, PostMessageW, RECT, SM_CXVSCROLL, SW_HIDE, SW_SHOW, SW_SHOWNA,
+	LVCF_SUBITEM, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED,
+	LVIS_STATEIMAGEMASK, LVITEMW, LVM_DELETEALLITEMS, LVM_ENSUREVISIBLE, LVM_GETCOLUMNW,
+	LVM_GETEXTENDEDLISTVIEWSTYLE, LVM_GETITEMCOUNT, LVM_GETITEMSTATE, LVM_GETITEMTEXTW,
+	LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE,
+	LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVNI_ALL, LVNI_SELECTED, LVS_EX_CHECKBOXES,
+	LVS_EX_FULLROWSELECT, NMHDR, PostMessageW, RECT, SM_CXVSCROLL, SW_HIDE, SW_SHOW, SW_SHOWNA,
 	SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, WM_APP,
-	WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY, WM_NEXTDLGCTL, WPARAM, WS_VISIBLE,
+	WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY, WM_NEXTDLGCTL, WM_NOTIFY, WPARAM, WS_VISIBLE,
 };
 use crate::error::{Error, Result};
 use crate::template::{ControlClass, DialogTemplate};
@@ -35,6 +37,7 @@ const DWLP_USER: i32 = DWLP_MSGRESULT + 16;
 const WM_REFRESH: u32 = WM_APP as u32 + 1;
 const INIT: u32 = WM_INITDIALOG as u32;
 const COMMAND: u32 = WM_COMMAND as u32;
+const NOTIFY: u32 = WM_NOTIFY as u32;
 const NC_DESTROY: u32 = WM_NCDESTROY as u32;
 /// The extended list view styles of a checkable list: a checkbox on each row, and a click
 /// anywhere on a row selects it.
@@ -50,6 +53,11 @@ pub trait DialogHandler: Any {
 	fn command(&mut self, dialog: &Dialog, id: u16, notification: u16);
 	/// A [`RefreshPoster`] asked for the dialog to be brought up to date.
 	fn refresh(&mut self, dialog: &Dialog);
+	/// A control sent `WM_NOTIFY`, as a list view does with
+	/// [`NM_DBLCLK`](crate::notify::NM_DBLCLK) when a row is double clicked. A notification that
+	/// arrives while the handler is busy, such as the ones a list view sends while the handler
+	/// adds rows to it, doesn't reach it. Does nothing unless a dialog needs it.
+	fn notify(&mut self, _dialog: &Dialog, _id: u16, _code: i32) {}
 }
 
 /// A dialog window. Copyable; using it after the window is gone does nothing.
@@ -149,12 +157,41 @@ impl Dialog {
 		usize::try_from(selected.0).ok()
 	}
 
+	/// Empties combo box `id`'s drop-down list. An editable combo box's own text is emptied too.
+	pub fn combo_clear(&self, id: u16) {
+		self.send(id, CB_RESETCONTENT, 0, 0);
+	}
+
+	/// The text of every item in combo box `id`'s drop-down list, in order.
+	pub fn combo_texts(&self, id: u16) -> Vec<String> {
+		let count = usize::try_from(self.send(id, CB_GETCOUNT, 0, 0)).unwrap_or(0);
+		(0..count).map(|index| self.item_text(id, index, CB_GETLBTEXTLEN, CB_GETLBTEXT)).collect()
+	}
+
+	/// Selects all of editable combo box `id`'s text, so that typing replaces it.
+	pub fn select_all_text(&self, id: u16) {
+		// The start in the low word, the end in the high word; an end of -1 is the end of the text.
+		self.send(id, CB_SETEDITSEL, 0, 0xFFFF_0000);
+	}
+
 	/// Sends `message` to control `id` and returns its answer.
 	fn send(self, id: u16, message: i32, wparam: usize, lparam: isize) -> isize {
 		unsafe {
 			SendMessageW(self.control(id), message.cast_unsigned(), WPARAM(wparam), LPARAM(lparam))
 		}
 		.0
+	}
+
+	/// The text of item `index` of a list box, or of a combo box's drop-down list, read with the
+	/// message that answers its `length` and the one that copies its `text`. An empty string
+	/// when there is no such item.
+	fn item_text(self, id: u16, index: usize, length: i32, text: i32) -> String {
+		let Ok(length) = usize::try_from(self.send(id, length, index, 0)) else {
+			return String::new();
+		};
+		let mut buffer = vec![0u16; length + 1];
+		let copied = self.send(id, text, index, buffer.as_mut_ptr() as isize);
+		String::from_utf16_lossy(&buffer[..usize::try_from(copied).unwrap_or(0)])
 	}
 
 	pub fn list_clear(&self, id: u16) {
@@ -181,12 +218,7 @@ impl Dialog {
 
 	/// The text of item `index`, or an empty string when there is no such item.
 	pub fn list_text(&self, id: u16, index: usize) -> String {
-		let Ok(length) = usize::try_from(self.send(id, LB_GETTEXTLEN, index, 0)) else {
-			return String::new();
-		};
-		let mut buffer = vec![0u16; length + 1];
-		let copied = self.send(id, LB_GETTEXT, index, buffer.as_mut_ptr() as isize);
-		String::from_utf16_lossy(&buffer[..usize::try_from(copied).unwrap_or(0)])
+		self.item_text(id, index, LB_GETTEXTLEN, LB_GETTEXT)
 	}
 
 	/// The text of every item, in order.
@@ -198,16 +230,8 @@ impl Dialog {
 	/// list less a vertical scroll bar. Clicking anywhere on a row selects it. Call it once,
 	/// before adding rows.
 	pub fn check_list_init(&self, id: u16) {
-		let (styles, mask) = (CHECK_LIST_STYLES as isize, CHECK_LIST_STYLES as usize);
-		self.send(id, LVM_SETEXTENDEDLISTVIEWSTYLE, mask, styles);
-		let mut client = RECT::default();
-		unsafe {
-			let _ = GetClientRect(self.control(id), &raw mut client);
-		}
-		// Room for the vertical scroll bar a long list gets, so it never needs a horizontal one.
-		let width = client.right - unsafe { GetSystemMetrics(SM_CXVSCROLL) };
-		let column = LVCOLUMNW { mask: LVCF_WIDTH as u32, cx: width, ..LVCOLUMNW::default() };
-		self.send(id, LVM_INSERTCOLUMNW, 0, (&raw const column) as isize);
+		self.add_list_styles(id, CHECK_LIST_STYLES);
+		self.insert_column(id, 0, "", self.column_room(id));
 	}
 
 	/// Whether list view `id` is set up as [`check_list_init`](Self::check_list_init) sets it
@@ -223,42 +247,18 @@ impl Dialog {
 
 	/// Adds a row after the last one, checked or not.
 	pub fn check_list_add(&self, id: u16, text: &str, checked: bool) {
-		let mut text = wide(text);
-		let row = LVITEMW {
-			mask: LVIF_TEXT as u32,
-			// Past the last row: the list view appends the row and answers its index.
-			iItem: i32::MAX,
-			pszText: PWSTR(text.as_mut_ptr()),
-			..LVITEMW::default()
-		};
-		let added = self.send(id, LVM_INSERTITEMW, 0, (&raw const row) as isize);
-		if let Ok(index) = usize::try_from(added) {
+		if let Some(index) = self.append_row(id, text) {
 			self.set_row_checked(id, index, checked);
 		}
 	}
 
 	pub fn check_list_count(&self, id: u16) -> usize {
-		usize::try_from(self.send(id, LVM_GETITEMCOUNT, 0, 0)).unwrap_or(0)
+		self.row_count(id)
 	}
 
 	/// The text of row `index`, or an empty string when there is no such row.
 	pub fn check_list_text(&self, id: u16, index: usize) -> String {
-		// A list view doesn't say how long a row's text is, so the buffer grows until the text
-		// fits with room to spare.
-		let mut buffer = vec![0u16; 256];
-		loop {
-			let mut row = LVITEMW {
-				pszText: PWSTR(buffer.as_mut_ptr()),
-				cchTextMax: i32::try_from(buffer.len()).unwrap_or(i32::MAX),
-				..LVITEMW::default()
-			};
-			let copied = self.send(id, LVM_GETITEMTEXTW, index, (&raw mut row) as isize);
-			let copied = usize::try_from(copied).unwrap_or(0);
-			if copied + 1 < buffer.len() {
-				return String::from_utf16_lossy(&buffer[..copied]);
-			}
-			buffer.resize(buffer.len() * 2, 0);
-		}
+		self.cell_text(id, index, 0)
 	}
 
 	/// The text of every row, in order.
@@ -278,13 +278,167 @@ impl Dialog {
 
 	/// The selected row, or `None` when no row is selected.
 	pub fn check_list_selection(&self, id: u16) -> Option<usize> {
-		// Searching from -1 starts at the first row.
-		usize::try_from(self.send(id, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize)).ok()
+		self.next_selected(id, None)
 	}
 
 	/// Selects row `index`, makes it the row the arrow keys and Space act on, and scrolls the
 	/// list until the whole row is in view.
 	pub fn check_list_select(&self, id: u16, index: usize) {
+		self.select_row(id, index);
+	}
+
+	/// Makes list view `id` a list of rows in columns, one column for each of `columns`: its
+	/// header text, and its share of the list's width less a vertical scroll bar, in percent.
+	/// Clicking anywhere on a row selects it. Call it once, before adding rows.
+	pub fn report_init(&self, id: u16, columns: &[(&str, u16)]) {
+		self.add_list_styles(id, LVS_EX_FULLROWSELECT);
+		let room = self.column_room(id);
+		for (index, &(title, share)) in columns.iter().enumerate() {
+			self.insert_column(id, index, title, room * i32::from(share) / 100);
+		}
+	}
+
+	/// The header text of every column, in order.
+	pub fn report_columns(&self, id: u16) -> Vec<String> {
+		(0..).map_while(|index| self.column_title(id, index)).collect()
+	}
+
+	pub fn report_clear(&self, id: u16) {
+		self.send(id, LVM_DELETEALLITEMS, 0, 0);
+	}
+
+	/// Adds a row after the last one. The first of `cells` is the row's text, in the first
+	/// column, and the others fill the later columns in order.
+	pub fn report_add(&self, id: u16, cells: &[&str]) {
+		let Some(row) = self.append_row(id, cells.first().copied().unwrap_or_default()) else {
+			return;
+		};
+		for (column, text) in cells.iter().enumerate().skip(1) {
+			let mut text = wide(text);
+			let cell = LVITEMW {
+				iSubItem: i32::try_from(column).unwrap_or(i32::MAX),
+				pszText: PWSTR(text.as_mut_ptr()),
+				..LVITEMW::default()
+			};
+			self.send(id, LVM_SETITEMTEXTW, row, (&raw const cell) as isize);
+		}
+	}
+
+	pub fn report_count(&self, id: u16) -> usize {
+		self.row_count(id)
+	}
+
+	/// The text of every column of row `index`, in order. The texts are empty when there is no
+	/// such row.
+	pub fn report_row(&self, id: u16, index: usize) -> Vec<String> {
+		let columns = self.report_columns(id).len();
+		(0..columns).map(|column| self.cell_text(id, index, column)).collect()
+	}
+
+	/// The selected rows, in ascending order.
+	pub fn report_selected(&self, id: u16) -> Vec<usize> {
+		let first = self.next_selected(id, None);
+		std::iter::successors(first, |&row| self.next_selected(id, Some(row))).collect()
+	}
+
+	/// Selects row `index` and no other, makes it the row the arrow keys act on, and scrolls
+	/// the list until the whole row is in view. Keyboard focus stays where it is.
+	pub fn report_select_only(&self, id: u16, index: usize) {
+		// Row -1 stands for every row.
+		self.set_row_state(id, usize::MAX, 0, LVIS_SELECTED.cast_unsigned());
+		self.select_row(id, index);
+	}
+
+	/// Turns on the extended list view `styles` of list view `id`, leaving its others as they
+	/// are.
+	fn add_list_styles(self, id: u16, styles: i32) {
+		let mask = styles.cast_unsigned() as usize;
+		self.send(id, LVM_SETEXTENDEDLISTVIEWSTYLE, mask, styles as isize);
+	}
+
+	/// The width list view `id`'s columns share: its client width less room for the vertical
+	/// scroll bar a long list gets, so that it never needs a horizontal one.
+	fn column_room(self, id: u16) -> i32 {
+		let mut client = RECT::default();
+		unsafe {
+			let _ = GetClientRect(self.control(id), &raw mut client);
+		}
+		client.right - unsafe { GetSystemMetrics(SM_CXVSCROLL) }
+	}
+
+	/// Adds column `index`, `width` pixels wide, with `title` as its header text.
+	fn insert_column(self, id: u16, index: usize, title: &str, width: i32) {
+		let mut title = wide(title);
+		let column = LVCOLUMNW {
+			mask: (LVCF_WIDTH | LVCF_TEXT | LVCF_SUBITEM).cast_unsigned(),
+			cx: width,
+			pszText: PWSTR(title.as_mut_ptr()),
+			iSubItem: i32::try_from(index).unwrap_or(i32::MAX),
+			..LVCOLUMNW::default()
+		};
+		self.send(id, LVM_INSERTCOLUMNW, index, (&raw const column) as isize);
+	}
+
+	/// The header text of column `index`, or `None` when there is no such column.
+	fn column_title(self, id: u16, index: usize) -> Option<String> {
+		let mut found = false;
+		let title = read_growing(|buffer| {
+			let mut column = LVCOLUMNW {
+				mask: LVCF_TEXT.cast_unsigned(),
+				pszText: PWSTR(buffer.as_mut_ptr()),
+				cchTextMax: i32::try_from(buffer.len()).unwrap_or(i32::MAX),
+				..LVCOLUMNW::default()
+			};
+			found = self.send(id, LVM_GETCOLUMNW, index, (&raw mut column) as isize) != 0;
+			// The text arrives NUL-terminated, without its length.
+			buffer.iter().position(|&unit| unit == 0).unwrap_or(buffer.len())
+		});
+		found.then_some(title)
+	}
+
+	/// Adds a row with `text` after the last one, and answers its index.
+	fn append_row(self, id: u16, text: &str) -> Option<usize> {
+		let mut text = wide(text);
+		let row = LVITEMW {
+			mask: LVIF_TEXT as u32,
+			// Past the last row: the list view appends the row and answers its index.
+			iItem: i32::MAX,
+			pszText: PWSTR(text.as_mut_ptr()),
+			..LVITEMW::default()
+		};
+		usize::try_from(self.send(id, LVM_INSERTITEMW, 0, (&raw const row) as isize)).ok()
+	}
+
+	fn row_count(self, id: u16) -> usize {
+		usize::try_from(self.send(id, LVM_GETITEMCOUNT, 0, 0)).unwrap_or(0)
+	}
+
+	/// The text of row `row` in column `column`, or an empty string when there is no such row.
+	fn cell_text(self, id: u16, row: usize, column: usize) -> String {
+		read_growing(|buffer| {
+			let mut cell = LVITEMW {
+				iSubItem: i32::try_from(column).unwrap_or(i32::MAX),
+				pszText: PWSTR(buffer.as_mut_ptr()),
+				cchTextMax: i32::try_from(buffer.len()).unwrap_or(i32::MAX),
+				..LVITEMW::default()
+			};
+			let copied = self.send(id, LVM_GETITEMTEXTW, row, (&raw mut cell) as isize);
+			usize::try_from(copied).unwrap_or(0)
+		})
+	}
+
+	/// The first selected row after row `after`, or from the first row when `after` is `None`.
+	fn next_selected(self, id: u16, after: Option<usize>) -> Option<usize> {
+		// A search after row -1 starts at the first row; LVNI_ALL searches by index, so the rows
+		// come in order.
+		let after = after.unwrap_or(usize::MAX);
+		let flags = (LVNI_ALL | LVNI_SELECTED) as isize;
+		usize::try_from(self.send(id, LVM_GETNEXTITEM, after, flags)).ok()
+	}
+
+	/// Selects row `index`, makes it the row the arrow keys act on, and scrolls the list until
+	/// the whole row is in view.
+	fn select_row(self, id: u16, index: usize) {
 		let state = (LVIS_SELECTED | LVIS_FOCUSED) as u32;
 		self.set_row_state(id, index, state, state);
 		// An lParam of FALSE asks for the whole row, not just part of it.
@@ -334,6 +488,15 @@ impl Dialog {
 		(self.control(id) == focus).then_some(id)
 	}
 
+	/// Whether control `id`, or a window inside it, has keyboard focus. An editable combo box
+	/// gives focus to the edit control inside it, which [`focused`](Self::focused) doesn't name.
+	pub fn has_focus_within(&self, id: u16) -> bool {
+		let (control, focus) = (self.control(id), unsafe { GetFocus() });
+		!control.0.is_null()
+			&& !focus.0.is_null()
+			&& (focus == control || unsafe { IsChild(control, focus) }.as_bool())
+	}
+
 	pub fn is_alive(&self) -> bool {
 		unsafe { IsWindow(Some(self.raw())) }.as_bool()
 	}
@@ -350,6 +513,20 @@ impl Dialog {
 		unsafe {
 			let _ = SetForegroundWindow(self.raw());
 		}
+	}
+}
+
+/// Reads a text that a control copies without saying how long it is. `copy` fills the buffer
+/// it is given and answers how many characters it copied; the buffer grows until the text fits
+/// with room to spare.
+fn read_growing(mut copy: impl FnMut(&mut [u16]) -> usize) -> String {
+	let mut buffer = vec![0u16; 256];
+	loop {
+		let copied = copy(&mut buffer).min(buffer.len());
+		if copied + 1 < buffer.len() {
+			return String::from_utf16_lossy(&buffer[..copied]);
+		}
+		buffer.resize(buffer.len() * 2, 0);
 	}
 }
 
@@ -456,6 +633,18 @@ fn handle(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> isize {
 			let (id, notification) = (wparam.0 as u16, (wparam.0 >> 16) as u16);
 			call(window, |handler, dialog| handler.command(dialog, id, notification));
 			1
+		}
+		NOTIFY => {
+			// lParam points at the header every notification starts with: who sent it, and what.
+			let header = unsafe { (lparam.0 as *const NMHDR).as_ref() };
+			if let Some(header) = header
+				&& let Ok(id) = u16::try_from(header.idFrom)
+			{
+				let code = header.code.cast_signed();
+				call(window, |handler, dialog| handler.notify(dialog, id, code));
+			}
+			// 0 leaves each notification's outcome to the control, such as letting a row change.
+			0
 		}
 		WM_REFRESH => {
 			let slot = slot_of(window);
@@ -587,15 +776,16 @@ mod tests {
 
 	use super::{Dialog, DialogHandler, create_child_dialog, create_modeless_dialog, destroy};
 	use crate::bindings::Windows::Win32::{
-		BN_CLICKED, BS_AUTOCHECKBOX, CBS_DROPDOWNLIST, DS_CONTROL, DS_MODALFRAME, ES_MULTILINE,
-		ES_READONLY, GetClientRect, GetSystemMetrics, GetWindowTextW, HWND, LBS_NOTIFY, LPARAM,
-		LVM_GETCOLUMNWIDTH, LVM_GETCOUNTPERPAGE, LVM_GETTOPINDEX, RECT, SM_CXVSCROLL, SendMessageW,
-		WM_CLOSE, WM_COMMAND, WPARAM, WS_BORDER, WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU,
-		WS_TABSTOP, WS_VSCROLL,
+		BN_CLICKED, BS_AUTOCHECKBOX, CB_GETEDITSEL, CB_SETEDITSEL, CBS_AUTOHSCROLL, CBS_DROPDOWN,
+		CBS_DROPDOWNLIST, DS_CONTROL, DS_MODALFRAME, ES_MULTILINE, ES_READONLY, GetClientRect,
+		GetSystemMetrics, GetWindowTextW, HWND, LBS_NOTIFY, LPARAM, LVIS_SELECTED, LVITEMW,
+		LVM_GETCOLUMNWIDTH, LVM_GETCOUNTPERPAGE, LVM_GETTOPINDEX, LVM_SETITEMSTATE, RECT,
+		SM_CXVSCROLL, SendMessageW, WM_CLOSE, WM_COMMAND, WPARAM, WS_BORDER, WS_CAPTION, WS_CHILD,
+		WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
 	};
-	use crate::style;
 	use crate::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
-	use crate::testing::{hidden_window, pump_messages, wants_all_keys};
+	use crate::testing::{hidden_window, pump_messages, send_notify, wants_all_keys};
+	use crate::{notify, style};
 
 	#[test]
 	fn a_dialog_created_during_another_ones_creation_keeps_its_own_claim() {
@@ -649,6 +839,7 @@ mod tests {
 	pub struct Record {
 		pub inits: usize,
 		pub commands: Vec<(u16, u16)>,
+		pub notifications: Vec<(u16, i32)>,
 		pub refreshes: usize,
 		pub dropped: bool,
 	}
@@ -685,6 +876,10 @@ mod tests {
 
 		fn refresh(&mut self, _dialog: &Dialog) {
 			self.record.borrow_mut().refreshes += 1;
+		}
+
+		fn notify(&mut self, _dialog: &Dialog, id: u16, code: i32) {
+			self.record.borrow_mut().notifications.push((id, code));
 		}
 	}
 
@@ -818,14 +1013,14 @@ mod tests {
 		DialogItem { style: style::CHECK_LIST, cy: 60, ..item(LIST, ControlClass::ListView, "", 0) }
 	}
 
-	fn check_list_dialog(items: Vec<DialogItem>) -> Dialog {
+	fn dialog_with(items: Vec<DialogItem>) -> Dialog {
 		let template = DialogTemplate { items, ..template(MODELESS) };
 		create_modeless_dialog(hidden_window(), &template, Box::new(Recorder::default())).unwrap()
 	}
 
 	#[test]
 	fn a_check_list_holds_rows_and_their_ticks() {
-		let dialog = check_list_dialog(vec![check_list()]);
+		let dialog = dialog_with(vec![check_list()]);
 		dialog.check_list_init(LIST);
 		dialog.check_list_add(LIST, "Liked Songs", true);
 		dialog.check_list_add(LIST, "Church / Sunday set", false);
@@ -848,7 +1043,7 @@ mod tests {
 
 	#[test]
 	fn a_list_view_is_a_check_list_once_it_is_set_up() {
-		let dialog = check_list_dialog(vec![check_list()]);
+		let dialog = dialog_with(vec![check_list()]);
 		assert!(!dialog.is_check_list(LIST));
 		dialog.check_list_init(LIST);
 		assert!(dialog.is_check_list(LIST));
@@ -857,7 +1052,7 @@ mod tests {
 
 	#[test]
 	fn selecting_a_row_scrolls_it_into_view() {
-		let dialog = check_list_dialog(vec![check_list()]);
+		let dialog = dialog_with(vec![check_list()]);
 		dialog.check_list_init(LIST);
 		for row in 0..30 {
 			dialog.check_list_add(LIST, &format!("Playlist {row}"), false);
@@ -874,7 +1069,7 @@ mod tests {
 
 	#[test]
 	fn a_check_list_reads_rows_of_any_length() {
-		let dialog = check_list_dialog(vec![check_list()]);
+		let dialog = dialog_with(vec![check_list()]);
 		dialog.check_list_init(LIST);
 		let long = "In Christ Alone ".repeat(40);
 		dialog.check_list_add(LIST, &long, false);
@@ -885,7 +1080,7 @@ mod tests {
 
 	#[test]
 	fn a_check_list_column_leaves_room_for_the_scroll_bar() {
-		let dialog = check_list_dialog(vec![check_list()]);
+		let dialog = dialog_with(vec![check_list()]);
 		dialog.check_list_init(LIST);
 		let mut client = RECT::default();
 		assert!(unsafe { GetClientRect(dialog.control(LIST), &raw mut client) }.as_bool());
@@ -900,8 +1095,135 @@ mod tests {
 	fn a_check_list_follows_its_label_in_tab_order() {
 		let mut items = template(MODELESS).items;
 		items.splice(2..2, [item(110, ControlClass::Static, "&Playlists:", 0), check_list()]);
-		let dialog = check_list_dialog(items);
+		let dialog = dialog_with(items);
 		assert_eq!(dialog.tab_order(), [102, LIST, 104, 107, 2]);
+		destroy(dialog);
+	}
+
+	const SEARCH: u16 = 112;
+
+	fn report_list() -> DialogItem {
+		DialogItem {
+			style: style::REPORT_LIST,
+			cx: 180,
+			cy: 60,
+			..item(LIST, ControlClass::ListView, "", 0)
+		}
+	}
+
+	/// A combo box whose text can be typed in, with a drop-down list of earlier texts.
+	fn search_field() -> DialogItem {
+		let style = CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP;
+		DialogItem { cy: 60, ..item(SEARCH, ControlClass::ComboBox, "", style) }
+	}
+
+	#[test]
+	fn a_report_list_holds_rows_in_columns_and_several_selected() {
+		let dialog = dialog_with(vec![report_list()]);
+		dialog.report_init(LIST, &[("#", 8), ("Title", 40), ("Artist", 52)]);
+		assert_eq!(dialog.report_columns(LIST), ["#", "Title", "Artist"]);
+		dialog.report_add(LIST, &["1", "In Christ Alone", "Keith Getty, Kristyn Getty"]);
+		dialog.report_add(LIST, &["2", "The Power of the Cross", "Keith Getty, Kristyn Getty"]);
+		assert_eq!(dialog.report_count(LIST), 2);
+		assert_eq!(
+			dialog.report_row(LIST, 1),
+			["2", "The Power of the Cross", "Keith Getty, Kristyn Getty"]
+		);
+		assert!(dialog.report_selected(LIST).is_empty());
+		dialog.report_select_only(LIST, 1);
+		assert_eq!(dialog.report_selected(LIST), [1]);
+		// Control+click adds row 0 to the selection.
+		let selected = LVIS_SELECTED.cast_unsigned();
+		let row = LVITEMW { state: selected, stateMask: selected, ..LVITEMW::default() };
+		dialog.send(LIST, LVM_SETITEMSTATE, 0, (&raw const row) as isize);
+		assert_eq!(dialog.report_selected(LIST), [0, 1]);
+		dialog.report_select_only(LIST, 0);
+		assert_eq!(dialog.report_selected(LIST), [0]);
+		dialog.report_clear(LIST);
+		assert_eq!(dialog.report_count(LIST), 0);
+		assert!(dialog.report_selected(LIST).is_empty());
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_report_lists_columns_share_its_width_less_the_scroll_bar() {
+		let dialog = dialog_with(vec![report_list()]);
+		dialog.report_init(LIST, &[("#", 8), ("Title", 40), ("Artist", 52)]);
+		let mut client = RECT::default();
+		assert!(unsafe { GetClientRect(dialog.control(LIST), &raw mut client) }.as_bool());
+		let room =
+			isize::try_from(client.right - unsafe { GetSystemMetrics(SM_CXVSCROLL) }).unwrap();
+		assert!(room > 100, "{room}");
+		let widths: Vec<isize> =
+			(0..3).map(|column| dialog.send(LIST, LVM_GETCOLUMNWIDTH, column, 0)).collect();
+		assert_eq!(widths, [room * 8 / 100, room * 40 / 100, room * 52 / 100]);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_report_list_reads_cells_of_any_length() {
+		let dialog = dialog_with(vec![report_list()]);
+		let long = "In Christ Alone ".repeat(40);
+		dialog.report_init(LIST, &[(&long, 50), ("Artist", 50)]);
+		dialog.report_add(LIST, &["1", &long]);
+		assert_eq!(dialog.report_columns(LIST), [long.as_str(), "Artist"]);
+		assert_eq!(dialog.report_row(LIST, 0), ["1", long.as_str()]);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn an_editable_combo_box_keeps_its_items_and_its_own_text() {
+		let dialog = dialog_with(vec![search_field()]);
+		assert!(dialog.combo_texts(SEARCH).is_empty());
+		dialog.combo_add(SEARCH, "in christ alone");
+		dialog.combo_add(SEARCH, "bach cantatas");
+		assert_eq!(dialog.combo_texts(SEARCH), ["in christ alone", "bach cantatas"]);
+		dialog.set_text(SEARCH, "getty");
+		assert_eq!(dialog.text(SEARCH), "getty");
+		dialog.combo_clear(SEARCH);
+		assert!(dialog.combo_texts(SEARCH).is_empty());
+		assert_eq!(dialog.text(SEARCH), "", "clearing the list empties the text too");
+		destroy(dialog);
+	}
+
+	#[test]
+	fn selecting_all_text_selects_all_of_an_editable_combo_boxs_text() {
+		let dialog = dialog_with(vec![search_field()]);
+		dialog.set_text(SEARCH, "getty");
+		// Start from a caret after the first letter.
+		dialog.send(SEARCH, CB_SETEDITSEL, 0, 1 | (1 << 16));
+		let selection = || {
+			let range = dialog.send(SEARCH, CB_GETEDITSEL, 0, 0);
+			(range & 0xFFFF, (range >> 16) & 0xFFFF)
+		};
+		assert_eq!(selection(), (1, 1));
+		dialog.select_all_text(SEARCH);
+		assert_eq!(selection(), (0, 5));
+		destroy(dialog);
+	}
+
+	#[test]
+	fn focus_in_a_combo_boxs_edit_counts_as_focus_within_it() {
+		let dialog = dialog_with(vec![search_field(), report_list()]);
+		dialog.focus(SEARCH);
+		assert!(dialog.has_focus_within(SEARCH));
+		assert!(!dialog.has_focus_within(LIST));
+		assert_ne!(dialog.focused(), Some(SEARCH));
+		dialog.focus(LIST);
+		assert!(dialog.has_focus_within(LIST));
+		assert!(!dialog.has_focus_within(SEARCH));
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_double_click_in_a_list_view_reaches_the_handler() {
+		let recorder = Recorder::default();
+		let record = Rc::clone(&recorder.record);
+		let template = DialogTemplate { items: vec![report_list()], ..template(MODELESS) };
+		let dialog =
+			create_modeless_dialog(hidden_window(), &template, Box::new(recorder)).unwrap();
+		send_notify(&dialog, LIST, notify::NM_DBLCLK);
+		assert_eq!(record.borrow().notifications, [(LIST, notify::NM_DBLCLK)]);
 		destroy(dialog);
 	}
 

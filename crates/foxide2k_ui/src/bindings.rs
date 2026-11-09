@@ -132,6 +132,11 @@ pub mod Windows {
 			unsafe { InitCommonControlsEx(picce) }
 		}
 		#[inline]
+		pub unsafe fn IsChild(hwndparent: HWND, hwnd: HWND) -> windows_core::BOOL {
+			windows_core::link!("user32.dll" "system" fn IsChild(hwndparent : HWND, hwnd : HWND) -> windows_core::BOOL);
+			unsafe { IsChild(hwndparent, hwnd) }
+		}
+		#[inline]
 		pub unsafe fn IsWindow(hwnd: Option<HWND>) -> windows_core::BOOL {
 			windows_core::link!("user32.dll" "system" fn IsWindow(hwnd : HWND) -> windows_core::BOOL);
 			unsafe { IsWindow(hwnd.unwrap_or(core::mem::zeroed()) as _) }
@@ -235,10 +240,18 @@ pub mod Windows {
 		pub const BS_NOTIFY: i32 = 16384;
 		pub const BS_PUSHBUTTON: i32 = 0;
 		pub const CBN_SELCHANGE: i32 = 1;
+		pub const CBS_AUTOHSCROLL: i32 = 64;
+		pub const CBS_DROPDOWN: i32 = 2;
 		pub const CBS_DROPDOWNLIST: i32 = 3;
 		pub const CB_ADDSTRING: i32 = 323;
+		pub const CB_GETCOUNT: i32 = 326;
 		pub const CB_GETCURSEL: i32 = 327;
+		pub const CB_GETEDITSEL: i32 = 320;
+		pub const CB_GETLBTEXT: i32 = 328;
+		pub const CB_GETLBTEXTLEN: i32 = 329;
+		pub const CB_RESETCONTENT: i32 = 331;
 		pub const CB_SETCURSEL: i32 = 334;
+		pub const CB_SETEDITSEL: i32 = 322;
 		pub const CHILDID_SELF: i32 = 0;
 		pub type CLSCTX = u32;
 		pub const CLSCTX_INPROC_SERVER: CLSCTX = 1;
@@ -1368,6 +1381,8 @@ pub mod Windows {
 		#[repr(transparent)]
 		#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 		pub struct LRESULT(pub isize);
+		pub const LVCF_SUBITEM: i32 = 8;
+		pub const LVCF_TEXT: i32 = 4;
 		pub const LVCF_WIDTH: i32 = 2;
 		#[repr(C)]
 		#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1409,6 +1424,7 @@ pub mod Windows {
 		}
 		pub const LVM_DELETEALLITEMS: i32 = 4105;
 		pub const LVM_ENSUREVISIBLE: i32 = 4115;
+		pub const LVM_GETCOLUMNW: i32 = 4191;
 		pub const LVM_GETCOLUMNWIDTH: i32 = 4125;
 		pub const LVM_GETCOUNTPERPAGE: i32 = 4136;
 		pub const LVM_GETEXTENDEDLISTVIEWSTYLE: i32 = 4151;
@@ -1421,6 +1437,8 @@ pub mod Windows {
 		pub const LVM_INSERTITEMW: i32 = 4173;
 		pub const LVM_SETEXTENDEDLISTVIEWSTYLE: i32 = 4150;
 		pub const LVM_SETITEMSTATE: i32 = 4139;
+		pub const LVM_SETITEMTEXTW: i32 = 4212;
+		pub const LVNI_ALL: i32 = 0;
 		pub const LVNI_SELECTED: i32 = 2;
 		pub const LVS_EX_CHECKBOXES: i32 = 4;
 		pub const LVS_EX_FULLROWSELECT: i32 = 32;
@@ -1440,6 +1458,14 @@ pub mod Windows {
 			pub time: u32,
 			pub pt: POINT,
 		}
+		#[repr(C)]
+		#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+		pub struct NMHDR {
+			pub hwndFrom: HWND,
+			pub idFrom: usize,
+			pub code: u32,
+		}
+		pub const NM_DBLCLK: u32 = 4294967293;
 		pub const OBJID_CLIENT: i32 = -4;
 		pub const Off: LiveSetting = 0;
 		pub const PM_REMOVE: i32 = 1;
@@ -1615,6 +1641,7 @@ pub mod Windows {
 		pub const WM_INITDIALOG: i32 = 272;
 		pub const WM_NCDESTROY: i32 = 130;
 		pub const WM_NEXTDLGCTL: i32 = 40;
+		pub const WM_NOTIFY: i32 = 78;
 		#[repr(transparent)]
 		#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 		pub struct WPARAM(pub usize);

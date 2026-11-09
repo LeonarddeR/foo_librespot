@@ -49,6 +49,10 @@ pub mod style {
 	pub const ES_AUTOHSCROLL: u32 = win::ES_AUTOHSCROLL.cast_unsigned();
 	pub const SS_NOPREFIX: u32 = win::SS_NOPREFIX.cast_unsigned();
 	pub const CBS_DROPDOWNLIST: u32 = win::CBS_DROPDOWNLIST.cast_unsigned();
+	/// A combo box whose text can be typed in, with a drop-down list to pick a text from.
+	pub const CBS_DROPDOWN: u32 = win::CBS_DROPDOWN.cast_unsigned();
+	/// Lets the typed text of a [`CBS_DROPDOWN`] combo box grow wider than the box, scrolling it.
+	pub const CBS_AUTOHSCROLL: u32 = win::CBS_AUTOHSCROLL.cast_unsigned();
 	/// Makes a list box tell its dialog about clicks and double clicks.
 	pub const LBS_NOTIFY: u32 = win::LBS_NOTIFY.cast_unsigned();
 	/// A push button that Enter presses while focus is on a control that doesn't use Enter.
@@ -68,9 +72,13 @@ pub mod style {
 		| LVS_SHOWSELALWAYS
 		| WS_TABSTOP
 		| WS_BORDER;
+	/// A list view for [`Dialog::report_init`](super::host::Dialog::report_init): rows in
+	/// columns under a header, several rows selectable and the selection shown while another
+	/// control has focus, with a border, and a tab stop.
+	pub const REPORT_LIST: u32 = LVS_REPORT | LVS_SHOWSELALWAYS | WS_TABSTOP | WS_BORDER;
 }
 
-/// `WM_COMMAND` notification codes and the ids Windows gives meaning to.
+/// `WM_COMMAND` and `WM_NOTIFY` notification codes, and the ids Windows gives meaning to.
 #[allow(clippy::cast_possible_truncation, reason = "the values are 16-bit by definition")]
 pub mod notify {
 	use crate::bindings::Windows::Win32 as win;
@@ -86,6 +94,8 @@ pub mod notify {
 	pub const IDOK: u16 = win::IDOK as u16;
 	/// Sent by a list box with `LBS_NOTIFY` when an item is double clicked.
 	pub const LBN_DBLCLK: u16 = win::LBN_DBLCLK as u16;
+	/// Sent through `WM_NOTIFY` by a list view, among other controls, when it is double clicked.
+	pub const NM_DBLCLK: i32 = win::NM_DBLCLK.cast_signed();
 }
 
 #[cfg(test)]
@@ -117,5 +127,8 @@ mod tests {
 			(1, 0x4000, 4, 8)
 		);
 		assert_eq!(style::CHECK_LIST, 0x0001_0000 | 0x0080_0000 | 0x4000 | 4 | 8 | 1);
+		assert_eq!((style::CBS_DROPDOWN, style::CBS_AUTOHSCROLL), (2, 0x0040));
+		assert_eq!(style::REPORT_LIST, 0x0001_0000 | 0x0080_0000 | 8 | 1);
+		assert_eq!(notify::NM_DBLCLK, -3);
 	}
 }

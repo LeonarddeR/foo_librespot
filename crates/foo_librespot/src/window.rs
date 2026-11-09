@@ -133,6 +133,10 @@ impl<H: DialogHandler> DialogHandler for Single<H> {
 	fn refresh(&mut self, dialog: &Dialog) {
 		self.handler.refresh(dialog);
 	}
+
+	fn notify(&mut self, dialog: &Dialog, id: u16, code: i32) {
+		self.handler.notify(dialog, id, code);
+	}
 }
 
 impl<H> Drop for Single<H> {
@@ -150,9 +154,10 @@ impl<H> Drop for Single<H> {
 mod tests {
 	use foxide2k::popup::PopupIcon;
 	use foxide2k_ui::host::{Dialog, DialogHandler, destroy};
+	use foxide2k_ui::notify::NM_DBLCLK;
 	use foxide2k_ui::style::{WS_CAPTION, WS_POPUP};
 	use foxide2k_ui::template::{DialogTemplate, shell_font};
-	use foxide2k_ui::testing::{hidden_window, pump_messages, send_close};
+	use foxide2k_ui::testing::{hidden_window, pump_messages, send_close, send_notify};
 
 	use super::{SingleWindow, brought_up};
 	use crate::testing::installed_api;
@@ -168,10 +173,12 @@ mod tests {
 		}
 	}
 
-	/// Closes its window on Escape and the close box, and counts its refreshes.
+	/// Closes its window on Escape and the close box, counts its refreshes and keeps its
+	/// notifications.
 	#[derive(Default)]
 	struct Closing {
 		refreshes: usize,
+		notifications: Vec<(u16, i32)>,
 	}
 
 	impl DialogHandler for Closing {
@@ -187,6 +194,10 @@ mod tests {
 
 		fn refresh(&mut self, _dialog: &Dialog) {
 			self.refreshes += 1;
+		}
+
+		fn notify(&mut self, _dialog: &Dialog, id: u16, code: i32) {
+			self.notifications.push((id, code));
 		}
 	}
 
@@ -281,6 +292,14 @@ mod tests {
 		let dialog = ONE.open(owner).unwrap();
 		assert_eq!(ONE.inspect(|_, seen| seen), Some(dialog));
 		assert!(dialog.is_alive());
+		destroy(dialog);
+	}
+
+	#[test]
+	fn notifications_reach_the_windows_own_handler() {
+		let dialog = ONE.open(hidden_window()).unwrap();
+		send_notify(&dialog, 7, NM_DBLCLK);
+		assert_eq!(ONE.inspect(|one, _| one.notifications.clone()), Some(vec![(7, NM_DBLCLK)]));
 		destroy(dialog);
 	}
 

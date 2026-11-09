@@ -3,8 +3,8 @@
 
 use crate::bindings::Windows::Win32::{
 	COINIT_APARTMENTTHREADED, CoInitializeEx, DLGC_WANTALLKEYS, DispatchMessageW, HWND, LPARAM,
-	MSG, PM_REMOVE, PeekMessageW, SendMessageW, TranslateMessage, WM_CLOSE, WM_COMMAND,
-	WM_GETDLGCODE, WPARAM,
+	MSG, NMHDR, PM_REMOVE, PeekMessageW, SendMessageW, TranslateMessage, WM_CLOSE, WM_COMMAND,
+	WM_GETDLGCODE, WM_NOTIFY, WPARAM,
 };
 use crate::host::{Dialog, DialogHandler, create_modeless_dialog};
 use crate::style::WS_POPUP;
@@ -74,6 +74,20 @@ pub fn send_command(dialog: &Dialog, id: u16, notification: u16) {
 			WM_COMMAND.cast_unsigned(),
 			WPARAM(wparam),
 			LPARAM(control.0 as isize),
+		)
+	};
+}
+
+/// Sends `WM_NOTIFY` from control `id`, as a double click in a list view does.
+pub fn send_notify(dialog: &Dialog, id: u16, code: i32) {
+	let header =
+		NMHDR { hwndFrom: dialog.control(id), idFrom: usize::from(id), code: code.cast_unsigned() };
+	unsafe {
+		SendMessageW(
+			HWND(dialog.hwnd() as _),
+			WM_NOTIFY.cast_unsigned(),
+			WPARAM(usize::from(id)),
+			LPARAM((&raw const header) as isize),
 		)
 	};
 }
