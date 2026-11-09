@@ -1,5 +1,6 @@
-//! foobar2000's playlist tabs: creating and switching them, keeping a value with one across
-//! restarts, and loading links into one the way pasting them does. Main thread only.
+//! foobar2000's playlist tabs: creating and switching them, reading their names and locks,
+//! keeping a value with one across restarts, and loading links into one the way pasting them
+//! does. Main thread only.
 
 use std::ffi::{c_char, c_void};
 use std::sync::{Mutex, PoisonError};
@@ -10,8 +11,8 @@ use crate::abi::input::ByValueServicePtr;
 use crate::abi::metadb_handle::HandleListRaw;
 use crate::abi::pfc_list::{BitArray, BitArrayVtbl, ListBaseConst, ListBaseConstVtbl};
 use crate::abi::playlist::{
-	INCOMING_IID, INCOMING_V2_IID, IncomingItemFilterV2Vtbl, MANAGER_IID, MANAGER_V2_IID,
-	NOTIFY_IID, PlaylistManagerVtbl, ProcessLocationsNotifyVtbl,
+	FILTER_ADD, INCOMING_IID, INCOMING_V2_IID, IncomingItemFilterV2Vtbl, MANAGER_IID,
+	MANAGER_V2_IID, NOTIFY_IID, OP_FLAG_DELAY_UI, PlaylistManagerVtbl, ProcessLocationsNotifyVtbl,
 };
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 use crate::abort;
@@ -22,7 +23,7 @@ use crate::guid::Guid;
 use crate::host::host;
 use crate::metadb::HandleList;
 use crate::service::{ServiceImpl, ServiceObject, ServicePtr, new_service};
-use crate::strings::c_string;
+use crate::strings::{OwnedString, c_string};
 
 /// What runs with the tracks of a finished load, on the main thread.
 type Done = Box<dyn FnOnce(&HandleList<'_>) -> Result<()> + Send>;
@@ -71,6 +72,38 @@ pub fn activate(index: usize) -> Result<()> {
 	let manager = manager()?;
 	let raw = manager.as_raw();
 	Ok(try_host(|| unsafe { (vtbl(&manager).set_active_playlist)(raw, index) })?)
+}
+
+/// The active tab, `None` when no tab is active.
+pub fn active() -> Result<Option<usize>> {
+	let manager = manager()?;
+	let raw = manager.as_raw();
+	let index = try_host(|| unsafe { (vtbl(&manager).get_active_playlist)(raw) })?;
+	Ok((index != usize::MAX).then_some(index))
+}
+
+/// The name of tab `index`.
+pub fn name(index: usize) -> Result<String> {
+	let manager = manager()?;
+	let raw = manager.as_raw();
+	let mut name = OwnedString::new();
+	let out = name.as_raw();
+	let found = try_host(|| unsafe { (vtbl(&manager).playlist_get_name)(raw, index, out) })?;
+	if !found {
+		return Err(Error::new(
+			ExceptionKind::InvalidParams,
+			format!("there is no playlist {index}"),
+		));
+	}
+	Ok(name.value())
+}
+
+/// Whether a lock on tab `index` refuses tracks being added to it.
+pub fn refuses_adding(index: usize) -> Result<bool> {
+	let manager = manager()?;
+	let raw = manager.as_raw();
+	let mask = try_host(|| unsafe { (vtbl(&manager).playlist_lock_get_filter_mask)(raw, index) })?;
+	Ok(mask & FILTER_ADD != 0)
 }
 
 /// Keeps `value` under `property` with tab `index`; foobar2000 saves it with the playlist.
@@ -141,11 +174,12 @@ unsafe extern "C-unwind" fn bit_find(
 	if !value && count != 0 { start } else { start.wrapping_add_signed(count) }
 }
 
-/// Appends `items` to tab `index`, unselected.
+/// Appends `items` to tab `index`, unselected. Fails when the tab refuses them, as a locked tab
+/// does.
 pub fn append(index: usize, items: &HandleList<'_>) -> Result<()> {
 	let manager = manager()?;
 	let raw = manager.as_raw();
-	try_host(|| unsafe {
+	let at = try_host(|| unsafe {
 		(vtbl(&manager).playlist_insert_items)(
 			raw,
 			index,
@@ -154,6 +188,9 @@ pub fn append(index: usize, items: &HandleList<'_>) -> Result<()> {
 			&raw const NO_SELECTION.0,
 		)
 	})?;
+	if at == usize::MAX {
+		return Err(Error::new(ExceptionKind::Std, "the playlist refused the tracks"));
+	}
 	Ok(())
 }
 
@@ -235,6 +272,28 @@ unsafe extern "C-unwind" fn url_item(
 /// its progress window, then calls `done` on the main thread. A cancelled load calls `aborted`
 /// instead, once `done` is dropped.
 pub fn load_locations(locations: &[String], done: Done, aborted: Aborted) -> Result<()> {
+	process_locations(locations, 0, host().main_window(), done, aborted)
+}
+
+/// [`load_locations`] for window `owner`: foobar2000 shows no progress window for a short load,
+/// and the window of a longer one doesn't take focus from `owner`.
+pub fn load_locations_quietly(
+	owner: isize,
+	locations: &[String],
+	done: Done,
+	aborted: Aborted,
+) -> Result<()> {
+	process_locations(locations, OP_FLAG_DELAY_UI, owner, done, aborted)
+}
+
+/// `process_locations_async` with `flags`, any progress window owned by `parent`.
+fn process_locations(
+	locations: &[String],
+	flags: u32,
+	parent: isize,
+	done: Done,
+	aborted: Aborted,
+) -> Result<()> {
 	const FILTER: &str = "playlist_incoming_item_filter_v2";
 	let filter =
 		host().require(&INCOMING_IID, FILTER)?.query(&INCOMING_V2_IID).ok_or_else(|| {
@@ -249,7 +308,7 @@ pub fn load_locations(locations: &[String], done: Done, aborted: Aborted) -> Res
 		urls: strings.iter().map(|string| string.as_ptr()).collect(),
 	};
 	let raw = filter.as_raw();
-	let parent = host().main_window() as *mut c_void;
+	let parent = parent as *mut c_void;
 	// The by-value argument: a temporary holding one reference, which the callee releases.
 	let mut temporary = new_service(Notify(Mutex::new(Some((done, aborted))))).into_raw();
 	try_host(|| unsafe {
@@ -257,7 +316,7 @@ pub fn load_locations(locations: &[String], done: Done, aborted: Aborted) -> Res
 		(vtbl.process_locations_async)(
 			raw,
 			std::ptr::from_ref(&list).cast(),
-			0,
+			flags,
 			std::ptr::null(),
 			std::ptr::null(),
 			parent,
@@ -404,15 +463,18 @@ mod tests {
 	use std::sync::atomic::{AtomicBool, Ordering};
 
 	use super::{
-		MemoryReader, activate, append, count, create, find_by_property, load_locations, property,
-		set_property,
+		MemoryReader, activate, active, append, count, create, find_by_property, load_locations,
+		load_locations_quietly, name, property, refuses_adding, set_property,
 	};
 	use crate::cxx::{ExceptionKind, try_host};
 	use crate::error::Error;
 	use crate::guid::Guid;
-	use crate::testing::{FakeAbort, FakeApi};
+	use crate::metadb::HandleList;
+	use crate::testing::{FakeAbort, FakeApi, FakeHandleList};
 
 	const P: Guid = Guid::from_u128(0x6a1f_0c3e_5b7d_4f20_9e48_2d1c_b3a7_5e90);
+
+	const GETTY: &str = "sptf://spotify:track:2hQxLiI93xdjqENJuKeXjO";
 
 	/// Sets its flag when dropped.
 	struct DropFlag(Arc<AtomicBool>);
@@ -445,6 +507,61 @@ mod tests {
 		assert_eq!(api.active_tab(), None);
 		activate(1).unwrap();
 		assert_eq!(api.active_tab(), Some(1));
+	}
+
+	#[test]
+	fn the_active_tab_is_none_until_one_is_active() {
+		let api = FakeApi::new();
+		api.install();
+		assert_eq!(active().unwrap(), None);
+		api.add_tab("Default");
+		activate(0).unwrap();
+		assert_eq!(active().unwrap(), Some(0));
+		api.set_active_tab(None);
+		assert_eq!(active().unwrap(), None);
+	}
+
+	#[test]
+	fn a_tab_says_its_name() {
+		let api = FakeApi::new();
+		api.install();
+		api.add_tab("Default");
+		api.add_tab("Sunday");
+		assert_eq!(name(1).unwrap(), "Sunday");
+		assert_eq!(name(2).unwrap_err().kind, ExceptionKind::InvalidParams);
+	}
+
+	#[test]
+	fn a_locked_tab_refuses_adding_and_append_says_so() {
+		let api = FakeApi::new();
+		api.install();
+		api.add_tab("Default");
+		api.add_tab("Sunday");
+		api.lock_tab(0);
+		assert!(refuses_adding(0).unwrap());
+		assert!(!refuses_adding(1).unwrap());
+		let list = FakeHandleList::new(&[GETTY]);
+		let items = unsafe { HandleList::from_raw(list.as_raw()) };
+		let error = append(0, &items).unwrap_err();
+		assert_eq!(error.kind, ExceptionKind::Std);
+		assert_eq!(error.message, "the playlist refused the tracks");
+		assert!(api.tabs()[0].paths.is_empty());
+		append(1, &items).unwrap();
+		assert_eq!(api.tabs()[1].paths, [GETTY]);
+	}
+
+	#[test]
+	fn a_quiet_load_delays_its_progress_window_under_its_owner() {
+		let api = FakeApi::new();
+		api.install();
+		api.set_main_window(0x1234);
+		let owner = 0x5678;
+		load_locations_quietly(owner, &[GETTY.into()], Box::new(|_| Ok(())), Box::new(|| {}))
+			.unwrap();
+		assert_eq!(api.location_flags(), [(4, owner)]);
+		load_locations(&[GETTY.into()], Box::new(|_| Ok(())), Box::new(|| {})).unwrap();
+		assert_eq!(api.location_flags(), [(4, owner), (0, 0x1234)]);
+		assert_eq!(api.location_requests(), [[GETTY], [GETTY]]);
 	}
 
 	#[test]

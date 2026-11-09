@@ -1,5 +1,6 @@
 //! Fakes of foobar2000's playlist manager and incoming item filter: tabs that keep paths and
-//! properties, and location loads that finish when a test says so.
+//! properties and can be locked against adding, and location loads that finish when a test says
+//! so.
 
 use std::ffi::{c_char, c_void};
 use std::sync::{Mutex, PoisonError};
@@ -11,10 +12,11 @@ use crate::abi::input::ByValueServicePtr;
 use crate::abi::metadb_handle::HandleListRaw;
 use crate::abi::pfc_list::{BitArray, ListBaseConst};
 use crate::abi::playlist::{
-	INCOMING_IID, INCOMING_V2_IID, IncomingItemFilterV2Vtbl, MANAGER_IID, MANAGER_V2_IID,
-	PlaylistManagerVtbl, ProcessLocationsNotifyVtbl,
+	FILTER_ADD, INCOMING_IID, INCOMING_V2_IID, IncomingItemFilterV2Vtbl, MANAGER_IID,
+	MANAGER_V2_IID, PlaylistManagerVtbl, ProcessLocationsNotifyVtbl,
 };
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
+use crate::abi::string_base::StringBase;
 use crate::cxx::{HostException, try_host};
 use crate::guid::Guid;
 use crate::metadb::HandleList;
@@ -30,11 +32,21 @@ pub struct FakeTab {
 	/// How many of the items inserted were selected.
 	pub selected: usize,
 	pub properties: Vec<(Guid, Vec<u8>)>,
+	/// Whether a lock refuses items being added (`filter_add`).
+	pub locked: bool,
 }
 
-/// A `process_locations_async` call that has not finished.
+impl FakeTab {
+	fn new(name: String) -> Self {
+		Self { name, paths: Vec::new(), selected: 0, properties: Vec::new(), locked: false }
+	}
+}
+
+/// A `process_locations_async` call, finished or not.
 struct Request {
 	locations: Vec<String>,
+	flags: u32,
+	parent: isize,
 	notify: Option<ServicePtr>,
 }
 
@@ -50,12 +62,7 @@ impl FakeApi {
 	/// Adds a tab after the others and returns its index.
 	pub fn add_tab(&self, name: &str) -> usize {
 		let mut tabs = self.state.playlists.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-		tabs.push(FakeTab {
-			name: name.to_owned(),
-			paths: Vec::new(),
-			selected: 0,
-			properties: Vec::new(),
-		});
+		tabs.push(FakeTab::new(name.to_owned()));
 		tabs.len() - 1
 	}
 
@@ -65,6 +72,18 @@ impl FakeApi {
 
 	pub fn active_tab(&self) -> Option<usize> {
 		*self.state.playlists.active.lock().unwrap_or_else(PoisonError::into_inner)
+	}
+
+	/// Makes tab `index` the active one, or no tab with `None`, as the user switching tabs does.
+	pub fn set_active_tab(&self, index: Option<usize>) {
+		*self.state.playlists.active.lock().unwrap_or_else(PoisonError::into_inner) = index;
+	}
+
+	/// Locks tab `index` against adding: its filter mask has `filter_add`, and inserting into it
+	/// answers infinite and inserts nothing.
+	pub fn lock_tab(&self, index: usize) {
+		self.state.playlists.tabs.lock().unwrap_or_else(PoisonError::into_inner)[index].locked =
+			true;
 	}
 
 	/// Removes tab `index`, as the user closing it does.
@@ -82,6 +101,12 @@ impl FakeApi {
 	pub fn location_requests(&self) -> Vec<Vec<String>> {
 		let requests = self.state.playlists.requests.lock().unwrap_or_else(PoisonError::into_inner);
 		requests.iter().map(|request| request.locations.clone()).collect()
+	}
+
+	/// The flags and parent window of every `process_locations_async` call so far.
+	pub fn location_flags(&self) -> Vec<(u32, isize)> {
+		let requests = self.state.playlists.requests.lock().unwrap_or_else(PoisonError::into_inner);
+		requests.iter().map(|request| (request.flags, request.parent)).collect()
 	}
 
 	fn take_notify(&self, request: usize) -> ServicePtr {
@@ -121,13 +146,17 @@ unsafe impl ServiceImpl for FakeManager {
 	const VTBL: &'static PlaylistManagerVtbl = &PlaylistManagerVtbl {
 		base: ServiceBaseVtbl::new::<Self>(),
 		get_playlist_count: manager_count,
-		unused_4: [None; 1],
+		get_active_playlist: manager_get_active,
 		set_active_playlist: manager_set_active,
 		unused_6_8: [None; 3],
 		create_playlist: manager_create,
-		unused_10_19: [None; 10],
+		unused_10_13: [None; 4],
+		playlist_get_name: manager_get_name,
+		unused_15_19: [None; 5],
 		playlist_insert_items: manager_insert_items,
-		unused_21_56: [None; 36],
+		unused_21_37: [None; 17],
+		playlist_lock_get_filter_mask: manager_filter_mask,
+		unused_39_56: [None; 18],
 		playlist_set_property: manager_set_property,
 		playlist_get_property: manager_get_property,
 	};
@@ -139,6 +168,10 @@ fn state<'a>(this: *mut ServiceBase) -> &'a PlaylistsState {
 
 unsafe extern "C-unwind" fn manager_count(this: *mut ServiceBase) -> usize {
 	state(this).tabs.lock().unwrap_or_else(PoisonError::into_inner).len()
+}
+
+unsafe extern "C-unwind" fn manager_get_active(this: *mut ServiceBase) -> usize {
+	state(this).active.lock().unwrap_or_else(PoisonError::into_inner).unwrap_or(usize::MAX)
 }
 
 unsafe extern "C-unwind" fn manager_set_active(this: *mut ServiceBase, index: usize) {
@@ -156,8 +189,31 @@ unsafe extern "C-unwind" fn manager_create(
 	let name = String::from_utf8_lossy(unsafe { bytes_of(name, length) }).into_owned();
 	let mut tabs = state(this).tabs.lock().unwrap_or_else(PoisonError::into_inner);
 	let index = index.min(tabs.len());
-	tabs.insert(index, FakeTab { name, paths: Vec::new(), selected: 0, properties: Vec::new() });
+	tabs.insert(index, FakeTab::new(name));
 	index
+}
+
+unsafe extern "C-unwind" fn manager_get_name(
+	this: *mut ServiceBase,
+	playlist: usize,
+	out: *mut StringBase,
+) -> bool {
+	let Some(name) = state(this)
+		.tabs
+		.lock()
+		.unwrap_or_else(PoisonError::into_inner)
+		.get(playlist)
+		.map(|tab| tab.name.clone())
+	else {
+		return false;
+	};
+	unsafe { ((*(*out).vtbl).set_string)(out, name.as_ptr().cast(), name.len()) };
+	true
+}
+
+unsafe extern "C-unwind" fn manager_filter_mask(this: *mut ServiceBase, playlist: usize) -> u32 {
+	let tabs = state(this).tabs.lock().unwrap_or_else(PoisonError::into_inner);
+	if tabs.get(playlist).is_some_and(|tab| tab.locked) { FILTER_ADD } else { 0 }
 }
 
 unsafe extern "C-unwind" fn manager_insert_items(
@@ -171,7 +227,7 @@ unsafe extern "C-unwind" fn manager_insert_items(
 	let selected =
 		(0..paths.len()).filter(|&n| unsafe { ((*(*selection).vtbl).get)(selection, n) }).count();
 	let mut tabs = state(this).tabs.lock().unwrap_or_else(PoisonError::into_inner);
-	let Some(tab) = tabs.get_mut(playlist) else { return usize::MAX };
+	let Some(tab) = tabs.get_mut(playlist).filter(|tab| !tab.locked) else { return usize::MAX };
 	let base = base.min(tab.paths.len());
 	tab.paths.splice(base..base, paths);
 	tab.selected += selected;
@@ -241,10 +297,10 @@ unsafe impl ServiceImpl for FakeIncoming {
 unsafe extern "C-unwind" fn incoming_process_locations(
 	this: *mut ServiceBase,
 	urls: *const ListBaseConst<*const c_char>,
-	_op_flags: u32,
+	op_flags: u32,
 	_restrict: *const c_char,
 	_exclude: *const c_char,
-	_parent: *mut c_void,
+	parent: *mut c_void,
 	notify: ByValueServicePtr,
 ) {
 	let state = &unsafe { ServiceObject::<FakeIncoming>::value(this) }.0.playlists;
@@ -256,9 +312,10 @@ unsafe extern "C-unwind" fn incoming_process_locations(
 			String::from_utf8_lossy(unsafe { bytes_of(url, usize::MAX) }).into_owned()
 		})
 		.collect();
-	state
-		.requests
-		.lock()
-		.unwrap_or_else(PoisonError::into_inner)
-		.push(Request { locations, notify: notify.into_ptr() });
+	state.requests.lock().unwrap_or_else(PoisonError::into_inner).push(Request {
+		locations,
+		flags: op_flags,
+		parent: parent.addr().cast_signed(),
+		notify: notify.into_ptr(),
+	});
 }

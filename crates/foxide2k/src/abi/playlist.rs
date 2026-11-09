@@ -23,7 +23,8 @@
 
 //! `playlist_manager` and `playlist_manager_v2` (`SDK\playlist.h:81-245, 406-452`),
 //! `playlist_incoming_item_filter_v2` and `process_locations_notify` (`SDK\playlist.h:775-860`),
-//! implemented by foobar2000. Main thread only.
+//! implemented by foobar2000, and `playlist_lock`'s filter flags (`SDK\playlist.h:12-20`). Main
+//! thread only.
 
 use std::ffi::{c_char, c_void};
 
@@ -32,6 +33,7 @@ use crate::abi::input::ByValueServicePtr;
 use crate::abi::metadb_handle::HandleListRaw;
 use crate::abi::pfc_list::{BitArray, ListBaseConst};
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl, Unused};
+use crate::abi::string_base::StringBase;
 use crate::guid::Guid;
 
 pub const MANAGER_IID: Guid = Guid::from_u128(0xd8d51855_d79d_49b8_97a8_065785fa2426);
@@ -40,14 +42,21 @@ pub const INCOMING_IID: Guid = Guid::from_u128(0xeb8fa333_f365_46ad_8621_3456715
 pub const INCOMING_V2_IID: Guid = Guid::from_u128(0xf335802b_a522_434d_be89_e86d59561648);
 pub const NOTIFY_IID: Guid = Guid::from_u128(0x7d7eddac_f93e_4707_969b_cf44a9e1fb78);
 
+/// `playlist_lock::filter_add`: the lock refuses items being added to its playlist.
+pub const FILTER_ADD: u32 = 1 << 0;
+
+/// `playlist_incoming_item_filter_v2::op_flag_delay_ui`: the progress window appears only for a
+/// long load, and doesn't take focus when it does.
+pub const OP_FLAG_DELAY_UI: u32 = 1 << 2;
+
 /// `playlist_manager`'s 54 slots after `service_base`, then `playlist_manager_v2`'s first two.
 /// Only the slots used are typed; the others are [`Unused`].
 #[repr(C)]
 pub struct PlaylistManagerVtbl {
 	pub base: ServiceBaseVtbl,
 	pub get_playlist_count: unsafe extern "C-unwind" fn(this: *mut ServiceBase) -> usize,
-	/// `get_active_playlist`.
-	pub unused_4: Unused<1>,
+	/// Infinite when no playlist is active.
+	pub get_active_playlist: unsafe extern "C-unwind" fn(this: *mut ServiceBase) -> usize,
 	pub set_active_playlist: unsafe extern "C-unwind" fn(this: *mut ServiceBase, index: usize),
 	/// `get_playing_playlist`, `set_playing_playlist` and `remove_playlists`.
 	pub unused_6_8: Unused<3>,
@@ -59,12 +68,19 @@ pub struct PlaylistManagerVtbl {
 		length: usize,
 		index: usize,
 	) -> usize,
-	/// `reorder`, `playlist_get_item_count`, `playlist_enum_items`, `playlist_get_focus_item`,
-	/// `playlist_get_name`, `playlist_reorder_items`, `playlist_set_selection`,
-	/// `playlist_remove_items`, `playlist_replace_item` and `playlist_set_focus_item`.
-	pub unused_10_19: Unused<10>,
+	/// `reorder`, `playlist_get_item_count`, `playlist_enum_items` and `playlist_get_focus_item`.
+	pub unused_10_13: Unused<4>,
+	/// Writes the name of `playlist` to `out`. Returns false when there is no such playlist.
+	pub playlist_get_name: unsafe extern "C-unwind" fn(
+		this: *mut ServiceBase,
+		playlist: usize,
+		out: *mut StringBase,
+	) -> bool,
+	/// `playlist_reorder_items`, `playlist_set_selection`, `playlist_remove_items`,
+	/// `playlist_replace_item` and `playlist_set_focus_item`.
+	pub unused_15_19: Unused<5>,
 	/// Inserts `data` at `base`, infinite for the end. Bit `n` of `selection` selects item `n` of
-	/// `data`.
+	/// `data`. Returns where the items went, infinite when the playlist refused them.
 	pub playlist_insert_items: unsafe extern "C-unwind" fn(
 		this: *mut ServiceBase,
 		playlist: usize,
@@ -72,9 +88,15 @@ pub struct PlaylistManagerVtbl {
 		data: *const HandleListRaw,
 		selection: *const BitArray,
 	) -> usize,
-	/// `playlist_ensure_visible` through `playlist_execute_default_action`: renaming, undo,
-	/// title formatting, sorting, locks, playback order, the queue and the callbacks.
-	pub unused_21_56: Unused<36>,
+	/// `playlist_ensure_visible` through `playlist_lock_show_ui`: renaming, undo, title
+	/// formatting, the playing item, sorting, deleted and moved files, and the other lock calls.
+	pub unused_21_37: Unused<17>,
+	/// The `FILTER_*` flags of the lock on `playlist`, 0 when it has none.
+	pub playlist_lock_get_filter_mask:
+		unsafe extern "C-unwind" fn(this: *mut ServiceBase, playlist: usize) -> u32,
+	/// `playback_order_get_count` through `playlist_execute_default_action`: playback order, the
+	/// queue and the callbacks.
+	pub unused_39_56: Unused<18>,
 	/// `playlist_manager_v2::playlist_set_property`. `stream` is a `stream_reader *`.
 	pub playlist_set_property: unsafe extern "C-unwind" fn(
 		this: *mut ServiceBase,
@@ -134,9 +156,12 @@ mod tests {
 	#[test]
 	fn playlist_vtbls_have_their_sdk_slots() {
 		assert_eq!(size_of::<PlaylistManagerVtbl>(), 59 * 8);
+		assert_eq!(offset_of!(PlaylistManagerVtbl, get_active_playlist), 4 * 8);
 		assert_eq!(offset_of!(PlaylistManagerVtbl, set_active_playlist), 5 * 8);
 		assert_eq!(offset_of!(PlaylistManagerVtbl, create_playlist), 9 * 8);
+		assert_eq!(offset_of!(PlaylistManagerVtbl, playlist_get_name), 14 * 8);
 		assert_eq!(offset_of!(PlaylistManagerVtbl, playlist_insert_items), 20 * 8);
+		assert_eq!(offset_of!(PlaylistManagerVtbl, playlist_lock_get_filter_mask), 38 * 8);
 		assert_eq!(offset_of!(PlaylistManagerVtbl, playlist_set_property), 57 * 8);
 		assert_eq!(offset_of!(PlaylistManagerVtbl, playlist_get_property), 58 * 8);
 		assert_eq!(offset_of!(IncomingItemFilterV2Vtbl, process_locations_async), 11 * 8);

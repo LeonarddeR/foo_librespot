@@ -40,6 +40,8 @@ pub const NODE_IID: Guid = Guid::from_u128(0xabba6512_377d_414f_813e_6806c22d4db
 
 /// `mainmenu_groups::file`, the File menu.
 pub const GROUP_FILE: Guid = Guid::from_u128(0x8f487f1f_419f_47a7_8ecf_ec44af4449a3);
+/// `mainmenu_groups::view`, the View menu.
+pub const GROUP_VIEW: Guid = Guid::from_u128(0xf8be5604_165f_4bb9_b6a9_15e55e0e0d3a);
 
 /// `mainmenu_commands::sort_priority_base`: components sort at this and above.
 pub const SORT_PRIORITY_BASE: u32 = 0x10000;
@@ -149,7 +151,20 @@ pub struct NodeVtbl {
 mod tests {
 	use std::mem::offset_of;
 
-	use super::{CommandsV2Vtbl, CommandsVtbl, GroupPopupVtbl, NodeVtbl};
+	use super::{CommandsV2Vtbl, CommandsVtbl, GROUP_VIEW, GroupPopupVtbl, NodeVtbl};
+	use crate::guid::Guid;
+
+	#[test]
+	fn group_view_is_the_sdks_view_menu() {
+		// `mainmenu_groups::view` as `SDK\guids.cpp:966` writes it.
+		let view = Guid {
+			data1: 0xf8be5604,
+			data2: 0x165f,
+			data3: 0x4bb9,
+			data4: [0xb6, 0xa9, 0x15, 0xe5, 0x5e, 0xe, 0xd, 0x3a],
+		};
+		assert_eq!(GROUP_VIEW, view);
+	}
 
 	#[test]
 	fn mainmenu_vtables_have_7_and_11_slots() {

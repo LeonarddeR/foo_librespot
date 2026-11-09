@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - For developers: foxide2k's dialogs moved into a crate of their own, `foxide2k_ui`, which knows nothing of foobar2000. foxide2k keeps the foobar2000 SDK.
 - For developers: foxide2k reads and writes strings in foobar2000's settings store (`config_store::get_string`, `config_store::set_string`).
 - For developers: foxide2k_ui dialogs can hold combo boxes whose text can be typed in (`style::CBS_DROPDOWN`, `Dialog::combo_clear`, `Dialog::combo_texts`, `Dialog::select_all_text`) and standard list views with rows in several columns under a header, several of them selectable (`style::REPORT_LIST` and the `Dialog::report_*` methods). A dialog hears a list view's double clicks (`DialogHandler::notify` with `notify::NM_DBLCLK`) and can tell whether focus is in a control or a window inside it (`Dialog::has_focus_within`).
+- For developers: foxide2k knows the View menu (`abi::mainmenu::GROUP_VIEW`), reads which playlist is active, a playlist's name and whether it refuses new tracks (`playlist::active`, `playlist::name`, `playlist::refuses_adding`), and loads links for a window of a component's own without a progress window taking focus from it (`playlist::load_locations_quietly`). `playlist::append` now fails when the playlist refuses the tracks.
 
 ### Fixed
 
