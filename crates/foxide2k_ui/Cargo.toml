@@ -4,7 +4,7 @@ description = "Plain Win32 dialogs for components written in Rust"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license = "MIT"
+license.workspace = true
 repository.workspace = true
 publish = false
 

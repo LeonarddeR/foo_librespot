@@ -22,7 +22,7 @@ foo_librespot is a foobar2000 2.25+ x64 component, written entirely in Rust, tha
 
 - Target `x86_64-pc-windows-msvc` and foobar2000 2.25 and later only. The SDK target version stays 81, the newest the SDK defines.
 - No C or C++ anywhere in the build.
-- `foxide2k` holds the foobar2000 SDK interfaces and no windows. Windows live in `foxide2k_ui`, plain Win32 that knows nothing of foobar2000 and doesn't depend on foxide2k.
+- `foxide2k` holds the foobar2000 SDK interfaces and no windows. Plain Win32 window helpers (dialog templates, `Dialog`, live regions) live in `foxide2k_ui`, which knows nothing of foobar2000 and doesn't depend on foxide2k. The component's own windows, and glue to foobar2000 such as `SingleWindow`, stay in `foo_librespot`. foxide2k uses `foxide2k_ui` only in its tests.
 - `foxide2k` is licensed `MIT AND BSD-Source-Code`. Every file transcribed from the foobar2000 SDK starts with the SDK notice. Other crates are MIT.
 - Every vtable slot is `unsafe extern "C-unwind" fn`, and every Rust-implemented slot that can fail or panic runs inside `foxide2k::boundary::guard`. `service_release` slots are noexcept, so they free through `service::free_from_release`, which aborts on a panic instead of throwing. Slots that only return a constant or update a reference count need neither.
 - Never throw a C++ exception inside `catch_unwind`. Wrap every call into foobar2000 that can throw in `foxide2k::cxx::try_host`.
@@ -57,6 +57,6 @@ Do not re-litigate these without new evidence.
 ## Win32 bindings
 
 - Every Win32 item comes from generated, committed bindings, and each crate has its own filter: `tools/bindgen/foxide2k.txt` writes `crates/foxide2k/src/bindings.rs`, `tools/bindgen/foxide2k_ui.txt` writes `crates/foxide2k_ui/src/bindings.rs`, and `tools/bindgen/core.txt` writes `crates/foo_librespot_core/src/bindings.rs` (the DPAPI calls). Never edit them by hand.
-- `tools/bindgen/` is a standalone crate with its own lockfile, not a workspace member. To use a new API, add it to the filter of the crate that uses it and run `cargo bindgen`. CI fails if the committed output is stale.
+- `tools/bindgen/` is a standalone crate with its own lockfile, not a workspace member. To use a new API, add it to the filter of the crate that uses it and run `cargo bindgen`. A crate's first filter file also goes in the list in `tools/bindgen/src/main.rs`, or `cargo bindgen` never writes it. CI fails if the committed output is stale.
 - `windows-core` is the only Windows runtime crate; the `windows` umbrella crate is not used.
 - CRT and vcruntime functions (`_CxxThrowException`, `__std_exception_copy`, `free`, …) are not in the metadata; declare them in a local `extern` block, as Rust's std does.

@@ -48,7 +48,7 @@ Set `FOO_OXITONE_DLL_PATH` to test a DLL from somewhere else, such as a CI artif
 
 Dialog tests create real, hidden windows, owned by `hidden_window()` from `foxide2k_ui::testing` (the `testing` feature), and some check which control has keyboard focus.
 They run one at a time, in the `windows` test group in `.config/nextest.toml`: a window of another test process that takes the foreground takes focus from theirs.
-Add a new module with window tests to that group's filter.
+Every test in `foxide2k_ui` is in the group already. In the other crates, add a new module with window tests to that group's filter.
 
 ## Testing in a real foobar2000
 
