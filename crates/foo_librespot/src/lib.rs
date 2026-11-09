@@ -24,9 +24,7 @@ mod playlist_save;
 mod playlist_window;
 mod prefs;
 mod related;
-#[cfg_attr(not(test), expect(dead_code, reason = "no search window uses the history yet"))]
 mod search_history;
-#[cfg_attr(not(test), expect(dead_code, reason = "no menu command opens the search window yet"))]
 mod search_window;
 mod settings;
 mod spotify_menu;
@@ -92,6 +90,8 @@ foxide2k::component! {
 		mainmenu_command_factory::<playing_menu::PlayingRadio>(),
 		mainmenu_command_factory::<playing_menu::PlayingShow>(),
 		mainmenu_command_factory::<playing_menu::PlayingAddToPlaylist>(),
+		mainmenu_popup_factory::<search_window::ViewSpotifyMenu>(),
+		mainmenu_command_factory::<search_window::SearchSpotify>(),
 		context_menu_group_factory::<spotify_menu::SpotifyGroup>(),
 		context_menu_command_factory::<spotify_menu::OpenAlbum>(),
 		context_menu_command_factory::<spotify_menu::OpenArtist>(),

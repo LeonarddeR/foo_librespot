@@ -58,6 +58,16 @@ File > Spotify > Open playlist… lists your Liked Songs and the playlists in yo
 
 Right-click Spotify tracks and choose Spotify > Add to playlist… to add them to Liked Songs or to the playlists you can change, or to remove them. File > Spotify > Playing track > Add to playlist… does the same for the track or episode that is playing. A window lists Liked Songs and the playlists you can change, each with a checkbox. A checkbox is ticked when that playlist already holds every selected track. Space ticks or unticks a row. OK saves every change, and Cancel or Escape saves none. Tracks already in a playlist aren't added again, and the console says what was added or removed. Liked Songs holds songs only, so podcast episodes are left out of it. While Spotify hasn't sent your playlists, the window says "Loading…" and fills in by itself. Keys can be bound to both commands in File > Preferences > Keyboard Shortcuts.
 
+## Searching Spotify
+
+View > Spotify > Search… opens a window to search Spotify for tracks. Type some words and press Enter. The list shows the tracks Spotify finds first, up to 20, with their artist, album and duration. Tracks your account can't play are left out, and the window says how many. When you're logged out, the login window opens, and the search runs once you're logged in.
+
+The search field remembers your last 20 searches, newest first. Down arrow goes through them; press Enter to search again.
+
+Select tracks in the list and press Enter, double-click them, or press Add (Alt+A): they are added to the end of the active playlist, and the window says how many were added. The window stays open, so you can search again or add more. Escape or Close closes it.
+
+The window finds tracks only. For an album, an artist or a playlist, copy its link from Spotify and paste it into foobar2000. A key can be bound to Search… in File > Preferences > Keyboard Shortcuts.
+
 ## A track's album, artist, radio or show
 
 Right-click a Spotify track and open the Spotify submenu: Open album, Open artist… and Track radio open the track's album, its artist and Spotify's radio for it. For a podcast episode, the submenu has Open show instead. Each opens in a new tab named after the album, the artist, the show or the radio playlist, such as "In Christ Alone Radio", filled as pasting its link would. If that tab already exists, it comes to the front. An artist's tab holds what an artist link adds: the whole discography, or the popular tracks when "Artist links add the whole discography" is unchecked.

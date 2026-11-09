@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- View > Spotify > Search… opens a window to search Spotify for tracks. Type some words and press Enter, and it lists the tracks Spotify finds first, up to 20, with their artist, album and duration. Enter in the list, a double click or Add puts the selected tracks at the end of the active playlist, and the window stays open. The search field remembers your last 20 searches. A key can be bound to the command in File > Preferences > Keyboard Shortcuts.
 - For developers: foo_librespot logs through `tracing`, and a console line shows the spans it was logged in.
 - For developers: foxide2k's dialogs moved into a crate of their own, `foxide2k_ui`, which knows nothing of foobar2000. foxide2k keeps the foobar2000 SDK.
 - For developers: foxide2k reads and writes strings in foobar2000's settings store (`config_store::get_string`, `config_store::set_string`).

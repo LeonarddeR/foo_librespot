@@ -27,7 +27,6 @@ pub type OnDone = Box<dyn FnOnce(Result<String, CoreError>) + Send>;
 /// Gets what a lookup found, or why it failed.
 pub type OnRelated = Box<dyn FnOnce(Result<Found, CoreError>) + Send>;
 /// Gets what a search found, or why it failed.
-#[cfg_attr(not(test), expect(dead_code, reason = "no search window searches yet"))]
 pub type OnSearched = Box<dyn FnOnce(Result<Resolved, CoreError>) + Send>;
 
 /// Everything the services need from Spotify. Every call that takes `is_aborting` blocks and
@@ -93,7 +92,6 @@ pub trait Backend: Send + Sync {
 	/// link `spotify:search:<words>` resolves to, on another thread, which waits for Spotify's
 	/// core to start when it doesn't run yet; a search still running when foobar2000 quits is
 	/// dropped unreported.
-	#[cfg_attr(not(test), expect(dead_code, reason = "no search window searches yet"))]
 	fn search(&self, words: String, on_done: OnSearched);
 }
 

@@ -1,6 +1,7 @@
-//! The Search Spotify window: the user types words into the search field and presses Enter, and
-//! the window lists the tracks Spotify finds for them, as a search link
-//! (`spotify:search:<words>`) finds them. The field's drop-down list holds the search history.
+//! View > Spotify > "Search…": the Search Spotify window. The user types words into the search
+//! field and presses Enter, and the window lists the tracks Spotify finds for them, as a search
+//! link (`spotify:search:<words>`) finds them. The field's drop-down list holds the search
+//! history.
 //!
 //! Each search gets a number and runs in the background. Its answer arrives on another thread,
 //! waits in the window's [`Inbox`] with that number, and a posted refresh shows it on the main
@@ -20,8 +21,11 @@ use foo_librespot_core::CoreError;
 use foo_librespot_core::link::item_path;
 use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::resolve::Resolved;
+use foxide2k::abi::mainmenu::{GROUP_VIEW, SORT_PRIORITY_BASE};
 use foxide2k::console;
 use foxide2k::error::Error;
+use foxide2k::guid::Guid;
+use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
 use foxide2k::metadb::HandleList;
 use foxide2k::playlist;
 use foxide2k_ui::host::{Dialog, DialogHandler, destroy, refresh_poster};
@@ -49,6 +53,33 @@ pub const STATUS: u16 = 605;
 /// The Add button. It has an id of its own, not `IDOK`: Alt+A presses it without moving focus,
 /// so it must add even with focus in the search field, where `IDOK` searches.
 pub const ADD: u16 = 606;
+
+/// The View > Spotify submenu.
+pub struct ViewSpotifyMenu;
+
+impl MainMenuPopup for ViewSpotifyMenu {
+	const GUID: Guid = Guid::from_u128(0xbd24328d_75d1_4cac_9381_1d8c1e456205);
+	const PARENT: Guid = GROUP_VIEW;
+	const SORT_PRIORITY: u32 = SORT_PRIORITY_BASE;
+	const NAME: &'static str = "Spotify";
+}
+
+/// The command that opens the window.
+pub struct SearchSpotify;
+
+impl MainMenuCommand for SearchSpotify {
+	const GUID: Guid = Guid::from_u128(0xd0ba76e2_23b4_4416_9fb8_566a1c0d417e);
+	const PARENT: Guid = ViewSpotifyMenu::GUID;
+	const NAME: &'static str = "Search…";
+	const DESCRIPTION: &'static str = "Searches Spotify for tracks to add to the active playlist.";
+
+	/// Opens the window, or brings it up with focus in the search field. When it can't open,
+	/// says why in the console and a popup, and still succeeds: foobar2000 gets no error.
+	fn execute() -> foxide2k::error::Result<()> {
+		show();
+		Ok(())
+	}
+}
 
 /// The list's columns: each one's header, and its share of the list's width in percent.
 const COLUMNS: [(&str, u16); 5] =
@@ -436,7 +467,13 @@ mod tests {
 	use foo_librespot_core::resolve::{Resolved, SkipReason, Skipped};
 	use foo_librespot_core::{CoreError, SpotifyId};
 	use foxide2k::abi::config_store;
-	use foxide2k::testing::FakeApi;
+	use foxide2k::abi::mainmenu::{COMMANDS_IID, GROUP_IID, GROUP_VIEW, SORT_PRIORITY_BASE};
+	use foxide2k::guid::Guid;
+	use foxide2k::mainmenu::{
+		MainMenuCommand, MainMenuPopup, mainmenu_command_service, mainmenu_popup_service,
+	};
+	use foxide2k::popup::PopupIcon;
+	use foxide2k::testing::{FakeApi, MainMenuHandle};
 	use foxide2k_ui::host::{Dialog, destroy};
 	use foxide2k_ui::notify::{BN_CLICKED, IDCANCEL, IDOK, NM_CLICK, NM_CUSTOMDRAW, NM_DBLCLK};
 	use foxide2k_ui::style::{
@@ -447,15 +484,16 @@ mod tests {
 	use foxide2k_ui::testing::{hidden_window, pump_messages, send_command, send_notify};
 
 	use super::{
-		ADD, LIST, SEARCH, SEARCH_LABEL, STATUS, TRACKS_LABEL, WINDOW, cells, duration, show,
-		status_found, window_template,
+		ADD, LIST, SEARCH, SEARCH_LABEL, STATUS, SearchSpotify, TRACKS_LABEL, ViewSpotifyMenu,
+		WINDOW, cells, duration, show, status_found, window_template,
 	};
 	use crate::login::controller;
 	use crate::search_history;
 	use crate::status_line::announced;
 	use crate::testing::{
 		FakeBackend, cancel_login_when_started, confirm_login_when_started, episode_id,
-		episode_info, installed_api_and_backend, installed_prompt, refresh, track_info, wait_until,
+		episode_info, installed_api, installed_api_and_backend, installed_prompt, refresh,
+		track_info, wait_until,
 	};
 	use crate::window::brought_up;
 
@@ -518,6 +556,74 @@ mod tests {
 
 	fn strings(items: &[&str]) -> Vec<String> {
 		items.iter().map(|&item| item.to_owned()).collect()
+	}
+
+	#[test]
+	fn the_view_menu_has_a_spotify_popup_with_search() {
+		let popup = MainMenuHandle::new(mainmenu_popup_service::<ViewSpotifyMenu>());
+		assert!(popup.answers(&GROUP_IID));
+		assert_eq!(popup.guid(), ViewSpotifyMenu::GUID);
+		assert_eq!(popup.parent(), GROUP_VIEW);
+		assert_eq!(popup.sort_priority(), SORT_PRIORITY_BASE);
+		assert_eq!(popup.name(), "Spotify");
+		let command = MainMenuHandle::new(mainmenu_command_service::<SearchSpotify>());
+		assert!(command.answers(&COMMANDS_IID));
+		assert_eq!(command.command(0), SearchSpotify::GUID);
+		assert_eq!(command.parent(), ViewSpotifyMenu::GUID);
+		assert_eq!(command.command_name(0), "Search…");
+		assert_eq!(
+			command.description(0).as_deref(),
+			Some("Searches Spotify for tracks to add to the active playlist.")
+		);
+		assert_eq!(ViewSpotifyMenu::GUID, Guid::from_u128(0xbd24328d_75d1_4cac_9381_1d8c1e456205));
+		assert_eq!(SearchSpotify::GUID, Guid::from_u128(0xd0ba76e2_23b4_4416_9fb8_566a1c0d417e));
+	}
+
+	#[test]
+	fn the_command_opens_the_window_and_brings_it_up_with_focus_in_the_search_field() {
+		let (api, fake) = installed_api_and_backend();
+		api.set_main_window(hidden_window());
+		fake.resolve_to(getty());
+		let command = MainMenuHandle::new(mainmenu_command_service::<SearchSpotify>());
+		command.execute(0, None).unwrap();
+		let dialog = WINDOW.current().expect("the command opens the window");
+		assert_eq!(brought_up(), 1);
+		search_for(dialog, "getty");
+		take_answers(&fake, 1);
+		dialog.focus(LIST);
+		assert_eq!(dialog.focused(), Some(LIST));
+		command.execute(0, None).unwrap();
+		assert_eq!(WINDOW.current(), Some(dialog));
+		assert_eq!(brought_up(), 2);
+		pump_messages();
+		assert!(dialog.has_focus_within(SEARCH));
+		assert_eq!(rows(dialog), rows_of(&getty()));
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_search_window_that_cant_open_is_reported_and_the_command_succeeds() {
+		let api = installed_api();
+		let gone = hidden_window();
+		destroy(Dialog::from_hwnd(gone));
+		api.set_main_window(gone);
+		let command = MainMenuHandle::new(mainmenu_command_service::<SearchSpotify>());
+		command.execute(0, None).expect("the command reports the failure itself");
+		assert!(WINDOW.current().is_none());
+		assert_eq!(brought_up(), 0);
+		let popups = api.popups();
+		assert_eq!(popups.len(), 1, "{popups:?}");
+		let (title, message, icon) = &popups[0];
+		assert_eq!(title, "Can't search Spotify");
+		assert!(message.starts_with("Search Spotify\n\ncan't create a dialog: "), "{message}");
+		assert_eq!(*icon, PopupIcon::Error);
+		let console = api.console_lines();
+		assert!(
+			console.iter().any(|line| line.starts_with(
+				"foo_librespot: can't open the Search Spotify window: can't create a dialog: "
+			)),
+			"{console:?}"
+		);
 	}
 
 	#[test]

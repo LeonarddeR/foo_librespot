@@ -35,7 +35,7 @@ The cheapest wins come first.
   - A recording on both an album and a single is added once, by its ISRC: the first playable copy is kept, so a copy blocked in the account's country doesn't keep out one that plays. The console says how many were left out. There is no warning before a large discography.
 - [x] Search Spotify
   - librespot's `SpClient::get_context` answers searches (`spotify:search:<words>`) with one page of 20 tracks. On 2026-11-06 the first 13 to 15 matched the words and the rest drifted; for "in christ alone" the Getty original came first.
-  - Spotify's search link, `https://open.spotify.com/search/<words>`, and `spotify:search:<words>` now add those 20 tracks, named after the words. There is no search window.
+  - Spotify's search link, `https://open.spotify.com/search/<words>`, and `spotify:search:<words>` now add those 20 tracks, named after the words. View > Spotify > Search… lists them in a window too (see "A search window").
 
 ### Detailed logging
 
@@ -137,6 +137,17 @@ Checked by hand on 7 November 2026. The new work they showed is under "Later rou
   - foo_spotify answered foobar2000's request for an artist picture with the Spotify picture of the track's first artist.
   - foo_librespot only has a front cover. `SpotifyArt::query` in `crates/foo_librespot/src/art.rs` returns nothing for any other kind of art.
   - librespot's artist metadata has the pictures, in `Artist::portraits` and `Artist::portrait_group`.
+- [x] A search window
+  - A search link added the 20 tracks Spotify found first for some words, but there was no window to search in. To add one track, a user searched in Spotify's web app, copied the track's link and pasted it into foobar2000.
+  - View > Spotify > "Search…" now opens the Search Spotify window (`crates/foo_librespot/src/search_window.rs`). Enter in its search field searches in the background, with the same request as a search link, and the list shows the tracks found, with their artists, album and duration. Tracks the account can't play are left out, and the console gives the import's reasons. A search that finds the account logged out asks for a login and runs once the login lands.
+  - Enter in the list, a double click or Add puts the selected tracks at the end of the active playlist, as pasting their links would. The window stays open.
+  - The search field's drop-down list holds the last 20 searches, kept in foobar2000's settings store (`crates/foo_librespot/src/search_history.rs`).
+  - Add remembers the active playlist by its position and name; two playlists with the same name can still be confused.
+- [ ] Search albums, artists and playlists
+  - The Search Spotify window finds tracks only. To add an album, an artist or a playlist, a user copies its link from Spotify.
+  - Checked on 2026-11-09: librespot only has the 20-track search, `spotify:search:<words>` through `SpClient::get_context`. The older search service, `searchview`, is reported switched off.
+  - Spotify's own apps search through Pathfinder, an internal GraphQL service (`api-partner.spotify.com/pathfinder/v2/query`, operation `searchDesktop`). Other librespot-based projects call it with librespot's login.
+  - Each Pathfinder request needs a code from Spotify's web player, which changes every few months. The code can ship with foo_librespot, so search breaks until a release, or be read from the web player's page when Spotify refuses the old one.
 
 ## After 1.0
 
