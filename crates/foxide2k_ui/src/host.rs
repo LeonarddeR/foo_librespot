@@ -69,7 +69,7 @@ impl Dialog {
 		self.0
 	}
 
-	/// The dialog behind a window handle, such as one a host program hands over.
+	/// The dialog behind the handle of a dialog this crate made, passed around as a plain `isize`.
 	pub const fn from_hwnd(hwnd: isize) -> Self {
 		Self(hwnd)
 	}
@@ -557,7 +557,7 @@ pub fn create_child_dialog(
 
 /// A top-level dialog owned by `owner`, hidden until [`Dialog::show`]. Its template carries
 /// `WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME`. Tab and access keys only work once
-/// the owner's message loop passes the dialog's messages to `IsDialogMessage`.
+/// the message loop of the thread that made it passes the dialog's messages to `IsDialogMessage`.
 pub fn create_modeless_dialog(
 	owner: isize,
 	template: &DialogTemplate,
