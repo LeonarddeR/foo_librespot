@@ -7,18 +7,27 @@
 //! thread. Only the newest search's answer is shown; an older one is dropped. A search that
 //! found the account logged out asks for a login and waits; once a login lands, the login's
 //! notification posts a refresh, and the refresh runs that search again.
+//!
+//! Add puts the selected tracks at the end of the playlist that is active at that moment, as
+//! pasting their links would. foobar2000 loads them without taking focus from the window; once
+//! the load ends, the tracks are appended, and what came of it reaches the window through the
+//! same inbox and posted refresh.
 
 use std::cell::Cell;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use foo_librespot_core::CoreError;
+use foo_librespot_core::link::item_path;
 use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::resolve::Resolved;
 use foxide2k::console;
+use foxide2k::error::Error;
+use foxide2k::metadb::HandleList;
+use foxide2k::playlist;
 use foxide2k_ui::host::{Dialog, DialogHandler, destroy, refresh_poster};
-use foxide2k_ui::notify::{IDCANCEL, IDOK};
+use foxide2k_ui::notify::{IDCANCEL, IDOK, NM_DBLCLK};
 use foxide2k_ui::style::{
-	BS_DEFPUSHBUTTON, CBS_AUTOHSCROLL, CBS_DROPDOWN, DS_CENTER, DS_MODALFRAME, REPORT_LIST,
+	BS_PUSHBUTTON, CBS_AUTOHSCROLL, CBS_DROPDOWN, DS_CENTER, DS_MODALFRAME, REPORT_LIST,
 	SS_NOPREFIX, WS_CAPTION, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
 };
 use foxide2k_ui::template::{ControlClass, DialogTemplate, shell_font};
@@ -37,6 +46,9 @@ pub const SEARCH: u16 = 602;
 pub const TRACKS_LABEL: u16 = 603;
 pub const LIST: u16 = 604;
 pub const STATUS: u16 = 605;
+/// The Add button. It has an id of its own, not `IDOK`: Alt+A presses it without moving focus,
+/// so it must add even with focus in the search field, where `IDOK` searches.
+pub const ADD: u16 = 606;
 
 /// The list's columns: each one's header, and its share of the list's width in percent.
 const COLUMNS: [(&str, u16); 5] =
@@ -47,7 +59,8 @@ const SIZE: (i16, i16) = (360, 241);
 const LIST_HEIGHT: i16 = 150;
 
 /// The window, at a fixed size. Each control is made in tab order, each label right before its
-/// control. Add is the default button.
+/// control. There is no default button, so Enter sends `IDOK`, which searches from the search
+/// field and adds from the list.
 pub fn window_template() -> DialogTemplate {
 	let (cx, cy) = SIZE;
 	let width = cx - 14;
@@ -68,10 +81,10 @@ pub fn window_template() -> DialogTemplate {
 			item(LIST, ControlClass::ListView, "", REPORT_LIST, (7, 50, width, LIST_HEIGHT)),
 			item(STATUS, ControlClass::Static, "", SS_NOPREFIX, (7, status_y, width, 10)),
 			item(
-				IDOK,
+				ADD,
 				ControlClass::Button,
 				"&Add",
-				BS_DEFPUSHBUTTON | WS_TABSTOP,
+				BS_PUSHBUTTON | WS_TABSTOP,
 				(cx - 145, buttons_y, 66, 14),
 			),
 			item(IDCANCEL, ControlClass::Button, "Close", WS_TABSTOP, (cx - 73, buttons_y, 66, 14)),
@@ -135,15 +148,50 @@ pub fn cells(place: usize, track: &TrackInfo) -> [String; 5] {
 	]
 }
 
-/// What reaches the window from other threads, until its next refresh takes it.
+/// What the status line says when the tab named `name` is locked against adding.
+fn locked(name: &str) -> String {
+	format!("Can't add tracks to {name}: the playlist is locked.")
+}
+
+/// What the status line says when adding failed for another reason.
+fn couldnt_add(error: &Error) -> String {
+	format!("Couldn't add the tracks: {error}.")
+}
+
+const NOTHING_ADDED: &str = "Nothing was added.";
+
+/// What reaches the window from other threads, and from foobar2000 when a load ends, in the
+/// order it arrived, until the window's next refresh takes it.
 #[derive(Default)]
 struct Inbox {
-	/// Each search's answer, with the number of the search.
-	answers: Vec<(u64, Result<Resolved, CoreError>)>,
+	arrivals: Vec<Arrival>,
+}
+
+enum Arrival {
+	/// A search's answer, with the number of the search.
+	Answer(u64, Result<Resolved, CoreError>),
+	/// What the status line says about an add whose load has ended.
+	Added(String),
 }
 
 fn lock(inbox: &Mutex<Inbox>) -> MutexGuard<'_, Inbox> {
 	inbox.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Appends the loaded `items` to tab `index`, named `name`, and answers what the status line
+/// says about it. A load that gave no tracks appends nothing.
+fn append_loaded(index: usize, name: &str, items: &HandleList<'_>) -> String {
+	let count = match items.len() {
+		Ok(0) => return NOTHING_ADDED.to_owned(),
+		Ok(count) => count,
+		Err(error) => return couldnt_add(&error),
+	};
+	match playlist::append(index, items) {
+		Ok(()) => format!("Added {count} {} to {name}.", plural(count, "track", "tracks")),
+		// The tab was locked while the tracks loaded.
+		Err(_) if matches!(playlist::refuses_adding(index), Ok(true)) => locked(name),
+		Err(error) => couldnt_add(&error),
+	}
 }
 
 #[derive(Default)]
@@ -198,10 +246,67 @@ impl SearchWindow {
 		backend().search(
 			words,
 			Box::new(move |answer| {
-				lock(&inbox).answers.push((number, answer));
+				lock(&inbox).arrivals.push(Arrival::Answer(number, answer));
 				poster.post();
 			}),
 		);
+	}
+
+	/// Adds the tracks of the selected rows, in list order, to the end of the active tab. Says
+	/// why on the status line when nothing is selected, no tab is active, or the tab is locked.
+	/// The rows, their selection and keyboard focus stay as they are.
+	fn add_selected(&mut self, dialog: Dialog) {
+		let locations: Vec<String> = dialog
+			.report_selected(LIST)
+			.into_iter()
+			.filter_map(|row| self.found.get(row))
+			.map(|track| item_path(track.id))
+			.collect();
+		if locations.is_empty() {
+			self.show_status(dialog, "Select the tracks to add.".to_owned());
+			return;
+		}
+		match self.load(dialog, &locations) {
+			Ok(None) => {}
+			Ok(Some(refusal)) => self.show_status(dialog, refusal),
+			Err(error) => self.show_status(dialog, couldnt_add(&error)),
+		}
+	}
+
+	/// Loads the tracks at `locations` for the active tab, quietly: a progress window, if
+	/// foobar2000 shows one, is owned by this window and doesn't take focus from it. Once the
+	/// load ends, its tracks are appended to the tab that was active here, also after the window
+	/// closed, and what came of it reaches the window through the inbox. Answers why nothing was
+	/// loaded when no tab is active or the tab is locked.
+	fn load(
+		&self,
+		dialog: Dialog,
+		locations: &[String],
+	) -> foxide2k::error::Result<Option<String>> {
+		let Some(index) = playlist::active()? else {
+			return Ok(Some("There's no active playlist to add to.".to_owned()));
+		};
+		let name = playlist::name(index)?;
+		if playlist::refuses_adding(index)? {
+			return Ok(Some(locked(&name)));
+		}
+		let (inbox, poster) = (Arc::clone(&self.inbox), refresh_poster(&dialog));
+		let tell = Arc::new(move |status: String| {
+			lock(&inbox).arrivals.push(Arrival::Added(status));
+			poster.post();
+		});
+		let tell_aborted = Arc::clone(&tell);
+		playlist::load_locations_quietly(
+			dialog.hwnd(),
+			locations,
+			// Never an error: one would reach foobar2000.
+			Box::new(move |items| {
+				tell(append_loaded(index, &name, items));
+				Ok(())
+			}),
+			Box::new(move || tell_aborted(NOTHING_ADDED.to_owned())),
+		)?;
+		Ok(None)
 	}
 
 	/// Shows the newest search's `answer`, without moving keyboard focus.
@@ -256,16 +361,27 @@ impl DialogHandler for SearchWindow {
 		match id {
 			// Enter in the search field.
 			IDOK if dialog.has_focus_within(SEARCH) => self.search_typed(*dialog),
+			// Add, also by Alt+A from the search field, or Enter anywhere else, as in the list.
+			ADD | IDOK => self.add_selected(*dialog),
 			IDCANCEL => destroy(*dialog),
 			_ => {}
 		}
 	}
 
+	/// A double click in the list adds, as Enter there does. The list's other notifications,
+	/// such as clicks, focus changes and custom draw, do nothing.
+	fn notify(&mut self, dialog: &Dialog, id: u16, code: i32) {
+		if (id, code) == (LIST, NM_DBLCLK) {
+			self.add_selected(*dialog);
+		}
+	}
+
 	/// Puts focus in the search field when [`show`] asked for it; nothing else moves focus. Runs
-	/// the search waiting for a login once the account is logged in, then shows the newest
-	/// search's answer and drops older ones. The waiting search runs first, so a search that
-	/// finds the account logged out during this refresh waits for the next change of the login,
-	/// and a refresh can't search again and again.
+	/// the search waiting for a login once the account is logged in, then shows what arrived, in
+	/// the order it arrived: the newest search's answer, dropping older ones, and what came of
+	/// each add. The waiting search runs first, so a search that finds the account logged out
+	/// during this refresh waits for the next change of the login, and a refresh can't search
+	/// again and again.
 	fn refresh(&mut self, dialog: &Dialog) {
 		if FOCUS_SEARCH.take() {
 			dialog.focus(SEARCH);
@@ -277,19 +393,22 @@ impl DialogHandler for SearchWindow {
 		{
 			self.search(*dialog, words);
 		}
-		let answers = std::mem::take(&mut lock(&self.inbox).answers);
-		let newest = self.newest;
-		let answer =
-			answers.into_iter().find_map(|(number, answer)| (number == newest).then_some(answer));
-		if let Some(answer) = answer {
-			self.show_answer(*dialog, answer);
+		let arrivals = std::mem::take(&mut lock(&self.inbox).arrivals);
+		for arrival in arrivals {
+			match arrival {
+				Arrival::Answer(number, answer) if number == self.newest => {
+					self.show_answer(*dialog, answer);
+				}
+				Arrival::Answer(..) => {}
+				Arrival::Added(status) => self.show_status(*dialog, status),
+			}
 		}
 	}
 }
 
 impl Drop for SearchWindow {
 	/// Runs when the window is destroyed, also when foobar2000 quits with it open. A search
-	/// that answers later only fills an inbox nobody reads.
+	/// that answers later, or a load that ends later, only fills an inbox nobody reads.
 	fn drop(&mut self) {
 		if let Some(subscription) = self.login_subscription {
 			controller().unsubscribe(subscription);
@@ -301,20 +420,22 @@ impl Drop for SearchWindow {
 mod tests {
 	use std::sync::Arc;
 
+	use foo_librespot_core::link::item_path;
 	use foo_librespot_core::resolve::{Resolved, SkipReason, Skipped};
 	use foo_librespot_core::{CoreError, SpotifyId};
 	use foxide2k::abi::config_store;
 	use foxide2k::testing::FakeApi;
 	use foxide2k_ui::host::{Dialog, destroy};
-	use foxide2k_ui::notify::{BN_CLICKED, IDCANCEL, IDOK};
+	use foxide2k_ui::notify::{BN_CLICKED, IDCANCEL, IDOK, NM_DBLCLK};
 	use foxide2k_ui::style::{
-		BS_DEFPUSHBUTTON, CBS_AUTOHSCROLL, CBS_DROPDOWN, REPORT_LIST, WS_TABSTOP, WS_VSCROLL,
+		BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CBS_AUTOHSCROLL, CBS_DROPDOWN, REPORT_LIST, WS_TABSTOP,
+		WS_VSCROLL,
 	};
 	use foxide2k_ui::template::ControlClass;
-	use foxide2k_ui::testing::{hidden_window, pump_messages, send_command};
+	use foxide2k_ui::testing::{hidden_window, pump_messages, send_command, send_notify};
 
 	use super::{
-		LIST, SEARCH, SEARCH_LABEL, STATUS, TRACKS_LABEL, WINDOW, cells, duration, show,
+		ADD, LIST, SEARCH, SEARCH_LABEL, STATUS, TRACKS_LABEL, WINDOW, cells, duration, show,
 		status_found, window_template,
 	};
 	use crate::login::controller;
@@ -400,7 +521,7 @@ mod tests {
 				(ControlClass::Static, TRACKS_LABEL, "&Tracks:"),
 				(ControlClass::ListView, LIST, ""),
 				(ControlClass::Static, STATUS, ""),
-				(ControlClass::Button, IDOK, "&Add"),
+				(ControlClass::Button, ADD, "&Add"),
 				(ControlClass::Button, IDCANCEL, "Close"),
 			]
 		);
@@ -409,10 +530,15 @@ mod tests {
 			CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
 		);
 		assert_eq!(template.items[3].style, REPORT_LIST);
-		assert_ne!(template.items[5].style & BS_DEFPUSHBUTTON, 0);
+		assert_eq!(template.items[5].style, BS_PUSHBUTTON | WS_TABSTOP);
+		// No default button: Enter sends IDOK, which goes by where focus is.
+		for button in template.items.iter().filter(|item| item.class == ControlClass::Button) {
+			assert_eq!(button.style & BS_DEFPUSHBUTTON, 0, "{}", button.text);
+			assert_ne!(button.id, IDOK, "{}", button.text);
+		}
 
 		let (_, _, dialog) = opened(getty());
-		assert_eq!(dialog.tab_order(), [SEARCH, LIST, IDOK, IDCANCEL]);
+		assert_eq!(dialog.tab_order(), [SEARCH, LIST, ADD, IDCANCEL]);
 		assert_eq!(dialog.report_columns(LIST), ["#", "Title", "Artist", "Album", "Duration"]);
 		assert!(dialog.has_focus_within(SEARCH));
 		assert_eq!(dialog.text(STATUS), "");
@@ -575,6 +701,9 @@ mod tests {
 		assert_eq!(dialog.text(STATUS), "Log in to Spotify to search.");
 		assert_eq!(fake.searches(), ["getty"]);
 
+		// A history with other words first shows whether the search after the login touches the
+		// history: remembering "getty" again would move it to the top.
+		search_history::save(&strings(&["bach", "getty"])).unwrap();
 		// The user logs in another way, as with Log in in the preferences.
 		controller().press();
 		confirm_login_when_started(&fake, 2).join().unwrap();
@@ -583,7 +712,7 @@ mod tests {
 		take_answers(&fake, 2);
 		assert_eq!(rows(dialog), rows_of(&getty()));
 		assert_eq!(dialog.text(STATUS), "Found 2 tracks.");
-		assert_eq!(search_history::load(), ["getty"]);
+		assert_eq!(search_history::load(), ["bach", "getty"]);
 		destroy(dialog);
 	}
 
@@ -603,6 +732,33 @@ mod tests {
 		fake.answer_search(0, Ok(getty()));
 		pump_messages();
 		assert_eq!(rows(dialog), rows_of(&getty()));
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_search_that_keeps_finding_the_account_logged_out_doesnt_search_again_and_again() {
+		let (_, fake, dialog) = opened(getty());
+		installed_prompt();
+		// The login says logged in, yet every search finds the account logged out.
+		fake.set_username(Some("getty"));
+		controller().refresh();
+		// The window's refresh for that change of the login.
+		pump_messages();
+		fake.fail_with(|| CoreError::NotLoggedIn);
+		search_for(dialog, "getty");
+		take_answers(&fake, 1);
+		refresh(dialog);
+		refresh(dialog);
+		// Each answer posts a refresh. A refresh that showed an answer and then ran the waiting
+		// search would search again for every answer, without end; each refresh may run it once.
+		for _ in 0..5 {
+			let asked = fake.searches().len();
+			wait_until(|| fake.searches_answered() == asked);
+			pump_messages();
+		}
+		let searches = fake.searches();
+		assert!(searches.len() <= 3, "{searches:?}");
+		assert_eq!(dialog.text(STATUS), "Log in to Spotify to search.");
 		destroy(dialog);
 	}
 
@@ -686,5 +842,222 @@ mod tests {
 		assert_eq!(rows(dialog), rows_of(&getty()));
 		assert_eq!(brought_up(), 2);
 		destroy(dialog);
+	}
+
+	/// What a search for "getty" finds: three tracks.
+	fn three() -> Resolved {
+		found("getty", &["In Christ Alone", "The Power of the Cross", "Speak O Lord"])
+	}
+
+	/// The path foobar2000 stores for the track in row `row` of [`three`].
+	fn path(row: usize) -> String {
+		item_path(three().tracks[row].id)
+	}
+
+	/// The window, listing [`three`] with rows 0 and 2 selected and focus in the list, in a fake
+	/// foobar2000 without playlists.
+	fn listed() -> (&'static FakeApi, FakeBackend, Dialog) {
+		let (api, fake, dialog) = opened(three());
+		search_for(dialog, "getty");
+		take_answers(&fake, 1);
+		// The search selected row 0; this adds row 2 to the selection, as Ctrl+click does.
+		dialog.check_list_select(LIST, 2);
+		dialog.focus(LIST);
+		(api, fake, dialog)
+	}
+
+	/// Adds a playlist named `name` and makes it the active one.
+	fn active_tab(api: &FakeApi, name: &str) -> usize {
+		let index = api.add_tab(name);
+		api.set_active_tab(Some(index));
+		index
+	}
+
+	/// Finishes load `request` with the tracks at `paths`, and shows what the window makes of it.
+	fn finish(api: &FakeApi, request: usize, paths: &[String]) {
+		api.finish_locations(request, &paths.iter().map(String::as_str).collect::<Vec<_>>())
+			.unwrap();
+		pump_messages();
+	}
+
+	const LOCKED: &str = "Can't add tracks to Default: the playlist is locked.";
+
+	#[test]
+	fn add_loads_the_selected_tracks_quietly_and_appends_them_to_the_active_playlist() {
+		let (api, _, dialog) = listed();
+		active_tab(api, "Default");
+		assert_eq!(dialog.report_selected(LIST), [0, 2]);
+		// Enter in the list.
+		send_command(&dialog, IDOK, BN_CLICKED);
+		assert_eq!(api.location_requests(), [[path(0), path(2)]]);
+		assert_eq!(api.location_flags(), [(4, dialog.hwnd())]);
+		finish(api, 0, &[path(0), path(2)]);
+		let tabs = api.tabs();
+		assert_eq!(tabs[0].name, "Default");
+		assert_eq!(tabs[0].paths, [path(0), path(2)]);
+		assert_eq!(tabs[0].selected, 0);
+		assert_eq!(dialog.text(STATUS), "Added 2 tracks to Default.");
+		assert_eq!(rows(dialog), rows_of(&three()));
+		assert_eq!(dialog.report_selected(LIST), [0, 2]);
+		assert_eq!(dialog.focused(), Some(LIST));
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_double_click_adds_like_enter() {
+		let (api, _, dialog) = listed();
+		active_tab(api, "Default");
+		send_notify(&dialog, LIST, NM_DBLCLK);
+		assert_eq!(api.location_requests(), [[path(0), path(2)]]);
+		assert_eq!(api.location_flags(), [(4, dialog.hwnd())]);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn the_add_button_adds_even_with_focus_in_the_search_field() {
+		let (api, fake, dialog) = listed();
+		active_tab(api, "Default");
+		// Alt+A presses Add without moving focus.
+		dialog.focus(SEARCH);
+		send_command(&dialog, ADD, BN_CLICKED);
+		assert_eq!(api.location_requests(), [[path(0), path(2)]]);
+		assert_eq!(fake.searches(), ["getty"]);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn enter_in_the_search_field_searches_and_adds_nothing() {
+		let (api, fake, dialog) = listed();
+		active_tab(api, "Default");
+		dialog.focus(SEARCH);
+		send_command(&dialog, IDOK, BN_CLICKED);
+		assert_eq!(fake.searches(), ["getty", "getty"]);
+		assert!(api.location_requests().is_empty());
+		destroy(dialog);
+	}
+
+	#[test]
+	fn other_notifications_add_nothing() {
+		// A list view's single click, and its custom draw.
+		const NM_CLICK: i32 = -2;
+		const NM_CUSTOMDRAW: i32 = -12;
+		let (api, _, dialog) = listed();
+		active_tab(api, "Default");
+		send_notify(&dialog, LIST, NM_CLICK);
+		send_notify(&dialog, LIST, NM_CUSTOMDRAW);
+		send_notify(&dialog, SEARCH, NM_DBLCLK);
+		assert!(api.location_requests().is_empty());
+		assert_eq!(dialog.text(STATUS), "Found 3 tracks.");
+		destroy(dialog);
+	}
+
+	#[test]
+	fn adding_with_nothing_selected_says_what_to_select() {
+		let (api, _, dialog) = opened(three());
+		active_tab(api, "Default");
+		dialog.focus(LIST);
+		send_command(&dialog, IDOK, BN_CLICKED);
+		assert_eq!(dialog.text(STATUS), "Select the tracks to add.");
+		assert!(api.location_requests().is_empty());
+		destroy(dialog);
+	}
+
+	#[test]
+	fn adding_with_no_active_playlist_says_so_and_makes_none() {
+		let (api, _, dialog) = listed();
+		send_command(&dialog, IDOK, BN_CLICKED);
+		assert_eq!(dialog.text(STATUS), "There's no active playlist to add to.");
+		assert!(api.tabs().is_empty());
+		assert!(api.location_requests().is_empty());
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_locked_playlist_says_it_is_locked_and_loads_nothing() {
+		let (api, _, dialog) = listed();
+		let index = active_tab(api, "Default");
+		api.lock_tab(index);
+		send_command(&dialog, IDOK, BN_CLICKED);
+		assert_eq!(dialog.text(STATUS), LOCKED);
+		assert!(api.location_requests().is_empty());
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_playlist_that_refuses_the_tracks_at_insert_says_it_is_locked() {
+		let (api, _, dialog) = listed();
+		let index = active_tab(api, "Default");
+		send_command(&dialog, IDOK, BN_CLICKED);
+		api.lock_tab(index);
+		finish(api, 0, &[path(0), path(2)]);
+		assert_eq!(dialog.text(STATUS), LOCKED);
+		assert!(api.tabs()[index].paths.is_empty());
+		destroy(dialog);
+	}
+
+	#[test]
+	fn the_tracks_go_to_the_playlist_that_was_active_at_add() {
+		let (api, _, dialog) = listed();
+		let default = active_tab(api, "Default");
+		dialog.report_select_only(LIST, 1);
+		send_command(&dialog, IDOK, BN_CLICKED);
+		let other = active_tab(api, "Other");
+		finish(api, 0, &[path(1)]);
+		let tabs = api.tabs();
+		assert_eq!(tabs[default].paths, [path(1)]);
+		assert!(tabs[other].paths.is_empty());
+		assert_eq!(dialog.text(STATUS), "Added 1 track to Default.");
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_playlist_closed_during_the_load_says_why_nothing_was_added() {
+		let (api, _, dialog) = listed();
+		let index = active_tab(api, "Default");
+		send_command(&dialog, IDOK, BN_CLICKED);
+		api.remove_tab(index);
+		finish(api, 0, &[path(0), path(2)]);
+		let status = dialog.text(STATUS);
+		assert!(
+			status.starts_with("Couldn't add the tracks: ") && status.ends_with('.'),
+			"{status}"
+		);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_cancelled_load_adds_nothing() {
+		let (api, _, dialog) = listed();
+		let index = active_tab(api, "Default");
+		send_command(&dialog, IDOK, BN_CLICKED);
+		api.cancel_locations(0);
+		pump_messages();
+		assert_eq!(dialog.text(STATUS), "Nothing was added.");
+		assert!(api.tabs()[index].paths.is_empty());
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_load_that_gives_no_tracks_appends_nothing() {
+		let (api, _, dialog) = listed();
+		let index = active_tab(api, "Default");
+		send_command(&dialog, IDOK, BN_CLICKED);
+		// Appending to the locked playlist would say it is locked.
+		api.lock_tab(index);
+		finish(api, 0, &[]);
+		assert_eq!(dialog.text(STATUS), "Nothing was added.");
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_load_that_ends_after_the_window_closed_still_adds() {
+		let (api, _, dialog) = listed();
+		let index = active_tab(api, "Default");
+		send_command(&dialog, IDOK, BN_CLICKED);
+		send_command(&dialog, IDCANCEL, BN_CLICKED);
+		assert!(!dialog.is_alive());
+		finish(api, 0, &[path(0), path(2)]);
+		assert_eq!(api.tabs()[index].paths, [path(0), path(2)]);
+		assert!(WINDOW.current().is_none());
 	}
 }
