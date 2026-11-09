@@ -15,6 +15,9 @@ crate-type = ["cdylib", "rlib"]
 foo_librespot_core = { path = "../foo_librespot_core" }
 log = { workspace = true }
 foxide2k = { path = "../foxide2k" }
+tracing = { workspace = true }
+tracing-log = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 foxide2k = { path = "../foxide2k", features = ["testing"] }
