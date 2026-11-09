@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - For developers: foo_librespot logs through `tracing`, and a console line shows the spans it was logged in.
 - For developers: foxide2k's dialogs moved into a crate of their own, `foxide2k_ui`, which knows nothing of foobar2000. foxide2k keeps the foobar2000 SDK.
 
+### Fixed
+
+- When File > Spotify > Open playlist… can't open its window, it says why in a popup instead of handing the error to foobar2000.
+
 ## [0.3.1] - 2026-11-09
 
 ### Fixed

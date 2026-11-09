@@ -9,7 +9,6 @@ use foo_librespot_core::link::Link;
 use foxide2k::abi::mainmenu::{GROUP_FILE, SORT_PRIORITY_BASE};
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
-use foxide2k::host::host;
 use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
 use foxide2k_ui::host::{Dialog, DialogHandler, destroy};
 use foxide2k_ui::notify::IDCANCEL;
@@ -44,8 +43,12 @@ impl MainMenuCommand for OpenPlaylist {
 	const DESCRIPTION: &'static str =
 		"Opens your Liked Songs or one of your Spotify playlists as a playlist tab.";
 
+	/// Shows the window, or refreshes it and brings it up when it is open. When it can't open,
+	/// says why in the console and a popup, and still succeeds: foobar2000 gets no error.
 	fn execute() -> Result<()> {
-		WINDOW.show(host().main_window())
+		WINDOW
+			.show_fresh("can't open the Open playlist window", "Can't open your Spotify playlists");
+		Ok(())
 	}
 }
 
@@ -127,7 +130,7 @@ mod tests {
 		MainMenuCommand, MainMenuPopup, mainmenu_command_service, mainmenu_popup_service,
 	};
 	use foxide2k::testing::{FakeApi, MainMenuHandle};
-	use foxide2k_ui::host::destroy;
+	use foxide2k_ui::host::{Dialog, destroy};
 	use foxide2k_ui::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
 	use foxide2k_ui::template::ControlClass;
 	use foxide2k_ui::testing::{hidden_window, pump_messages, send_close, send_command};
@@ -180,6 +183,33 @@ mod tests {
 		assert_eq!(WINDOW.current(), Some(dialog));
 		assert_eq!(brought_up(), 2);
 		destroy(dialog);
+	}
+
+	#[test]
+	fn a_window_that_cant_open_is_reported_and_the_command_succeeds() {
+		let api = installed_api();
+		let gone = hidden_window();
+		destroy(Dialog::from_hwnd(gone));
+		api.set_main_window(gone);
+		let command = MainMenuHandle::new(mainmenu_command_service::<OpenPlaylist>());
+		command.execute(0, None).expect("the command reports the failure itself");
+		assert!(WINDOW.current().is_none());
+		let popups = api.popups();
+		assert_eq!(popups.len(), 1, "{popups:?}");
+		let (title, message, icon) = &popups[0];
+		assert_eq!(title, "Can't open your Spotify playlists");
+		assert!(
+			message.starts_with("Open a Spotify playlist\n\ncan't create a dialog: "),
+			"{message}"
+		);
+		assert_eq!(*icon, PopupIcon::Error);
+		let console = api.console_lines();
+		assert!(
+			console.iter().any(|line| line.starts_with(
+				"foo_librespot: can't open the Open playlist window: can't create a dialog: "
+			)),
+			"{console:?}"
+		);
 	}
 
 	#[test]
