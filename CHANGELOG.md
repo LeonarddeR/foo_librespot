@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- foo_librespot reaches Spotify on port 443, the port secure websites use, so it also works on networks that block Spotify's own port 4070, such as some office and school networks. On such a network, logging in stalled and every Spotify link and track failed with "Spotify didn't answer within 30 seconds".
+
 ## [0.3.0] - 2026-11-08
 
 ### Added

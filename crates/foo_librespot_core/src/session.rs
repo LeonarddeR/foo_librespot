@@ -381,7 +381,14 @@ pub struct LibrespotConnector {
 
 impl LibrespotConnector {
 	pub fn new(device_id: String) -> Self {
-		Self { config: SessionConfig { device_id, ..SessionConfig::default() } }
+		Self {
+			config: SessionConfig {
+				device_id,
+				// librespot then connects only to the access points Spotify lists on port 443.
+				ap_port: Some(443),
+				..SessionConfig::default()
+			},
+		}
 	}
 }
 
@@ -433,7 +440,8 @@ mod tests {
 	use std::time::{Duration, Instant};
 
 	use super::{
-		Connected, Connector, SessionHandle, SessionManager, check_account_type, wait_for_attribute,
+		Connected, Connector, LibrespotConnector, SessionHandle, SessionManager,
+		check_account_type, wait_for_attribute,
 	};
 	use crate::profile::Profile;
 	use crate::{CoreError, Credentials};
@@ -889,5 +897,12 @@ mod tests {
 		assert_eq!(value, None);
 		assert!(started.elapsed() >= Duration::from_millis(200));
 		assert!(started.elapsed() < Duration::from_secs(2));
+	}
+
+	#[tokio::test]
+	async fn sessions_reach_spotify_only_on_port_443() {
+		let config = LibrespotConnector::new("device".to_owned()).config;
+		let session = librespot_core::Session::new(config, None);
+		assert_eq!(session.apresolver().port_config(), Some(443));
 	}
 }
