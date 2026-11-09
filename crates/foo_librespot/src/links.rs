@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 
 use foo_librespot_core::CoreError;
 use foo_librespot_core::link::{Link, LinkError, PATH_SCHEME, item_path, parse_link};
+use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::resolve::Skipped;
 use foxide2k::abort::Abort;
 use foxide2k::console;
@@ -39,6 +40,12 @@ fn starts_with_ignore_case(text: &str, prefix: &str) -> bool {
 /// The one path foobar2000 stores for `link`.
 pub fn canonical(link: &Link) -> String {
 	format!("{PATH_SCHEME}{}", link.uri())
+}
+
+/// The path a playlist entry for `track` gets: its Spotify path, or, for an episode Spotify
+/// doesn't host, the podcast's own audio link, which foobar2000 plays itself.
+pub fn entry_path(track: &TrackInfo) -> String {
+	track.external_url.clone().unwrap_or_else(|| item_path(track.id))
 }
 
 /// `path` without our `sptf://` scheme: the link as the user pasted it.
@@ -153,10 +160,7 @@ impl PlaylistLoader for SpotifyLoader {
 			abort.check()?;
 			let mut info = FileInfoImpl::new();
 			fill_info(&mut info.file_info(), track)?;
-			// An episode Spotify doesn't host is the podcast's own audio link, which foobar2000
-			// plays itself.
-			let path = track.external_url.clone().unwrap_or_else(|| item_path(track.id));
-			callback.add_entry(&path, &mut info)?;
+			callback.add_entry(&entry_path(track), &mut info)?;
 		}
 		print_skipped(&resolved.skipped);
 		let source = resolved.name.as_deref().unwrap_or("the link");

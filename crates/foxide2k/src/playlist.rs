@@ -275,8 +275,9 @@ pub fn load_locations(locations: &[String], done: Done, aborted: Aborted) -> Res
 	process_locations(locations, 0, host().main_window(), done, aborted)
 }
 
-/// [`load_locations`] for window `owner`: foobar2000 shows no progress window for a short load,
-/// and the window of a longer one doesn't take focus from `owner`.
+/// [`load_locations`], quietly: foobar2000 shows no progress window for a short load, and the
+/// window of a longer one doesn't take focus. That window is owned by `owner`, which must stay
+/// open until the load ends, as foobar2000's main window does.
 pub fn load_locations_quietly(
 	owner: isize,
 	locations: &[String],

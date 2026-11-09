@@ -779,7 +779,7 @@ mod tests {
 
 	use super::{Dialog, DialogHandler, create_child_dialog, create_modeless_dialog, destroy};
 	use crate::bindings::Windows::Win32::{
-		BN_CLICKED, BS_AUTOCHECKBOX, CB_GETEDITSEL, CB_SETEDITSEL, CBS_AUTOHSCROLL, CBS_DROPDOWN,
+		BN_CLICKED, BS_AUTOCHECKBOX, CB_SETEDITSEL, CBS_AUTOHSCROLL, CBS_DROPDOWN,
 		CBS_DROPDOWNLIST, DS_CONTROL, DS_MODALFRAME, ES_MULTILINE, ES_READONLY, GetClientRect,
 		GetSystemMetrics, GetWindowTextW, HWND, LBS_NOTIFY, LPARAM, LVIS_SELECTED,
 		LVM_GETCOLUMNWIDTH, LVM_GETCOUNTPERPAGE, LVM_GETTOPINDEX, RECT, SM_CXVSCROLL, SendMessageW,
@@ -787,7 +787,9 @@ mod tests {
 		WS_TABSTOP, WS_VSCROLL,
 	};
 	use crate::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
-	use crate::testing::{hidden_window, pump_messages, send_notify, wants_all_keys};
+	use crate::testing::{
+		hidden_window, pump_messages, send_notify, text_selection, wants_all_keys,
+	};
 	use crate::{notify, style};
 
 	#[test]
@@ -1223,13 +1225,9 @@ mod tests {
 		dialog.set_text(SEARCH, "getty");
 		// Start from a caret after the first letter.
 		dialog.send(SEARCH, CB_SETEDITSEL, 0, 1 | (1 << 16));
-		let selection = || {
-			let range = dialog.send(SEARCH, CB_GETEDITSEL, 0, 0);
-			(range & 0xFFFF, (range >> 16) & 0xFFFF)
-		};
-		assert_eq!(selection(), (1, 1));
+		assert_eq!(text_selection(&dialog, SEARCH), (1, 1));
 		dialog.select_all_text(SEARCH);
-		assert_eq!(selection(), (0, 5));
+		assert_eq!(text_selection(&dialog, SEARCH), (0, 5));
 		destroy(dialog);
 	}
 

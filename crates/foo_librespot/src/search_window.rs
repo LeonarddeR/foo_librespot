@@ -18,12 +18,12 @@ use std::cell::Cell;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use foo_librespot_core::CoreError;
-use foo_librespot_core::link::item_path;
 use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::resolve::Resolved;
 use foxide2k::abi::mainmenu::{GROUP_VIEW, SORT_PRIORITY_BASE};
 use foxide2k::error::Error;
 use foxide2k::guid::Guid;
+use foxide2k::host::host;
 use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
 use foxide2k::metadb::HandleList;
 use foxide2k::playlist;
@@ -39,7 +39,7 @@ use crate::account::item;
 use crate::backend::backend;
 use crate::errors::log_failure;
 use crate::first_use::ask_for_login;
-use crate::links::{plural, print_skipped};
+use crate::links::{entry_path, plural, print_skipped};
 use crate::login::{LoginState, controller};
 use crate::search_history::{self, normalize, remember};
 use crate::status_line::StatusLine;
@@ -300,7 +300,7 @@ impl SearchWindow {
 			.report_selected(LIST)
 			.into_iter()
 			.filter_map(|row| self.found.get(row))
-			.map(|track| item_path(track.id))
+			.map(|track| entry_path(track))
 			.collect();
 		if locations.is_empty() {
 			self.tell_status(dialog, "Select the tracks to add.".to_owned());
@@ -314,10 +314,11 @@ impl SearchWindow {
 	}
 
 	/// Loads the tracks at `locations` for the active tab, quietly: a progress window, if
-	/// foobar2000 shows one, is owned by this window and doesn't take focus from it. Once the
-	/// load ends, its tracks are appended to the tab that was active here, also after the window
-	/// closed, and what came of it reaches the window through the inbox. Answers why nothing was
-	/// loaded when no tab is active or the tab is locked.
+	/// foobar2000 shows one, doesn't take focus from this window. It is owned by foobar2000's main
+	/// window, not this one, which can close during the load. Once the load ends, its tracks are
+	/// appended to the tab that was active here, also after the window closed, and what came of
+	/// it reaches the window through the inbox. Answers why nothing was loaded when no tab is
+	/// active or the tab is locked.
 	fn load(
 		&self,
 		dialog: Dialog,
@@ -333,7 +334,7 @@ impl SearchWindow {
 		let send = self.sender(dialog);
 		let send_aborted = send.clone();
 		playlist::load_locations_quietly(
-			dialog.hwnd(),
+			host().main_window(),
 			locations,
 			// Never an error: one would reach foobar2000.
 			Box::new(move |items| {
@@ -475,7 +476,9 @@ mod tests {
 		WS_VSCROLL,
 	};
 	use foxide2k_ui::template::ControlClass;
-	use foxide2k_ui::testing::{hidden_window, pump_messages, send_command, send_notify};
+	use foxide2k_ui::testing::{
+		hidden_window, pump_messages, send_command, send_notify, text_selection,
+	};
 
 	use super::{
 		ADD, LIST, SEARCH, SEARCH_LABEL, STATUS, SearchSpotify, TRACKS_LABEL, ViewSpotifyMenu,
@@ -940,8 +943,18 @@ mod tests {
 		pump_messages();
 		assert_eq!(WINDOW.current(), Some(dialog));
 		assert!(dialog.has_focus_within(SEARCH));
+		// All of the text is selected, so typing replaces it.
+		assert_eq!(text_selection(&dialog, SEARCH), (0, "getty".len()));
 		assert_eq!(rows(dialog), rows_of(&getty()));
 		assert_eq!(brought_up(), 2);
+
+		// With focus in the search field already and only a caret in it, the text is selected too.
+		dialog.set_text(SEARCH, "getty");
+		assert_eq!(text_selection(&dialog, SEARCH), (0, 0));
+		show();
+		pump_messages();
+		assert_eq!(text_selection(&dialog, SEARCH), (0, "getty".len()));
+		assert_eq!(brought_up(), 3);
 		destroy(dialog);
 	}
 
@@ -983,15 +996,24 @@ mod tests {
 
 	const LOCKED: &str = "Can't add tracks to Default: the playlist is locked.";
 
+	/// Makes a hidden window foobar2000's main window, and answers it.
+	fn main_window(api: &FakeApi) -> isize {
+		let window = hidden_window();
+		api.set_main_window(window);
+		window
+	}
+
 	#[test]
 	fn add_loads_the_selected_tracks_quietly_and_appends_them_to_the_active_playlist() {
 		let (api, _, dialog) = listed();
+		let main = main_window(api);
 		active_tab(api, "Default");
 		assert_eq!(dialog.report_selected(LIST), [0, 2]);
 		// Enter in the list.
 		send_command(&dialog, IDOK, BN_CLICKED);
 		assert_eq!(api.location_requests(), [[path(0), path(2)]]);
-		assert_eq!(api.location_flags(), [(4, dialog.hwnd())]);
+		// A progress window belongs to the main window, which stays open while this one closes.
+		assert_eq!(api.location_flags(), [(4, main)]);
 		finish(api, 0, &[path(0), path(2)]);
 		let tabs = api.tabs();
 		assert_eq!(tabs[0].name, "Default");
@@ -1007,10 +1029,31 @@ mod tests {
 	#[test]
 	fn a_double_click_adds_like_enter() {
 		let (api, _, dialog) = listed();
+		let main = main_window(api);
 		active_tab(api, "Default");
 		send_notify(&dialog, LIST, NM_DBLCLK);
 		assert_eq!(api.location_requests(), [[path(0), path(2)]]);
-		assert_eq!(api.location_flags(), [(4, dialog.hwnd())]);
+		assert_eq!(api.location_flags(), [(4, main)]);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn an_episode_spotify_doesnt_host_is_added_by_its_own_link() {
+		let track = track_info(SpotifyId::from_raw(&[1; 16]).unwrap(), "In Christ Alone");
+		let hosted = item_path(track.id);
+		let mut episode = episode_info(episode_id(), "Singing the Psalms");
+		episode.external_url = Some("https://example.com/ep.mp3".to_owned());
+		let tracks = vec![Arc::new(track), Arc::new(episode)];
+		let resolved =
+			Resolved { name: Some("sing".to_owned()), tracks, skipped: Vec::new(), duplicates: 0 };
+		let (api, fake, dialog) = opened(resolved);
+		active_tab(api, "Default");
+		search_for(dialog, "sing");
+		take_answers(&fake, 1);
+		dialog.check_list_select(LIST, 1);
+		dialog.focus(LIST);
+		send_command(&dialog, IDOK, BN_CLICKED);
+		assert_eq!(api.location_requests(), [[hosted, "https://example.com/ep.mp3".to_owned()]]);
 		destroy(dialog);
 	}
 

@@ -52,6 +52,7 @@ mod tests {
 		assert_eq!(normalize("  in\tchrist \n alone "), Some("in christ alone".to_owned()));
 		assert_eq!(normalize(" \t "), None);
 		assert_eq!(normalize("100% Händel"), Some("100% Händel".to_owned()));
+		assert_eq!(normalize("ac%2Fdc"), Some("ac%2Fdc".to_owned()));
 	}
 
 	#[test]

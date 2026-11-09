@@ -2,9 +2,9 @@
 //! clicks and keys would send.
 
 use crate::bindings::Windows::Win32::{
-	COINIT_APARTMENTTHREADED, CoInitializeEx, DLGC_WANTALLKEYS, DispatchMessageW, HWND, LPARAM,
-	MSG, NMHDR, PM_REMOVE, PeekMessageW, SendMessageW, TranslateMessage, WM_CLOSE, WM_COMMAND,
-	WM_GETDLGCODE, WM_NOTIFY, WPARAM,
+	CB_GETEDITSEL, COINIT_APARTMENTTHREADED, CoInitializeEx, DLGC_WANTALLKEYS, DispatchMessageW,
+	HWND, LPARAM, MSG, NMHDR, PM_REMOVE, PeekMessageW, SendMessageW, TranslateMessage, WM_CLOSE,
+	WM_COMMAND, WM_GETDLGCODE, WM_NOTIFY, WPARAM,
 };
 use crate::host::{Dialog, DialogHandler, create_modeless_dialog};
 use crate::style::WS_POPUP;
@@ -100,6 +100,21 @@ pub fn wants_all_keys(dialog: &Dialog, id: u16) -> bool {
 		SendMessageW(dialog.control(id), WM_GETDLGCODE.cast_unsigned(), WPARAM(0), LPARAM(0))
 	};
 	code.0 & DLGC_WANTALLKEYS as isize != 0
+}
+
+/// Where the selected part of editable combo box `id`'s text starts and ends, in UTF-16 units.
+/// Both are the caret's place when nothing is selected.
+pub fn text_selection(dialog: &Dialog, id: u16) -> (usize, usize) {
+	let (mut start, mut end) = (0u32, 0u32);
+	unsafe {
+		SendMessageW(
+			dialog.control(id),
+			CB_GETEDITSEL.cast_unsigned(),
+			WPARAM((&raw mut start) as usize),
+			LPARAM((&raw mut end) as isize),
+		)
+	};
+	(start as usize, end as usize)
 }
 
 /// Sends `WM_CLOSE`, as the close box and Alt+F4 do. The dialog manager turns it into a
