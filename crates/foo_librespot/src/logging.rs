@@ -114,6 +114,12 @@ fn redact_url(url: &str, out: &mut String) {
 
 /// Fields as `name=value`, with the value's `Debug` form, separated by single spaces. Each span
 /// keeps its own in its extensions.
+///
+/// Record a URL as `?url.as_str()`, never `?url` on a `url::Url` or `%url`. A `url::Url`'s
+/// `Debug` form lists its parts without `://`, so [`redact_urls`] can't find the password and
+/// query in it; `%url` leaves the URL unquoted, so redaction also cuts whatever follows it up to
+/// the next space, such as a span's closing `}:`. As a quoted string, the closing quote ends the
+/// URL.
 #[derive(Default)]
 struct FieldList(String);
 
@@ -179,10 +185,7 @@ where
 	}
 
 	fn enabled(&self, metadata: &Metadata<'_>, _: Context<'_, S>) -> bool {
-		// tracing-log hands a `log` record on with the target `log`; its own target is only known
-		// in `on_event`.
-		metadata.target() == "log"
-			|| wanted(metadata.target(), *metadata.level(), DETAILED.load(Ordering::Relaxed))
+		wanted(metadata.target(), *metadata.level(), DETAILED.load(Ordering::Relaxed))
 	}
 
 	fn on_new_span(&self, attributes: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
@@ -202,7 +205,10 @@ where
 	}
 
 	fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-		// A `log` record's own target and level, rather than the bridge's.
+		// `enabled` has usually let this event through already, but it is asked again here: the
+		// switch may have changed since, and an event dispatched straight to the subscriber skips
+		// `enabled`. A bridged `log` record's event carries the bridge's target `log`, so its own
+		// target and level come from `normalized_metadata`.
 		let normalized = event.normalized_metadata();
 		let metadata = normalized.as_ref().unwrap_or_else(|| event.metadata());
 		let target = metadata.target();
@@ -228,7 +234,9 @@ where
 		}
 		line.push_str(&fields.message);
 		if !fields.others.0.is_empty() {
-			line.push(' ');
+			if !fields.message.is_empty() {
+				line.push(' ');
+			}
 			line.push_str(&fields.others.0);
 		}
 		foxide2k::console::print(&redact_urls(&line));
@@ -412,6 +420,15 @@ mod tests {
 	}
 
 	#[test]
+	fn fields_without_a_message_follow_a_single_space() {
+		let _shared = lock_shared_state();
+		let lines = console_lines_of(|| {
+			tracing::info!(target: "foo_librespot::x", found = 2);
+		});
+		assert_eq!(lines, ["foo_librespot: found=2"]);
+	}
+
+	#[test]
 	fn nested_spans_show_from_the_outermost_with_fields_recorded_later() {
 		let _shared = lock_shared_state();
 		let lines = console_lines_of(|| {
@@ -494,6 +511,10 @@ mod tests {
 		set_detailed(false);
 		assert_eq!(log::max_level(), LevelFilter::Info);
 	}
+
+	// The three tests below call the global `init`, which takes effect only the first time in a
+	// process. They rely on cargo-nextest running each test in its own process, as CI and
+	// AGENTS.md do; under plain `cargo test` they share one and depend on the order they run in.
 
 	#[test]
 	fn init_applies_the_stored_switch() {

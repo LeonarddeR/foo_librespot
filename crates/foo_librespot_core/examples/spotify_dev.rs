@@ -15,7 +15,8 @@
 //! The login is kept in `.spotify-dev` in the current folder, or in `--profile <folder>`.
 //! An artist link resolves to the artist's whole discography, as in foobar2000, or to their
 //! popular tracks with `--popular`.
-//! Set `SPOTIFY_DEV_LOG` to `debug` or `trace` for more librespot output.
+//! Set `SPOTIFY_DEV_LOG` to `debug` or `trace` for more output from librespot and from the HTTP/2
+//! crates h2 and hyper-util, or to `off` for none.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -303,12 +304,12 @@ fn take_option(args: &mut Vec<String>, name: &str) -> Option<String> {
 	(index < args.len()).then(|| args.remove(index))
 }
 
-/// Logs to stderr from the level `SPOTIFY_DEV_LOG` names, info by default. librespot's `log`
-/// records arrive through the fmt subscriber's tracing-log bridge.
+/// Logs to stderr from the level `SPOTIFY_DEV_LOG` names, info by default, or not at all with
+/// `off`. librespot's `log` records arrive through the fmt subscriber's tracing-log bridge.
 fn init_logger() {
 	let level = std::env::var("SPOTIFY_DEV_LOG")
 		.ok()
 		.and_then(|level| level.parse().ok())
-		.unwrap_or(tracing::Level::INFO);
+		.unwrap_or(tracing::level_filters::LevelFilter::INFO);
 	tracing_subscriber::fmt().with_max_level(level).with_writer(std::io::stderr).init();
 }
