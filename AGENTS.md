@@ -22,6 +22,7 @@ foo_librespot is a foobar2000 2.25+ x64 component, written entirely in Rust, tha
 
 - Target `x86_64-pc-windows-msvc` and foobar2000 2.25 and later only. The SDK target version stays 81, the newest the SDK defines.
 - No C or C++ anywhere in the build.
+- `foxide2k` holds the foobar2000 SDK interfaces only. Windows live in `foxide2k_ui`, plain Win32 that knows nothing of foobar2000 and doesn't depend on foxide2k.
 - `foxide2k` is licensed `MIT AND BSD-Source-Code`. Every file transcribed from the foobar2000 SDK starts with the SDK notice. Other crates are MIT.
 - Every vtable slot is `unsafe extern "C-unwind" fn`, and every Rust-implemented slot that can fail or panic runs inside `foxide2k::boundary::guard`. `service_release` slots are noexcept, so they free through `service::free_from_release`, which aborts on a panic instead of throwing. Slots that only return a constant or update a reference count need neither.
 - Never throw a C++ exception inside `catch_unwind`. Wrap every call into foobar2000 that can throw in `foxide2k::cxx::try_host`.
@@ -31,7 +32,7 @@ foo_librespot is a foobar2000 2.25+ x64 component, written entirely in Rust, tha
 - `foo_librespot_core` must not depend on `foxide2k` or know about foobar2000. The plugin talks to it only through `foo_librespot_core::Core`.
 - In `foo_librespot_core`, blocking reads of Spotify audio never run on a tokio worker: `fetch_track` only awaits, `FetchedTrack::open` runs on the runtime's blocking pool through `CoreRuntime::block_on_blocking` so Stop can interrupt its first slow reads, and `SpotifyTrack::read` runs on the caller's thread. `CoreRuntime::block_on` is never called from async code.
 - Spotify credentials are never logged and never written in plain text; `Profile` stores them encrypted with DPAPI.
-- Logging goes through `tracing`. librespot's `log` records reach it through `tracing-log`. The foobar2000 console is a tracing layer in `crates/foo_librespot/src/logging.rs`, which never shows trace level and redacts URLs. Record a URL in a field as `?url.as_str()`, never `?url` on a `url::Url` or `%url`, so the redaction finds all of it.
+- Logging goes through `tracing`. librespot's `log` records reach it through `tracing-log`. The foobar2000 console is a tracing layer in `crates/foo_librespot/src/logging.rs`, which never shows trace level and redacts URLs. Record a URL in a field as `url = ?url.as_str()`, never `?url` on a `url::Url` or `%url`, so the redaction finds all of it.
 - `foo_librespot` reaches Spotify only through its `Backend` trait; its tests install a fake backend, so every service is tested through its vtables without Spotify.
 
 ## Settled design decisions
@@ -46,6 +47,7 @@ Do not re-litigate these without new evidence.
 - Login uses librespot's OAuth device flow with librespot's built-in client ID. No Spotify Web API.
 - The browser never opens by itself (the maintainer's decision). Only the "Open browser" button opens Spotify's login page; a link that needs a login opens the login window, not the browser.
 - The preferences page and the login window are standard Win32 dialogs built from in-memory templates. Each label is created right before its control, creation order is tab order, and the status line is a polite live region.
+- Windows are plain Win32 dialogs in `foxide2k_ui` (the maintainer's decision, 2026-11-09). wxDragon was set aside because it builds wxWidgets from C++ and only runs as the program's own application with its own message loop. windows-reactor was set aside because it only runs as a whole WinUI 3 application, offers no way to render into a window it doesn't own, and needs the Windows App Runtime. Look again if either gains a way to live inside another program's windows.
 - librespot is pinned to the `foo_librespot` branch of LeonarddeR/librespot, which merges two unreleased pull requests, until both are released: PR #1855, because stock librespot exits the process on a non-Premium login, and PR #1844, which asks for audio keys one at a time and waits after Spotify refuses one, because asking again at once keeps the refusals going.
 - ReplayGain comes from Spotify's `AUDIO_FILES` extended metadata (integrated loudness and true peak), fetched in the same request as the track's other metadata, so tracks have it as soon as they are imported. A track whose metadata has no loudness gets no ReplayGain: the gains in the audio file's header are only read once playback has opened the file, after foobar2000 has taken the ReplayGain for that play.
 - `panic = "unwind"`, never `abort`: a panic must reach foobar2000 as a C++ exception.
@@ -54,7 +56,7 @@ Do not re-litigate these without new evidence.
 
 ## Win32 bindings
 
-- Every Win32 item comes from the committed, generated `crates/foxide2k/src/bindings.rs`. Never edit it by hand.
-- `tools/bindgen/` is a standalone crate with its own lockfile, not a workspace member. To use a new API, add it to `--filter` in `tools/bindgen/foxide2k.txt` and run `cargo bindgen`. CI fails if the committed output is stale.
+- Every Win32 item comes from generated bindings. Each of `crates/foxide2k/src/bindings.rs` and `crates/foxide2k_ui/src/bindings.rs` is generated and committed, from `tools/bindgen/foxide2k.txt` and `tools/bindgen/foxide2k_ui.txt`. Never edit them by hand.
+- `tools/bindgen/` is a standalone crate with its own lockfile, not a workspace member. To use a new API, add it to the filter of the crate that uses it and run `cargo bindgen`. CI fails if the committed output is stale.
 - `windows-core` is the only Windows runtime crate; the `windows` umbrella crate is not used.
 - CRT and vcruntime functions (`_CxxThrowException`, `__std_exception_copy`, `free`, …) are not in the metadata; declare them in a local `extern` block, as Rust's std does.

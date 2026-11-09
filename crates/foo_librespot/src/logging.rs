@@ -115,11 +115,11 @@ fn redact_url(url: &str, out: &mut String) {
 /// Fields as `name=value`, with the value's `Debug` form, separated by single spaces. Each span
 /// keeps its own in its extensions.
 ///
-/// Record a URL as `?url.as_str()`, never `?url` on a `url::Url` or `%url`. A `url::Url`'s
-/// `Debug` form lists its parts without `://`, so [`redact_urls`] can't find the password and
-/// query in it; `%url` leaves the URL unquoted, so redaction also cuts whatever follows it up to
-/// the next space, such as a span's closing `}:`. As a quoted string, the closing quote ends the
-/// URL.
+/// Record a URL as `url = ?url.as_str()`, never `?url` on a `url::Url` or `%url`. A
+/// `url::Url`'s `Debug` form lists its parts without `://`, so [`redact_urls`] can't find the
+/// password and query in it; `%url` leaves the URL unquoted, so redaction also cuts whatever
+/// follows it up to the next space, such as a span's closing `}:`. As a quoted string, the
+/// closing quote ends the URL.
 #[derive(Default)]
 struct FieldList(String);
 

@@ -17,8 +17,7 @@ use crate::host::Dialog;
 const LIVE_SETTING_PROPERTY: GUID = GUID::from_u128(0xc12bcd8e_2a8e_4950_8ae7_3625111d58eb);
 
 /// Marks control `id` as a polite live region, so screen readers read its new text after an
-/// [`announce`] without moving focus. Needs COM on the calling thread, as foobar2000's main
-/// thread has.
+/// [`announce`] without moving focus. Needs COM on the calling thread.
 pub fn make_live_region(dialog: &Dialog, id: u16) -> Result<()> {
 	let fail = |error: windows_core::Error| Error {
 		message: format!("can't make a live region: {error}"),

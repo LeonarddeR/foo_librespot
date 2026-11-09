@@ -23,10 +23,10 @@ impl DialogHandler for Owner {
 	fn refresh(&mut self, _dialog: &Dialog) {}
 }
 
-/// A hidden dialog to own the dialogs under test, as foobar2000's Preferences window owns its
-/// pages. It is a dialog like that window: when Windows activates it, a dialog gives focus back
+/// A hidden dialog to own the dialogs under test, as a host program's settings dialog owns its
+/// pages. It is a dialog like that owner: when Windows activates it, a dialog gives focus back
 /// to the control that had it, where a plain window takes focus itself. Also initialises COM on
-/// this thread, as foobar2000's main thread has it, for live regions.
+/// this thread, which live regions need.
 pub fn hidden_window() -> isize {
 	unsafe {
 		let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED as u32);

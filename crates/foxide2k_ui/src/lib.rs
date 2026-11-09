@@ -1,5 +1,5 @@
 //! Win32 dialogs for components: templates built in Rust, and the windows made from them. Plain
-//! Win32, with nothing of foobar2000 in it.
+//! Win32 that knows nothing of the program hosting it.
 
 pub mod accessibility;
 #[allow(

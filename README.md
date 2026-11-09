@@ -12,6 +12,7 @@ It uses [librespot](https://github.com/librespot-org/librespot) to talk to Spoti
 Early development. Releases are pre-releases for now.
 
 - `crates/foxide2k`: the Rust layer that talks to foobar2000, named for foobar2000 and oxide, which is what rust is. It is proven in a real foobar2000 by the `foo_oxitone` test-tone component.
+- `crates/foxide2k_ui`: the Win32 dialogs that foo_librespot's windows are built from, with no foobar2000 knowledge. It builds dialogs from templates written in Rust, with helpers for their lists, combo boxes, checkboxes and live regions.
 - `crates/foo_librespot_core`: the Spotify side, built on librespot, with no foobar2000 knowledge. It logs in, turns links into track lists with metadata, and plays tracks as seekable PCM. Its `spotify_dev` example tries it against a real account.
 - `crates/foo_librespot`: the component. It adds Spotify track, album, playlist, episode, show and artist links as playlist entries (an artist link adds their popular tracks) with their metadata and ReplayGain, plays and seeks them, and shows album art. It asks for a Spotify login the first time a link needs one.
 

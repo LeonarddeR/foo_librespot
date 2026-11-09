@@ -1,6 +1,6 @@
 [package]
 name = "foxide2k_ui"
-description = "Win32 dialogs for foobar2000 components written in Rust"
+description = "Plain Win32 dialogs for components written in Rust"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -69,7 +69,7 @@ impl Dialog {
 		self.0
 	}
 
-	/// The dialog behind a window handle, such as a preferences page's `get_wnd`.
+	/// The dialog behind a window handle, such as one a host program hands over.
 	pub const fn from_hwnd(hwnd: isize) -> Self {
 		Self(hwnd)
 	}
@@ -557,7 +557,7 @@ pub fn create_child_dialog(
 
 /// A top-level dialog owned by `owner`, hidden until [`Dialog::show`]. Its template carries
 /// `WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME`. Tab and access keys only work once
-/// the caller registers it with foobar2000's modeless dialog manager.
+/// the owner's message loop passes the dialog's messages to `IsDialogMessage`.
 pub fn create_modeless_dialog(
 	owner: isize,
 	template: &DialogTemplate,
@@ -609,7 +609,7 @@ pub(crate) mod tests {
 	}
 
 	/// A hidden top-level window to own the dialogs under test. Also initialises COM for the
-	/// live-region tests, as foobar2000's main thread has it.
+	/// live-region tests, which need COM on the calling thread.
 	pub fn hidden_parent() -> isize {
 		crate::testing::hidden_window()
 	}

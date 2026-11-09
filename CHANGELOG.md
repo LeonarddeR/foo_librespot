@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - For developers: foo_librespot logs through `tracing`, and a console line shows the spans it was logged in.
+- For developers: foxide2k's dialogs moved into a crate of their own, `foxide2k_ui`, which knows nothing of foobar2000. foxide2k keeps the foobar2000 SDK.
 
 ## [0.3.1] - 2026-11-09
 

@@ -232,13 +232,13 @@ mod tests {
 	use std::ffi::CStr;
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
+	use foxide2k_ui::testing::hidden_window;
+
 	use super::{PageChanged, PageInstance, PreferencesPage, preferences_page_service};
 	use crate::abi::preferences::{
 		GUID_TOOLS, INSTANCE_IID, PAGE_IID, PAGE_V2_IID, PAGE_V3_IID, STATE_CHANGED,
 		STATE_RESETTABLE,
 	};
-	use foxide2k_ui::testing::hidden_window;
-
 	use crate::bindings::Windows::Win32::{HWND, IsWindow};
 	use crate::error::Result;
 	use crate::guid::Guid;
