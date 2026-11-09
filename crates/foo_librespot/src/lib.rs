@@ -24,6 +24,8 @@ mod playlist_save;
 mod playlist_window;
 mod prefs;
 mod related;
+#[cfg_attr(not(test), expect(dead_code, reason = "no search window uses the history yet"))]
+mod search_history;
 mod settings;
 mod spotify_menu;
 mod status_line;
