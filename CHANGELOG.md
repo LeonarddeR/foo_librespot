@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-09
+
 ### Added
 
 - View > Spotify > Search… opens a window to search Spotify for tracks. Type some words and press Enter, and it lists the tracks Spotify finds first, up to 20, with their artist, album and duration. Enter in the list, a double click or Add puts the selected tracks at the end of the active playlist, and the window stays open. The search field remembers your last 20 searches. A key can be bound to the command in File > Preferences > Keyboard Shortcuts.
