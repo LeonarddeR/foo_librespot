@@ -168,7 +168,7 @@ impl<C: Connector> SessionManager<C> {
 			Ok(None) => return Err(CoreError::NotLoggedIn),
 			Err(ProfileError::Unreadable(reason)) => {
 				// Deleted: the next call finds no login and logs nothing.
-				log::warn!("the stored Spotify login can't be read ({reason}); log in again");
+				tracing::warn!("the stored Spotify login can't be read ({reason}); log in again");
 				self.forget_stored()?;
 				return Err(CoreError::NotLoggedIn);
 			}
@@ -191,7 +191,7 @@ impl<C: Connector> SessionManager<C> {
 				Ok(connected.session)
 			}
 			Err(CoreError::Spotify(error)) if rejects_credentials(&error) => {
-				log::warn!("Spotify rejected the stored login: {error}");
+				tracing::warn!("Spotify rejected the stored login: {error}");
 				self.forget_stored()?;
 				Err(CoreError::NotLoggedIn)
 			}
@@ -303,7 +303,7 @@ impl<C: Connector> SessionManager<C> {
 			Ok(()) => *stored = Some(Login::of(credentials)),
 			Err(error) => {
 				*stored = None;
-				log::warn!("couldn't store the refreshed Spotify login: {error}");
+				tracing::warn!("couldn't store the refreshed Spotify login: {error}");
 			}
 		}
 	}
@@ -413,10 +413,10 @@ impl Connector for LibrespotConnector {
 		.await;
 		let account_type = session.get_user_attribute("type");
 		if account_type.is_none() {
-			log::warn!("Spotify didn't say which kind of account this is; trying anyway");
+			tracing::warn!("Spotify didn't say which kind of account this is; trying anyway");
 		}
 		if session.country().is_empty() {
-			log::warn!(
+			tracing::warn!(
 				"Spotify didn't say which country the account is in; tracks aren't ruled out by country"
 			);
 		}

@@ -19,15 +19,17 @@ librespot-core = { workspace = true }
 librespot-metadata = { workspace = true }
 librespot-oauth = { workspace = true }
 librespot-protocol = { workspace = true }
-log = { workspace = true }
 protobuf = { workspace = true }
 serde_json = { workspace = true }
 # all-meta lets the probe skip ID3 and APE tags, which MP3 episodes can start with.
 symphonia = { workspace = true, features = ["all-meta", "mp3", "ogg", "vorbis"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing = { workspace = true }
 windows-core = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
+# The spotify_dev example logs to stderr; fmt's tracing-log bridge brings librespot's `log` records.
+tracing-subscriber = { workspace = true, features = ["fmt", "tracing-log"] }

@@ -31,6 +31,7 @@ foo_librespot is a foobar2000 2.25+ x64 component, written entirely in Rust, tha
 - `foo_librespot_core` must not depend on `foxide2k` or know about foobar2000. The plugin talks to it only through `foo_librespot_core::Core`.
 - In `foo_librespot_core`, blocking reads of Spotify audio never run on a tokio worker: `fetch_track` only awaits, `FetchedTrack::open` runs on the runtime's blocking pool through `CoreRuntime::block_on_blocking` so Stop can interrupt its first slow reads, and `SpotifyTrack::read` runs on the caller's thread. `CoreRuntime::block_on` is never called from async code.
 - Spotify credentials are never logged and never written in plain text; `Profile` stores them encrypted with DPAPI.
+- Logging goes through `tracing`. librespot's `log` records reach it through `tracing-log`. The foobar2000 console is a tracing layer in `crates/foo_librespot/src/logging.rs`, which never shows trace level and redacts URLs.
 - `foo_librespot` reaches Spotify only through its `Backend` trait; its tests install a fake backend, so every service is tested through its vtables without Spotify.
 
 ## Settled design decisions

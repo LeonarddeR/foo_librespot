@@ -303,28 +303,12 @@ fn take_option(args: &mut Vec<String>, name: &str) -> Option<String> {
 	(index < args.len()).then(|| args.remove(index))
 }
 
-struct StderrLogger(log::LevelFilter);
-
-impl log::Log for StderrLogger {
-	fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-		metadata.level() <= self.0
-	}
-
-	fn log(&self, record: &log::Record<'_>) {
-		if self.enabled(record.metadata()) {
-			eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
-		}
-	}
-
-	fn flush(&self) {}
-}
-
+/// Logs to stderr from the level `SPOTIFY_DEV_LOG` names, info by default. librespot's `log`
+/// records arrive through the fmt subscriber's tracing-log bridge.
 fn init_logger() {
 	let level = std::env::var("SPOTIFY_DEV_LOG")
 		.ok()
 		.and_then(|level| level.parse().ok())
-		.unwrap_or(log::LevelFilter::Info);
-	if log::set_logger(Box::leak(Box::new(StderrLogger(level)))).is_ok() {
-		log::set_max_level(level);
-	}
+		.unwrap_or(tracing::Level::INFO);
+	tracing_subscriber::fmt().with_max_level(level).with_writer(std::io::stderr).init();
 }

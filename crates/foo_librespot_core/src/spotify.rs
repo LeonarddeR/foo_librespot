@@ -51,7 +51,7 @@ impl Core {
 		let device_id = profile.device_id()?;
 		let keys = profile.load_audio_keys().unwrap_or_else(|error| {
 			// Without them, Spotify is asked for every key again.
-			log::warn!("{error}; Spotify will be asked for every key again");
+			tracing::warn!("{error}; Spotify will be asked for every key again");
 			AudioKeys::default()
 		});
 		let sessions =
@@ -108,7 +108,7 @@ impl Core {
 			} else if result.is_ok() {
 				// Cancelled as the login was being stored: the stored login is undone.
 				if let Err(error) = sessions.logout() {
-					log::warn!("couldn't undo a cancelled Spotify login: {error}");
+					tracing::warn!("couldn't undo a cancelled Spotify login: {error}");
 				}
 			}
 		});
@@ -241,7 +241,9 @@ impl Core {
 		// The first reads, which block until data arrives, run where Stop can interrupt them.
 		match self.runtime.block_on_blocking(move || fetched.open(), is_aborting)? {
 			Err(error) if wrong_remembered_key(key_origin, &error) => {
-				log::warn!("the remembered key didn't decrypt the track ({error}); asking Spotify");
+				tracing::warn!(
+					"the remembered key didn't decrypt the track ({error}); asking Spotify"
+				);
 				self.keys.forget(&file_id);
 				let fetched = self.fetch_track(id, bitrate, is_aborting)?;
 				self.runtime.block_on_blocking(move || fetched.open(), is_aborting)?
@@ -274,7 +276,7 @@ impl Core {
 		let (profile, keys) = (Arc::clone(&self.profile), self.keys.clone());
 		self.runtime.handle().spawn_blocking(move || {
 			if let Err(error) = profile.save_audio_keys(&keys) {
-				log::warn!("couldn't save the remembered audio keys: {error}");
+				tracing::warn!("couldn't save the remembered audio keys: {error}");
 			}
 		});
 	}

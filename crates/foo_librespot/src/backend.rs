@@ -205,7 +205,7 @@ impl CoreSlot {
 fn spawn(name: &str, what: &str, work: impl FnOnce() + Send + 'static) -> bool {
 	let spawned = std::thread::Builder::new().name(format!("foo_librespot {name}")).spawn(work);
 	if let Err(error) = &spawned {
-		log::warn!("couldn't {what}: {error}");
+		tracing::warn!("couldn't {what}: {error}");
 	}
 	spawned.is_ok()
 }

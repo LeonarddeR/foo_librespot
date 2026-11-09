@@ -85,7 +85,7 @@ pub async fn fetch_track(
 		retry_rate_limited(|| AudioFile::open(session, file_id, bytes_per_second(format))).await?;
 	let controller = file.get_stream_loader_controller()?;
 	if let Some(key) = keys.get(&file_id) {
-		log::debug!("using the remembered key for {}", id.to_base62());
+		tracing::debug!("using the remembered key for {}", id.to_base62());
 		let file = AudioDecrypt::new(Some(key), file);
 		return Ok(FetchedTrack {
 			file,
@@ -103,7 +103,7 @@ pub async fn fetch_track(
 		}
 		Err(error) => match on_key_failure(format, error.kind) {
 			KeyFailure::PlayUnencrypted => {
-				log::warn!(
+				tracing::warn!(
 					"no audio key for {}, trying without decryption: {error}",
 					id.to_base62()
 				);
@@ -169,7 +169,7 @@ async fn find_alternative(session: &Session, alternatives: Vec<SpotifyUri>) -> O
 				return Some(item);
 			}
 			Ok(_) => {}
-			Err(error) => log::debug!("alternative track unavailable: {error}"),
+			Err(error) => tracing::debug!("alternative track unavailable: {error}"),
 		}
 	}
 	None
@@ -213,7 +213,7 @@ impl FetchedTrack {
 			match NormalisationData::parse(&mut file) {
 				Ok(data) => Some(data),
 				Err(error) => {
-					log::warn!("no loudness values in the Spotify header: {error}");
+					tracing::warn!("no loudness values in the Spotify header: {error}");
 					None
 				}
 			}

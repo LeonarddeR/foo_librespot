@@ -54,7 +54,7 @@ struct Startup;
 impl InitQuit for Startup {
 	fn on_init(&self) {
 		logging::init();
-		log::info!("loaded (Foxide2k {})", foxide2k::VERSION);
+		tracing::info!("loaded (Foxide2k {})", foxide2k::VERSION);
 		if let Some(hint) = errors::youtube_hint(&foxide2k::host::host().loaded_components()) {
 			foxide2k::console::print(&format!("foo_librespot: {hint}"));
 		}

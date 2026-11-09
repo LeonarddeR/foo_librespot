@@ -42,7 +42,7 @@ The cheapest wins come first.
 - [x] A switch for detailed logging
   - foo_spotify had Advanced settings to log its Spotify requests, the responses and debug messages.
   - foo_librespot always logged its own messages from info level and librespot's from warning level, so a user couldn't collect a detailed log for a bug report.
-  - A checkbox under Advanced > Tools > Spotify, off by default, now shows both from debug level (`crates/foo_librespot/src/logging.rs`, `crates/foo_librespot/src/advanced.rs`). It keeps the `log` crate.
+  - A checkbox under Advanced > Tools > Spotify, off by default, now shows both from debug level (`crates/foo_librespot/src/logging.rs`, `crates/foo_librespot/src/advanced.rs`). It logs through `tracing`; librespot's `log` records reach it through `tracing-log`.
   - Trace never shows, because librespot logs access tokens there. librespot's dumps of raw server messages are held back, and every URL in the console loses its query string and password, so Spotify's signed download links never show whole.
 
 ### Caching

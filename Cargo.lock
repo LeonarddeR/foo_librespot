@@ -436,13 +436,14 @@ dependencies = [
  "librespot-metadata",
  "librespot-oauth",
  "librespot-protocol",
- "log",
  "protobuf",
  "serde_json",
  "symphonia",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "windows-core 0.100.0",
 ]
 
@@ -2565,6 +2566,7 @@ dependencies = [
  "sharded-slab",
  "thread_local",
  "tracing-core",
+ "tracing-log",
 ]
 
 [[package]]

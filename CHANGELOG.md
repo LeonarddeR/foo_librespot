@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- For developers: foo_librespot logs through `tracing`, and a console line shows the spans it was logged in.
+
 ## [0.3.1] - 2026-11-09
 
 ### Fixed

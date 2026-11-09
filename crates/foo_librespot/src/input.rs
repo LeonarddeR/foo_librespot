@@ -51,14 +51,14 @@ fn stop_after_refused_key(code: u16) {
 	let message = refused_key_message(code);
 	let queued = main_thread::run(Box::new(move || {
 		if let Err(error) = playback::stop() {
-			log::warn!("couldn't stop playback after a refused key: {}", error.message);
+			tracing::warn!("couldn't stop playback after a refused key: {}", error.message);
 		}
 		if let Err(error) = popup::show(REFUSED_KEY_TITLE, &message, PopupIcon::Error) {
-			log::warn!("couldn't say why playback stopped: {}", error.message);
+			tracing::warn!("couldn't say why playback stopped: {}", error.message);
 		}
 	}));
 	if let Err(error) = queued {
-		log::warn!("couldn't stop playback after a refused key: {}", error.message);
+		tracing::warn!("couldn't stop playback after a refused key: {}", error.message);
 	}
 }
 

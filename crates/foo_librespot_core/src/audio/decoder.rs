@@ -178,7 +178,7 @@ impl PcmDecoder {
 				Ok(decoded) => decoded,
 				// A damaged packet is skipped, as librespot does, rather than ending the track.
 				Err(SymphoniaError::DecodeError(message)) => {
-					log::warn!("skipping a damaged audio packet: {message}");
+					tracing::warn!("skipping a damaged audio packet: {message}");
 					continue;
 				}
 				Err(error) => return Err(stream_error(error)),

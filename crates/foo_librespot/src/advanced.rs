@@ -49,6 +49,7 @@ mod tests {
 	use log::LevelFilter;
 
 	use super::{DetailedLogging, SpotifyBranch};
+	use crate::logging::console_subscriber;
 	use crate::settings::DETAILED_LOGGING_KEY;
 	use crate::testing::lock_shared_state;
 
@@ -58,6 +59,13 @@ mod tests {
 
 	fn checkbox() -> AdvconfigHandle {
 		AdvconfigHandle::new(advconfig_checkbox_service::<DetailedLogging>())
+	}
+
+	/// Logs one of our own debug messages, "detail", through the console subscriber.
+	fn log_detail() {
+		tracing::subscriber::with_default(console_subscriber(), || {
+			tracing::debug!(target: "foo_librespot::advanced", "detail");
+		});
 	}
 
 	#[test]
@@ -87,16 +95,21 @@ mod tests {
 		assert!(checkbox().set_state(true).is_ok());
 		assert_eq!(api.config_int(DETAILED_LOGGING_KEY), Some(1));
 		assert_eq!(log::max_level(), LevelFilter::Debug);
+		log_detail();
+		assert_eq!(api.console_lines(), ["foo_librespot: detail"]);
 	}
 
 	#[test]
 	fn resetting_the_box_turns_detailed_logging_off() {
 		let _shared = lock_shared_state();
-		FakeApi::new().install();
+		let api = FakeApi::new();
+		api.install();
 		let checkbox = checkbox();
 		checkbox.set_state(true).unwrap();
 		checkbox.reset();
 		assert!(!checkbox.state());
 		assert_eq!(log::max_level(), LevelFilter::Info);
+		log_detail();
+		assert!(api.console_lines().is_empty(), "{:?}", api.console_lines());
 	}
 }

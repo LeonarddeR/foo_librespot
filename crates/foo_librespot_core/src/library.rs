@@ -799,15 +799,15 @@ where
 		match answer {
 			Ok(answer) if answer.possible => {
 				let (added, removed) = answer.changes();
-				log::debug!(
+				tracing::debug!(
 					"read Liked Songs changes since the last read: {} saved, {} taken out",
 					added.len(),
 					removed.len()
 				);
 				return Ok(LikedRead::Changes { added, removed, token: answer.token });
 			}
-			Ok(_) => log::debug!("Spotify can't list what changed in Liked Songs"),
-			Err(error) => log::debug!("couldn't ask what changed in Liked Songs: {error}"),
+			Ok(_) => tracing::debug!("Spotify can't list what changed in Liked Songs"),
+			Err(error) => tracing::debug!("couldn't ask what changed in Liked Songs: {error}"),
 		}
 	}
 	read_every_page(page).await
@@ -843,7 +843,7 @@ where
 		}
 		from = answer.next;
 	}
-	log::debug!("read Liked Songs whole: {} songs", items.len());
+	tracing::debug!("read Liked Songs whole: {} songs", items.len());
 	Ok(LikedRead::Whole { items, token })
 }
 
@@ -1125,7 +1125,7 @@ impl LibraryCache {
 		let contents = match result {
 			Ok(contents) => contents,
 			Err(error) => {
-				log::warn!("couldn't read a Spotify playlist after changing it: {error}");
+				tracing::warn!("couldn't read a Spotify playlist after changing it: {error}");
 				inner.started = None;
 				return Ok(());
 			}
@@ -1241,7 +1241,7 @@ impl Fetch {
 			while let Some((id, stamp, result)) = reads.next().await {
 				match result {
 					Ok(contents) => self.cache.lock().store_rows(id, contents, stamp),
-					Err(error) => log::warn!("couldn't read a Spotify playlist: {error}"),
+					Err(error) => tracing::warn!("couldn't read a Spotify playlist: {error}"),
 				}
 			}
 		};
@@ -1253,7 +1253,7 @@ impl Fetch {
 					None
 				}
 				Err(error) => {
-					log::warn!("couldn't read Liked Songs: {error}");
+					tracing::warn!("couldn't read Liked Songs: {error}");
 					Some(error.to_string())
 				}
 			}
@@ -1293,9 +1293,9 @@ impl Fetch {
 			inner.running = None;
 			let liked_known = inner.library.as_ref().is_some_and(|library| library.liked.is_some());
 			if inner.is_complete() {
-				log::warn!("couldn't refresh the Spotify library: {error}");
+				tracing::warn!("couldn't refresh the Spotify library: {error}");
 			} else if inner.listed && liked_known {
-				log::warn!("couldn't read every Spotify playlist: {error}");
+				tracing::warn!("couldn't read every Spotify playlist: {error}");
 				if let Some((library, _)) = inner.library_and_floor() {
 					library.settle_unread();
 				}
@@ -1428,7 +1428,7 @@ impl LibrarySource for LibrespotLibrary {
 		let message =
 			SelectedListContent::parse_from_bytes(&bytes).map_err(librespot_core::Error::from)?;
 		if message.contents.truncated() {
-			log::warn!("Spotify sent only part of playlist {id}");
+			tracing::warn!("Spotify sent only part of playlist {id}");
 		}
 		Ok(playlist_contents(&message))
 	}

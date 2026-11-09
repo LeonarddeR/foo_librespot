@@ -16,11 +16,13 @@ pub fn fallback_image_url(file_id: &FileId) -> String {
 
 /// Downloads one cover image, as JPEG bytes.
 pub async fn fetch_cover(session: &Session, cover: &Cover) -> Result<Vec<u8>, CoreError> {
-	log::debug!("downloading cover {}", cover.file_id.to_base16());
+	tracing::debug!("downloading cover {}", cover.file_id.to_base16());
 	match session.spclient().get_image(&cover.file_id).await {
 		Ok(bytes) => Ok(bytes.to_vec()),
 		Err(error) => {
-			log::debug!("cover through the image-url attribute failed ({error}); trying i.scdn.co");
+			tracing::debug!(
+				"cover through the image-url attribute failed ({error}); trying i.scdn.co"
+			);
 			let url = fallback_image_url(&cover.file_id);
 			Ok(session.spclient().request_url(&url).await?.to_vec())
 		}

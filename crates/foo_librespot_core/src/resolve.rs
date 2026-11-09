@@ -585,7 +585,7 @@ where
 	for _ in 1..RATE_LIMIT_TRIES {
 		match request().await {
 			Err(error) if error.kind == ErrorKind::ResourceExhausted => {
-				log::debug!("rate limited, trying again in {wait:?}: {error}");
+				tracing::debug!("rate limited, trying again in {wait:?}: {error}");
 				tokio::time::sleep(wait).await;
 				wait *= 2;
 			}
@@ -608,7 +608,7 @@ pub(crate) async fn liked_song_uris(session: &Session) -> Result<Vec<SpotifyUri>
 	let pages = context.pages.iter().map(Page::of).collect();
 	let tracks = context_tracks(pages, |url| context_page(session, url)).await?;
 	if tracks.cut_off {
-		log::warn!(
+		tracing::warn!(
 			"stopped reading Liked Songs after {MAX_CONTEXT_PAGES} pages; the tracks after them weren't added"
 		);
 	}
@@ -920,7 +920,7 @@ impl LibrespotMetadata {
 		let response = match response {
 			Ok(response) => response,
 			Err(error) => {
-				log::debug!("no album details: {error}");
+				tracing::debug!("no album details: {error}");
 				return HashMap::new();
 			}
 		};
