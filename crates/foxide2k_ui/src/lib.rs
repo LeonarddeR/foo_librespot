@@ -96,6 +96,10 @@ pub mod notify {
 	pub const LBN_DBLCLK: u16 = win::LBN_DBLCLK as u16;
 	/// Sent through `WM_NOTIFY` by a list view, among other controls, when it is double clicked.
 	pub const NM_DBLCLK: i32 = win::NM_DBLCLK.cast_signed();
+	/// Sent through `WM_NOTIFY` by a list view, among other controls, when it is clicked.
+	pub const NM_CLICK: i32 = win::NM_CLICK.cast_signed();
+	/// Sent through `WM_NOTIFY` by a list view, among other controls, while it draws itself.
+	pub const NM_CUSTOMDRAW: i32 = win::NM_CUSTOMDRAW.cast_signed();
 }
 
 #[cfg(test)]
@@ -130,5 +134,6 @@ mod tests {
 		assert_eq!((style::CBS_DROPDOWN, style::CBS_AUTOHSCROLL), (2, 0x0040));
 		assert_eq!(style::REPORT_LIST, 0x0001_0000 | 0x0080_0000 | 8 | 1);
 		assert_eq!(notify::NM_DBLCLK, -3);
+		assert_eq!((notify::NM_CLICK, notify::NM_CUSTOMDRAW), (-2, -12));
 	}
 }

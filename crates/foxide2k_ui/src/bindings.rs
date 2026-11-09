@@ -1465,6 +1465,8 @@ pub mod Windows {
 			pub idFrom: usize,
 			pub code: u32,
 		}
+		pub const NM_CLICK: u32 = 4294967294;
+		pub const NM_CUSTOMDRAW: u32 = 4294967284;
 		pub const NM_DBLCLK: u32 = 4294967293;
 		pub const OBJID_CLIENT: i32 = -4;
 		pub const Off: LiveSetting = 0;

@@ -111,6 +111,8 @@
     LVS_SHOWSELALWAYS
     LVS_SINGLESEL
     MSG
+    NM_CLICK
+    NM_CUSTOMDRAW
     NM_DBLCLK
     NMHDR
     NotifyWinEvent

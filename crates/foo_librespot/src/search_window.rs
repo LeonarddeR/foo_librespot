@@ -179,13 +179,18 @@ fn lock(inbox: &Mutex<Inbox>) -> MutexGuard<'_, Inbox> {
 }
 
 /// Appends the loaded `items` to tab `index`, named `name`, and answers what the status line
-/// says about it. A load that gave no tracks appends nothing.
+/// says about it. A load that gave no tracks appends nothing. Nor does a tab at `index` that
+/// isn't named `name` any more: the tab was closed or moved during the load, and another took
+/// its place. Two tabs with the same name can still be taken for each other.
 fn append_loaded(index: usize, name: &str, items: &HandleList<'_>) -> String {
 	let count = match items.len() {
 		Ok(0) => return NOTHING_ADDED.to_owned(),
 		Ok(count) => count,
 		Err(error) => return couldnt_add(&error),
 	};
+	if playlist::name(index).ok().as_deref() != Some(name) {
+		return format!("Couldn't add the tracks: {name} was closed or moved.");
+	}
 	match playlist::append(index, items) {
 		Ok(()) => format!("Added {count} {} to {name}.", plural(count, "track", "tracks")),
 		// The tab was locked while the tracks loaded.
@@ -263,13 +268,13 @@ impl SearchWindow {
 			.map(|track| item_path(track.id))
 			.collect();
 		if locations.is_empty() {
-			self.show_status(dialog, "Select the tracks to add.".to_owned());
+			self.tell_status(dialog, "Select the tracks to add.".to_owned());
 			return;
 		}
 		match self.load(dialog, &locations) {
 			Ok(None) => {}
-			Ok(Some(refusal)) => self.show_status(dialog, refusal),
-			Err(error) => self.show_status(dialog, couldnt_add(&error)),
+			Ok(Some(refusal)) => self.tell_status(dialog, refusal),
+			Err(error) => self.tell_status(dialog, couldnt_add(&error)),
 		}
 	}
 
@@ -341,6 +346,13 @@ impl SearchWindow {
 			line.show(dialog, text);
 		}
 	}
+
+	/// Shows `text`, what came of an add, on the status line, and announces it every time.
+	fn tell_status(&mut self, dialog: Dialog, text: String) {
+		if let Some(line) = &mut self.status {
+			line.tell(dialog, text);
+		}
+	}
 }
 
 impl DialogHandler for SearchWindow {
@@ -400,7 +412,7 @@ impl DialogHandler for SearchWindow {
 					self.show_answer(*dialog, answer);
 				}
 				Arrival::Answer(..) => {}
-				Arrival::Added(status) => self.show_status(*dialog, status),
+				Arrival::Added(status) => self.tell_status(*dialog, status),
 			}
 		}
 	}
@@ -426,7 +438,7 @@ mod tests {
 	use foxide2k::abi::config_store;
 	use foxide2k::testing::FakeApi;
 	use foxide2k_ui::host::{Dialog, destroy};
-	use foxide2k_ui::notify::{BN_CLICKED, IDCANCEL, IDOK, NM_DBLCLK};
+	use foxide2k_ui::notify::{BN_CLICKED, IDCANCEL, IDOK, NM_CLICK, NM_CUSTOMDRAW, NM_DBLCLK};
 	use foxide2k_ui::style::{
 		BS_DEFPUSHBUTTON, BS_PUSHBUTTON, CBS_AUTOHSCROLL, CBS_DROPDOWN, REPORT_LIST, WS_TABSTOP,
 		WS_VSCROLL,
@@ -440,6 +452,7 @@ mod tests {
 	};
 	use crate::login::controller;
 	use crate::search_history;
+	use crate::status_line::announced;
 	use crate::testing::{
 		FakeBackend, cancel_login_when_started, confirm_login_when_started, episode_id,
 		episode_info, installed_api_and_backend, installed_prompt, refresh, track_info, wait_until,
@@ -938,9 +951,6 @@ mod tests {
 
 	#[test]
 	fn other_notifications_add_nothing() {
-		// A list view's single click, and its custom draw.
-		const NM_CLICK: i32 = -2;
-		const NM_CUSTOMDRAW: i32 = -12;
 		let (api, _, dialog) = listed();
 		active_tab(api, "Default");
 		send_notify(&dialog, LIST, NM_CLICK);
@@ -1011,17 +1021,45 @@ mod tests {
 	}
 
 	#[test]
-	fn a_playlist_closed_during_the_load_says_why_nothing_was_added() {
+	fn a_playlist_closed_during_the_load_gets_nothing_and_neither_does_the_next() {
 		let (api, _, dialog) = listed();
-		let index = active_tab(api, "Default");
+		let default = active_tab(api, "Default");
+		api.add_tab("Other");
 		send_command(&dialog, IDOK, BN_CLICKED);
-		api.remove_tab(index);
+		// Closing Default makes Other the tab at Default's index.
+		api.remove_tab(default);
 		finish(api, 0, &[path(0), path(2)]);
-		let status = dialog.text(STATUS);
-		assert!(
-			status.starts_with("Couldn't add the tracks: ") && status.ends_with('.'),
-			"{status}"
-		);
+		let tabs = api.tabs();
+		assert_eq!(tabs[default].name, "Other");
+		assert!(tabs[default].paths.is_empty());
+		assert_eq!(dialog.text(STATUS), "Couldn't add the tracks: Default was closed or moved.");
+		destroy(dialog);
+	}
+
+	#[test]
+	fn the_same_result_of_two_adds_is_announced_twice() {
+		let (api, _, dialog) = listed();
+		active_tab(api, "Default");
+		dialog.report_select_only(LIST, 0);
+		send_command(&dialog, IDOK, BN_CLICKED);
+		finish(api, 0, &[path(0)]);
+		send_command(&dialog, IDOK, BN_CLICKED);
+		finish(api, 1, &[path(0)]);
+		// The same track added twice is there twice, as pasting it twice does.
+		assert_eq!(api.tabs()[0].paths, [path(0), path(0)]);
+		let added = announced().into_iter().filter(|text| text == "Added 1 track to Default.");
+		assert_eq!(added.count(), 2);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn asking_twice_what_to_select_is_announced_twice() {
+		let (api, _, dialog) = opened(three());
+		active_tab(api, "Default");
+		dialog.focus(LIST);
+		send_command(&dialog, IDOK, BN_CLICKED);
+		send_command(&dialog, IDOK, BN_CLICKED);
+		assert_eq!(announced(), ["Select the tracks to add.", "Select the tracks to add."]);
 		destroy(dialog);
 	}
 
