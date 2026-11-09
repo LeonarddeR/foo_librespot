@@ -24,7 +24,7 @@ use foxide2k::testing::{ContextMenuHandle, FakeApi, FakeFields, FakeHandleList};
 use foxide2k_ui::host::{Dialog, refresh_poster};
 use foxide2k_ui::testing::pump_messages;
 
-use crate::backend::{Backend, LoginTask, OnCode, OnDone, OnRelated, PcmTrack};
+use crate::backend::{Backend, LoginTask, OnCode, OnDone, OnRelated, OnSearched, PcmTrack};
 use crate::playlist_save::Planned;
 
 pub const CHIRP: &[u8] = include_bytes!("../../foo_librespot_core/tests/fixtures/chirp.ogg");
@@ -245,6 +245,14 @@ struct State {
 	related_result: Mutex<Option<RelatedResult>>,
 	/// How many lookups have ended and called back.
 	related_answered: AtomicUsize,
+	/// The words of each search, in order.
+	searches: Mutex<Vec<String>>,
+	/// How many searches have ended and called back.
+	searches_answered: AtomicUsize,
+	/// While set, searches wait for [`FakeBackend::answer_search`].
+	hold_searches: AtomicBool,
+	/// The `on_done` of each held search, in order, until it is answered.
+	held_searches: Mutex<Vec<Option<OnSearched>>>,
 }
 
 /// What a change of a target ends with.
@@ -415,6 +423,37 @@ impl FakeBackend {
 	/// there.
 	pub fn related_answered(&self) -> usize {
 		self.0.related_answered.load(Ordering::SeqCst)
+	}
+
+	/// The words of each search so far, in order.
+	pub fn searches(&self) -> Vec<String> {
+		self.0.searches.lock().unwrap_or_else(PoisonError::into_inner).clone()
+	}
+
+	/// How many searches have ended and called back, so what they queued for the main thread is
+	/// there.
+	pub fn searches_answered(&self) -> usize {
+		self.0.searches_answered.load(Ordering::SeqCst)
+	}
+
+	/// From now on, searches answer nothing until [`Self::answer_search`] answers them.
+	pub fn hold_searches(&self) {
+		self.0.hold_searches.store(true, Ordering::SeqCst);
+	}
+
+	/// Answers the held search `index`, counting from 0 in the order they were asked, with
+	/// `result`, on the calling thread.
+	pub fn answer_search(&self, index: usize, result: Result<Resolved, CoreError>) {
+		let on_done = self
+			.0
+			.held_searches
+			.lock()
+			.unwrap_or_else(PoisonError::into_inner)
+			.get_mut(index)
+			.and_then(Option::take);
+		let on_done = on_done.unwrap_or_else(|| panic!("held search {index} isn't waiting"));
+		on_done(result);
+		self.0.searches_answered.fetch_add(1, Ordering::SeqCst);
 	}
 
 	fn library_state(&self) -> LibraryState {
@@ -634,6 +673,21 @@ impl Backend for FakeBackend {
 			});
 			on_done(result);
 			fake.0.related_answered.fetch_add(1, Ordering::SeqCst);
+		});
+	}
+
+	/// Records the search. Unless searches are held, resolves the search link and runs `on_done`
+	/// on a thread of its own, and counts it as answered.
+	fn search(&self, words: String, on_done: OnSearched) {
+		self.0.searches.lock().unwrap_or_else(PoisonError::into_inner).push(words.clone());
+		if self.0.hold_searches.load(Ordering::SeqCst) {
+			self.0.held_searches.lock().unwrap_or_else(PoisonError::into_inner).push(Some(on_done));
+			return;
+		}
+		let fake = self.clone();
+		std::thread::spawn(move || {
+			on_done(fake.resolve(&Link::Search(words), ArtistTracks::Popular, &|| false));
+			fake.0.searches_answered.fetch_add(1, Ordering::SeqCst);
 		});
 	}
 }
@@ -907,9 +961,98 @@ mod tests {
 
 	use foo_librespot_core::CoreError;
 	use foo_librespot_core::library::{Change, Edit, Target};
+	use foo_librespot_core::link::ItemId;
+	use foo_librespot_core::resolve::Resolved;
 
-	use super::{FakeBackend, getty_track, shared_playlist};
+	use super::{
+		FakeBackend, getty_track, other_track, shared_playlist, track_id, track_info, wait_until,
+	};
 	use crate::backend::Backend;
+
+	/// What a search for "getty" finds: "In Christ Alone" and "Christ Our Hope In Life And Death".
+	fn two_tracks() -> Resolved {
+		let ItemId::Track(other) = other_track() else {
+			unreachable!("the other track is a track")
+		};
+		Resolved {
+			name: Some("getty".to_owned()),
+			tracks: vec![
+				Arc::new(track_info(track_id(), "In Christ Alone")),
+				Arc::new(track_info(other, "Christ Our Hope In Life And Death")),
+			],
+			skipped: Vec::new(),
+			duplicates: 0,
+		}
+	}
+
+	/// Searches `fake` for `words` and waits for the answer and the thread it came on.
+	fn searched(
+		fake: &FakeBackend,
+		words: &str,
+	) -> (Result<Resolved, CoreError>, std::thread::ThreadId) {
+		let (done, answer) = mpsc::channel();
+		fake.search(
+			words.to_owned(),
+			Box::new(move |result| {
+				let _ = done.send((result, std::thread::current().id()));
+			}),
+		);
+		answer.recv_timeout(Duration::from_secs(5)).unwrap()
+	}
+
+	#[test]
+	fn the_fake_answers_a_search_with_what_resolve_gives() {
+		let fake = FakeBackend::default();
+		fake.resolve_to(two_tracks());
+		let (result, thread) = searched(&fake, "getty");
+		let found: Vec<ItemId> = result.unwrap().tracks.iter().map(|track| track.id).collect();
+		assert_eq!(found, [getty_track(), other_track()]);
+		assert_ne!(thread, std::thread::current().id());
+		assert_eq!(fake.searches(), ["getty"]);
+		wait_until(|| fake.searches_answered() == 1);
+	}
+
+	#[test]
+	fn a_search_while_logged_out_answers_not_logged_in() {
+		let fake = FakeBackend::default();
+		fake.resolve_to(two_tracks());
+		fake.require_login();
+		let (result, _) = searched(&fake, "getty");
+		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
+	}
+
+	#[test]
+	fn held_searches_answer_when_told_in_any_order() {
+		let fake = FakeBackend::default();
+		fake.resolve_to(two_tracks());
+		fake.hold_searches();
+		let (done, answers) = mpsc::channel();
+		for words in ["getty", "in christ alone"] {
+			let done = done.clone();
+			fake.search(
+				words.to_owned(),
+				Box::new(move |result| {
+					let _ = done.send((words, result, std::thread::current().id()));
+				}),
+			);
+		}
+		assert!(answers.recv_timeout(Duration::from_millis(200)).is_err());
+		assert_eq!(fake.searches_answered(), 0);
+
+		fake.answer_search(1, Ok(two_tracks()));
+		let (words, result, thread) = answers.try_recv().unwrap();
+		assert_eq!(words, "in christ alone");
+		assert_eq!(result.unwrap().tracks.len(), 2);
+		assert_eq!(thread, std::thread::current().id());
+		assert!(answers.try_recv().is_err());
+
+		fake.answer_search(0, Err(CoreError::NotLoggedIn));
+		let (words, result, _) = answers.try_recv().unwrap();
+		assert_eq!(words, "getty");
+		assert!(matches!(result, Err(CoreError::NotLoggedIn)), "{result:?}");
+		assert_eq!(fake.searches(), ["getty", "in christ alone"]);
+		assert_eq!(fake.searches_answered(), 2);
+	}
 
 	/// The fake changes a playlist the way Spotify's backend does: only a change that lands tells
 	/// the library's listeners, and they have heard before the change ends.

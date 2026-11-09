@@ -90,6 +90,13 @@ pub const fn plural(count: usize, one: &'static str, many: &'static str) -> &'st
 	if count == 1 { one } else { many }
 }
 
+/// Prints each skipped item and why to the console.
+pub fn print_skipped(skipped: &[Skipped]) {
+	for item in skipped {
+		console::print(&format!("foo_librespot: skipped {}: {}", item.uri, item.reason));
+	}
+}
+
 /// The popup after an import that skipped items: what was added, then up to [`MAX_LISTED`]
 /// of the skipped items with the reason for each.
 fn skipped_message(added: usize, source: &str, skipped: &[Skipped]) -> String {
@@ -151,9 +158,7 @@ impl PlaylistLoader for SpotifyLoader {
 			let path = track.external_url.clone().unwrap_or_else(|| item_path(track.id));
 			callback.add_entry(&path, &mut info)?;
 		}
-		for skipped in &resolved.skipped {
-			console::print(&format!("foo_librespot: skipped {}: {}", skipped.uri, skipped.reason));
-		}
+		print_skipped(&resolved.skipped);
 		let source = resolved.name.as_deref().unwrap_or("the link");
 		let added = resolved.tracks.len();
 		console::print(&format!(

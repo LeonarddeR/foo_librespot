@@ -26,6 +26,9 @@ pub type OnCode = Box<dyn FnOnce(DeviceCode) + Send>;
 pub type OnDone = Box<dyn FnOnce(Result<String, CoreError>) + Send>;
 /// Gets what a lookup found, or why it failed.
 pub type OnRelated = Box<dyn FnOnce(Result<Found, CoreError>) + Send>;
+/// Gets what a search found, or why it failed.
+#[cfg_attr(not(test), expect(dead_code, reason = "no search window searches yet"))]
+pub type OnSearched = Box<dyn FnOnce(Result<Resolved, CoreError>) + Send>;
 
 /// Everything the services need from Spotify. Every call that takes `is_aborting` blocks and
 /// returns [`CoreError::Aborted`] soon after it turns true.
@@ -86,6 +89,12 @@ pub trait Backend: Send + Sync {
 	/// Spotify's core to start when it doesn't run yet; a lookup still running when foobar2000
 	/// quits is dropped unreported.
 	fn related(&self, item: ItemId, what: Related, on_done: OnRelated);
+	/// Starts searching Spotify for `words` and returns at once. `on_done` gets what the search
+	/// link `spotify:search:<words>` resolves to, on another thread, which waits for Spotify's
+	/// core to start when it doesn't run yet; a search still running when foobar2000 quits is
+	/// dropped unreported.
+	#[cfg_attr(not(test), expect(dead_code, reason = "no search window searches yet"))]
+	fn search(&self, words: String, on_done: OnSearched);
 }
 
 /// A login running in the background.
@@ -338,6 +347,22 @@ impl Backend for CoreBackend {
 			}
 		});
 	}
+
+	/// Searches on a thread of its own, which starts the core when it doesn't run yet. Once the
+	/// core is shut down, the search stops and `on_done` isn't called. A newer search doesn't stop
+	/// an older one; whoever asked drops the older answer.
+	fn search(&self, words: String, on_done: OnSearched) {
+		let slot = self.slot;
+		spawn("search", "start a Spotify search", move || {
+			let shut_down = || slot.is_shut_down();
+			let result = slot.core().and_then(|core| {
+				core.resolve(&Link::Search(words), ArtistTracks::Popular, &shut_down)
+			});
+			if !shut_down() {
+				on_done(result);
+			}
+		});
+	}
 }
 
 static BACKEND: OnceLock<Box<dyn Backend>> = OnceLock::new();
@@ -475,6 +500,43 @@ mod tests {
 		backend.related(
 			ItemId::Track(track_id()),
 			Related::Radio,
+			Box::new(move |result| {
+				let _ = done.send(result);
+			}),
+		);
+		wait_until(|| matches!(QUITTING.core.now(), Phase::Starting));
+		QUITTING.core.shutdown(Duration::ZERO, Core::shutdown);
+		assert!(result.recv_timeout(Duration::from_secs(2)).is_err());
+	}
+
+	#[test]
+	fn a_search_before_the_core_starts_waits_for_it_on_a_search_thread() {
+		static SLOW: CoreSlot = CoreSlot::new(slow_start);
+		let backend = CoreBackend { slot: &SLOW };
+		let (done, result) = mpsc::channel();
+		let asked = Instant::now();
+		backend.search(
+			"getty".to_owned(),
+			Box::new(move |result| {
+				let _ = done.send((result, std::thread::current().name().map(str::to_owned)));
+			}),
+		);
+		assert!(asked.elapsed() < Duration::from_millis(250), "{:?}", asked.elapsed());
+		let (result, thread) = result.recv_timeout(Duration::from_secs(5)).unwrap();
+		assert!(
+			matches!(&result, Err(CoreError::Unavailable(reason)) if reason == "the profile folder is busy"),
+			"{result:?}"
+		);
+		assert_eq!(thread.as_deref(), Some("foo_librespot search"));
+	}
+
+	#[test]
+	fn a_search_that_ends_after_shutdown_reports_nothing() {
+		static QUITTING: CoreSlot = CoreSlot::new(slow_start);
+		let backend = CoreBackend { slot: &QUITTING };
+		let (done, result) = mpsc::channel();
+		backend.search(
+			"getty".to_owned(),
 			Box::new(move |result| {
 				let _ = done.send(result);
 			}),
