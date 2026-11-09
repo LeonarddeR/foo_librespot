@@ -152,7 +152,6 @@ impl<H> Drop for Single<H> {
 
 #[cfg(test)]
 mod tests {
-	use foxide2k::popup::PopupIcon;
 	use foxide2k_ui::host::{Dialog, DialogHandler, destroy};
 	use foxide2k_ui::notify::NM_DBLCLK;
 	use foxide2k_ui::style::{WS_CAPTION, WS_POPUP};
@@ -160,7 +159,7 @@ mod tests {
 	use foxide2k_ui::testing::{hidden_window, pump_messages, send_close, send_notify};
 
 	use super::{SingleWindow, brought_up};
-	use crate::testing::installed_api;
+	use crate::testing::{assert_open_failure_reported, installed_api, main_window_gone};
 
 	fn template() -> DialogTemplate {
 		DialogTemplate {
@@ -264,25 +263,11 @@ mod tests {
 	#[test]
 	fn a_window_that_cant_open_says_why_in_the_console_and_an_error_popup() {
 		let api = installed_api();
-		let gone = hidden_window();
-		destroy(Dialog::from_hwnd(gone));
-		api.set_main_window(gone);
+		main_window_gone(api);
 		ONE.show_fresh("can't open the window", "Can't open it");
 		assert!(ONE.current().is_none());
 		assert_eq!(brought_up(), 0);
-		let popups = api.popups();
-		assert_eq!(popups.len(), 1, "{popups:?}");
-		let (title, message, icon) = &popups[0];
-		assert_eq!(title, "Can't open it");
-		assert!(message.starts_with("A window\n\ncan't create a dialog: "), "{message}");
-		assert_eq!(*icon, PopupIcon::Error);
-		let console = api.console_lines();
-		assert!(
-			console.iter().any(|line| {
-				line.starts_with("foo_librespot: can't open the window: can't create a dialog: ")
-			}),
-			"{console:?}"
-		);
+		assert_open_failure_reported(api, "Can't open it", "A window", "can't open the window");
 	}
 
 	#[test]

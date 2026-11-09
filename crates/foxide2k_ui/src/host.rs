@@ -77,7 +77,7 @@ impl Dialog {
 		self.0
 	}
 
-	/// The dialog behind the handle of a dialog this crate made, passed around as a plain `isize`.
+	/// Wraps the handle of a dialog this crate made, passed around as a plain `isize`.
 	pub const fn from_hwnd(hwnd: isize) -> Self {
 		Self(hwnd)
 	}
@@ -781,10 +781,10 @@ mod tests {
 	use crate::bindings::Windows::Win32::{
 		BN_CLICKED, BS_AUTOCHECKBOX, CB_GETEDITSEL, CB_SETEDITSEL, CBS_AUTOHSCROLL, CBS_DROPDOWN,
 		CBS_DROPDOWNLIST, DS_CONTROL, DS_MODALFRAME, ES_MULTILINE, ES_READONLY, GetClientRect,
-		GetSystemMetrics, GetWindowTextW, HWND, LBS_NOTIFY, LPARAM, LVIS_SELECTED, LVITEMW,
-		LVM_GETCOLUMNWIDTH, LVM_GETCOUNTPERPAGE, LVM_GETTOPINDEX, LVM_SETITEMSTATE, RECT,
-		SM_CXVSCROLL, SendMessageW, WM_CLOSE, WM_COMMAND, WPARAM, WS_BORDER, WS_CAPTION, WS_CHILD,
-		WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
+		GetSystemMetrics, GetWindowTextW, HWND, LBS_NOTIFY, LPARAM, LVIS_SELECTED,
+		LVM_GETCOLUMNWIDTH, LVM_GETCOUNTPERPAGE, LVM_GETTOPINDEX, RECT, SM_CXVSCROLL, SendMessageW,
+		WM_CLOSE, WM_COMMAND, WPARAM, WS_BORDER, WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU,
+		WS_TABSTOP, WS_VSCROLL,
 	};
 	use crate::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
 	use crate::testing::{hidden_window, pump_messages, send_notify, wants_all_keys};
@@ -1137,8 +1137,7 @@ mod tests {
 		assert_eq!(dialog.report_selected(LIST), [1]);
 		// Control+click adds row 0 to the selection.
 		let selected = LVIS_SELECTED.cast_unsigned();
-		let row = LVITEMW { state: selected, stateMask: selected, ..LVITEMW::default() };
-		dialog.send(LIST, LVM_SETITEMSTATE, 0, (&raw const row) as isize);
+		dialog.set_row_state(LIST, 0, selected, selected);
 		assert_eq!(dialog.report_selected(LIST), [0, 1]);
 		dialog.report_select_only(LIST, 0);
 		assert_eq!(dialog.report_selected(LIST), [0]);

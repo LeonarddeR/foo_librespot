@@ -21,11 +21,11 @@ use crate::cxx::{HostException, try_host};
 use crate::guid::Guid;
 use crate::metadb::HandleList;
 use crate::service::{ServiceImpl, ServiceObject, ServicePtr};
-use crate::strings::bytes_of;
+use crate::strings::{bytes_of, set_string};
 use crate::testing::FakeHandleList;
 
 /// One playlist tab of the fake manager.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FakeTab {
 	pub name: String,
 	pub paths: Vec<String>,
@@ -38,7 +38,7 @@ pub struct FakeTab {
 
 impl FakeTab {
 	fn new(name: String) -> Self {
-		Self { name, paths: Vec::new(), selected: 0, properties: Vec::new(), locked: false }
+		Self { name, ..Self::default() }
 	}
 }
 
@@ -207,7 +207,8 @@ unsafe extern "C-unwind" fn manager_get_name(
 	else {
 		return false;
 	};
-	unsafe { ((*(*out).vtbl).set_string)(out, name.as_ptr().cast(), name.len()) };
+	// The caller's string takes any text.
+	let _ = unsafe { set_string(out, &name) };
 	true
 }
 

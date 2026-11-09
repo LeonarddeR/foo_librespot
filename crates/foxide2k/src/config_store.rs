@@ -1,36 +1,19 @@
 //! foobar2000's settings store, for values a component keeps between sessions.
 
-use std::ffi::{CStr, c_char};
+use std::ffi::CStr;
 
 use crate::abi::config_store::{ConfigStoreVtbl, IID};
-use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
-use crate::abi::string::{self, StringVtbl};
+use crate::abi::service::ServiceBase;
+use crate::abi::string::StringVtbl;
 use crate::cxx::try_host;
 use crate::error::Result;
-use crate::guid::Guid;
 use crate::host::host;
-use crate::service::{ByValueServicePtr, ServiceImpl, ServicePtr, Singleton};
+use crate::service::{ByValueServicePtr, ServicePtr};
 use crate::strings::c_string;
 
 fn store() -> Result<ServicePtr> {
 	host().require(&IID, "configStore")
 }
-
-/// The `fb2k::string` holding "", which [`get_string`] passes as the default.
-struct EmptyString;
-
-unsafe impl ServiceImpl for EmptyString {
-	type Vtbl = StringVtbl;
-	const IIDS: &'static [Guid] = &[string::IID];
-	const VTBL: &'static StringVtbl =
-		&StringVtbl { base: ServiceBaseVtbl::new::<Self>(), c_str: empty_c_str };
-}
-
-unsafe extern "C-unwind" fn empty_c_str(_this: *mut ServiceBase) -> *const c_char {
-	c"".as_ptr()
-}
-
-static EMPTY: Singleton<EmptyString> = Singleton::new(EmptyString);
 
 /// The integer stored under `name`, or `default` when there is none, no host, or the host
 /// fails.
@@ -62,9 +45,9 @@ pub fn get_string(name: &str) -> Option<String> {
 	let store = store().ok()?;
 	let name = c_string(name, "a setting name").ok()?;
 	let raw = store.as_raw();
-	// The by-value default: a temporary holding one reference, which the callee releases.
-	// Releasing the singleton does nothing, so a throw can't leak or free it whoever releases it.
-	let mut default = EMPTY.service().into_raw();
+	// The by-value default: a null temporary, as the SDK's own `getConfigString(name, nullptr)`
+	// passes, so nothing stored answers null and there is nothing to release, also after a throw.
+	let mut default: *mut ServiceBase = std::ptr::null_mut();
 	let mut answer: *mut ServiceBase = std::ptr::null_mut();
 	let answer_slot = &raw mut answer;
 	try_host(|| unsafe {
@@ -81,14 +64,15 @@ pub fn get_string(name: &str) -> Option<String> {
 	// threw built none for us to release.
 	let answer = unsafe { ServicePtr::from_raw_owned(answer) }?;
 	let raw = answer.as_raw();
-	let text = try_host(|| unsafe {
+	try_host(|| unsafe {
 		let vtbl = &*(*raw).vtbl.cast::<StringVtbl>();
 		let text = (vtbl.c_str)(raw);
 		// The text belongs to `answer`, which is alive until it is copied.
 		(!text.is_null()).then(|| CStr::from_ptr(text).to_string_lossy().into_owned())
 	})
-	.ok()??;
-	Some(text).filter(|text| !text.is_empty())
+	.ok()
+	.flatten()
+	.filter(|text| !text.is_empty())
 }
 
 /// Stores `value` under `name`.

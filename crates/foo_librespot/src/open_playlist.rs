@@ -130,7 +130,7 @@ mod tests {
 		MainMenuCommand, MainMenuPopup, mainmenu_command_service, mainmenu_popup_service,
 	};
 	use foxide2k::testing::{FakeApi, MainMenuHandle};
-	use foxide2k_ui::host::{Dialog, destroy};
+	use foxide2k_ui::host::destroy;
 	use foxide2k_ui::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
 	use foxide2k_ui::template::ControlClass;
 	use foxide2k_ui::testing::{hidden_window, pump_messages, send_close, send_command};
@@ -139,8 +139,9 @@ mod tests {
 	use crate::login::controller;
 	use crate::tabs::TAB_PROPERTY;
 	use crate::testing::{
-		GETTY_TRACK, confirm_login_when_started, getty_favourites, installed_api,
-		installed_backend, installed_prompt, library_with, refresh, sunday_set,
+		GETTY_TRACK, assert_open_failure_reported, confirm_login_when_started, getty_favourites,
+		installed_api, installed_backend, installed_prompt, library_with, main_window_gone,
+		refresh, sunday_set,
 	};
 	use crate::window::brought_up;
 	use foxide2k::popup::PopupIcon;
@@ -188,27 +189,15 @@ mod tests {
 	#[test]
 	fn a_window_that_cant_open_is_reported_and_the_command_succeeds() {
 		let api = installed_api();
-		let gone = hidden_window();
-		destroy(Dialog::from_hwnd(gone));
-		api.set_main_window(gone);
+		main_window_gone(api);
 		let command = MainMenuHandle::new(mainmenu_command_service::<OpenPlaylist>());
 		command.execute(0, None).expect("the command reports the failure itself");
 		assert!(WINDOW.current().is_none());
-		let popups = api.popups();
-		assert_eq!(popups.len(), 1, "{popups:?}");
-		let (title, message, icon) = &popups[0];
-		assert_eq!(title, "Can't open your Spotify playlists");
-		assert!(
-			message.starts_with("Open a Spotify playlist\n\ncan't create a dialog: "),
-			"{message}"
-		);
-		assert_eq!(*icon, PopupIcon::Error);
-		let console = api.console_lines();
-		assert!(
-			console.iter().any(|line| line.starts_with(
-				"foo_librespot: can't open the Open playlist window: can't create a dialog: "
-			)),
-			"{console:?}"
+		assert_open_failure_reported(
+			api,
+			"Can't open your Spotify playlists",
+			"Open a Spotify playlist",
+			"can't open the Open playlist window",
 		);
 	}
 

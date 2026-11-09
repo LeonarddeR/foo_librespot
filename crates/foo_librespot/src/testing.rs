@@ -20,9 +20,10 @@ use foo_librespot_core::resolve::{ArtistTracks, Resolved};
 use foo_librespot_core::{CoreError, SpotifyId};
 use foxide2k::contextmenu::{ContextMenuCommand, context_menu_command_service};
 use foxide2k::guid::Guid;
+use foxide2k::popup::PopupIcon;
 use foxide2k::testing::{ContextMenuHandle, FakeApi, FakeFields, FakeHandleList};
-use foxide2k_ui::host::{Dialog, refresh_poster};
-use foxide2k_ui::testing::pump_messages;
+use foxide2k_ui::host::{Dialog, destroy, refresh_poster};
+use foxide2k_ui::testing::{hidden_window, pump_messages};
 
 use crate::backend::{Backend, LoginTask, OnCode, OnDone, OnRelated, OnSearched, PcmTrack};
 use crate::playlist_save::Planned;
@@ -129,6 +130,33 @@ pub fn installed_api() -> &'static FakeApi {
 /// A fake foobar2000 and a [`FakeBackend`], both installed for this test process.
 pub fn installed_api_and_backend() -> (&'static FakeApi, FakeBackend) {
 	(installed_api(), installed_backend())
+}
+
+/// Makes `api`'s main window one that is gone, so that no window it would own can open.
+pub fn main_window_gone(api: &FakeApi) {
+	let gone = hidden_window();
+	destroy(Dialog::from_hwnd(gone));
+	api.set_main_window(gone);
+}
+
+/// Checks that a window that couldn't open said why: in one error popup titled `title`, naming
+/// the window `subject`, and in a console line that starts "`failed`: ".
+#[track_caller]
+pub fn assert_open_failure_reported(api: &FakeApi, title: &str, subject: &str, failed: &str) {
+	let popups = api.popups();
+	assert_eq!(popups.len(), 1, "{popups:?}");
+	let (popup_title, message, icon) = &popups[0];
+	assert_eq!(popup_title, title);
+	assert!(message.starts_with(&format!("{subject}\n\ncan't create a dialog: ")), "{message}");
+	assert_eq!(*icon, PopupIcon::Error);
+	let console = api.console_lines();
+	let failure = format!("foo_librespot: {failed}: can't create a dialog: ");
+	assert!(console.iter().any(|line| line.starts_with(&failure)), "{console:?}");
+}
+
+/// `items`, owned.
+pub fn strings(items: &[&str]) -> Vec<String> {
+	items.iter().map(|&item| item.to_owned()).collect()
 }
 
 pub fn track_info(id: SpotifyId, title: &str) -> TrackInfo {

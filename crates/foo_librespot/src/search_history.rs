@@ -45,11 +45,7 @@ pub fn save(history: &[String]) -> foxide2k::error::Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::{HISTORY_KEY, HISTORY_LIMIT, load, normalize, remember, save};
-	use crate::testing::installed_api;
-
-	fn strings(items: &[&str]) -> Vec<String> {
-		items.iter().map(|&item| item.to_owned()).collect()
-	}
+	use crate::testing::{installed_api, strings};
 
 	#[test]
 	fn normalize_makes_every_run_of_whitespace_one_space() {

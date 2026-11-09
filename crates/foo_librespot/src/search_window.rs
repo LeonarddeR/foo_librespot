@@ -22,7 +22,6 @@ use foo_librespot_core::link::item_path;
 use foo_librespot_core::metadata::TrackInfo;
 use foo_librespot_core::resolve::Resolved;
 use foxide2k::abi::mainmenu::{GROUP_VIEW, SORT_PRIORITY_BASE};
-use foxide2k::console;
 use foxide2k::error::Error;
 use foxide2k::guid::Guid;
 use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
@@ -38,6 +37,7 @@ use foxide2k_ui::template::{ControlClass, DialogTemplate, shell_font};
 
 use crate::account::item;
 use crate::backend::backend;
+use crate::errors::log_failure;
 use crate::first_use::ask_for_login;
 use crate::links::{plural, print_skipped};
 use crate::login::{LoginState, controller};
@@ -73,8 +73,7 @@ impl MainMenuCommand for SearchSpotify {
 	const NAME: &'static str = "Search…";
 	const DESCRIPTION: &'static str = "Searches Spotify for tracks to add to the active playlist.";
 
-	/// Opens the window, or brings it up with focus in the search field. When it can't open,
-	/// says why in the console and a popup, and still succeeds: foobar2000 gets no error.
+	/// Runs [`show`], and succeeds also when the window can't open: foobar2000 gets no error.
 	fn execute() -> foxide2k::error::Result<()> {
 		show();
 		Ok(())
@@ -193,10 +192,7 @@ const NOTHING_ADDED: &str = "Nothing was added.";
 
 /// What reaches the window from other threads, and from foobar2000 when a load ends, in the
 /// order it arrived, until the window's next refresh takes it.
-#[derive(Default)]
-struct Inbox {
-	arrivals: Vec<Arrival>,
-}
+type Inbox = Mutex<Vec<Arrival>>;
 
 enum Arrival {
 	/// A search's answer, with the number of the search.
@@ -205,8 +201,16 @@ enum Arrival {
 	Added(String),
 }
 
-fn lock(inbox: &Mutex<Inbox>) -> MutexGuard<'_, Inbox> {
+fn lock(inbox: &Inbox) -> MutexGuard<'_, Vec<Arrival>> {
 	inbox.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Fills the search field's drop-down list with `history`, which empties the field's text too.
+fn show_history(dialog: Dialog, history: &[String]) {
+	dialog.combo_clear(SEARCH);
+	for entry in history {
+		dialog.combo_add(SEARCH, entry);
+	}
 }
 
 /// Appends the loaded `items` to tab `index`, named `name`, and answers what the status line
@@ -239,10 +243,10 @@ pub struct SearchWindow {
 	newest: u64,
 	/// The words of the newest search.
 	words: String,
-	/// The words of a search that found the account logged out, until a login lands or a newer
-	/// search starts.
-	waiting: Option<String>,
-	inbox: Arc<Mutex<Inbox>>,
+	/// Whether the newest search found the account logged out and waits for a login, until a
+	/// login lands or a newer search starts.
+	waiting: bool,
+	inbox: Arc<Inbox>,
 	login_subscription: Option<u64>,
 }
 
@@ -256,36 +260,36 @@ impl SearchWindow {
 		};
 		let history = remember(&search_history::load(), &words);
 		if let Err(error) = search_history::save(&history) {
-			console::print(&format!("foo_librespot: can't save the search history: {error}"));
+			log_failure("can't save the search history", &error);
 		}
-		dialog.combo_clear(SEARCH);
-		for entry in &history {
-			dialog.combo_add(SEARCH, entry);
-		}
+		show_history(dialog, &history);
 		// Emptying the drop-down list emptied the field too.
 		dialog.set_text(SEARCH, &words);
 		self.search(dialog, words);
 	}
 
 	/// Empties the list and starts the newest search, for `words`; an older search's answer will
-	/// be dropped, and no words wait for a login any more. The answer comes through the inbox
+	/// be dropped, and no search waits for a login any more. The answer comes through the inbox
 	/// and a posted refresh.
 	fn search(&mut self, dialog: Dialog, words: String) {
-		self.waiting = None;
+		self.waiting = false;
 		self.found.clear();
 		dialog.report_clear(LIST);
 		self.show_status(dialog, "Searching…".to_owned());
 		self.newest += 1;
 		self.words.clone_from(&words);
-		let (number, inbox, poster) =
-			(self.newest, Arc::clone(&self.inbox), refresh_poster(&dialog));
-		backend().search(
-			words,
-			Box::new(move |answer| {
-				lock(&inbox).arrivals.push(Arrival::Answer(number, answer));
-				poster.post();
-			}),
-		);
+		let (number, send) = (self.newest, self.sender(dialog));
+		backend().search(words, Box::new(move |answer| send(Arrival::Answer(number, answer))));
+	}
+
+	/// Hands what arrives to the window, from any thread: it waits in the inbox, and a posted
+	/// refresh shows it.
+	fn sender(&self, dialog: Dialog) -> impl Fn(Arrival) + Clone + Send + Sync + 'static {
+		let (inbox, poster) = (Arc::clone(&self.inbox), refresh_poster(&dialog));
+		move |arrival| {
+			lock(&inbox).push(arrival);
+			poster.post();
+		}
 	}
 
 	/// Adds the tracks of the selected rows, in list order, to the end of the active tab. Says
@@ -326,21 +330,17 @@ impl SearchWindow {
 		if playlist::refuses_adding(index)? {
 			return Ok(Some(locked(&name)));
 		}
-		let (inbox, poster) = (Arc::clone(&self.inbox), refresh_poster(&dialog));
-		let tell = Arc::new(move |status: String| {
-			lock(&inbox).arrivals.push(Arrival::Added(status));
-			poster.post();
-		});
-		let tell_aborted = Arc::clone(&tell);
+		let send = self.sender(dialog);
+		let send_aborted = send.clone();
 		playlist::load_locations_quietly(
 			dialog.hwnd(),
 			locations,
 			// Never an error: one would reach foobar2000.
 			Box::new(move |items| {
-				tell(append_loaded(index, &name, items));
+				send(Arrival::Added(append_loaded(index, &name, items)));
 				Ok(())
 			}),
-			Box::new(move || tell_aborted(NOTHING_ADDED.to_owned())),
+			Box::new(move || send_aborted(Arrival::Added(NOTHING_ADDED.to_owned()))),
 		)?;
 		Ok(None)
 	}
@@ -364,7 +364,7 @@ impl SearchWindow {
 			Err(CoreError::NotLoggedIn) => {
 				self.show_status(dialog, "Log in to Spotify to search.".to_owned());
 				ask_for_login();
-				self.waiting = Some(self.words.clone());
+				self.waiting = true;
 			}
 			Err(CoreError::Aborted) => {}
 			Err(error) => self.show_status(dialog, format!("Couldn't search Spotify: {error}.")),
@@ -388,9 +388,7 @@ impl SearchWindow {
 
 impl DialogHandler for SearchWindow {
 	fn init(&mut self, dialog: &Dialog) -> Option<u16> {
-		for entry in search_history::load() {
-			dialog.combo_add(SEARCH, &entry);
-		}
+		show_history(*dialog, &search_history::load());
 		dialog.report_init(LIST, &COLUMNS);
 		self.status = Some(StatusLine::new(*dialog, STATUS, String::new()));
 		let poster = refresh_poster(dialog);
@@ -430,13 +428,10 @@ impl DialogHandler for SearchWindow {
 			dialog.focus(SEARCH);
 			dialog.select_all_text(SEARCH);
 		}
-		if self.waiting.is_some()
-			&& matches!(controller().state(), LoginState::LoggedIn(_))
-			&& let Some(words) = self.waiting.take()
-		{
-			self.search(*dialog, words);
+		if self.waiting && matches!(controller().state(), LoginState::LoggedIn(_)) {
+			self.search(*dialog, self.words.clone());
 		}
-		let arrivals = std::mem::take(&mut lock(&self.inbox).arrivals);
+		let arrivals = std::mem::take(&mut *lock(&self.inbox));
 		for arrival in arrivals {
 			match arrival {
 				Arrival::Answer(number, answer) if number == self.newest => {
@@ -472,7 +467,6 @@ mod tests {
 	use foxide2k::mainmenu::{
 		MainMenuCommand, MainMenuPopup, mainmenu_command_service, mainmenu_popup_service,
 	};
-	use foxide2k::popup::PopupIcon;
 	use foxide2k::testing::{FakeApi, MainMenuHandle};
 	use foxide2k_ui::host::{Dialog, destroy};
 	use foxide2k_ui::notify::{BN_CLICKED, IDCANCEL, IDOK, NM_CLICK, NM_CUSTOMDRAW, NM_DBLCLK};
@@ -491,8 +485,9 @@ mod tests {
 	use crate::search_history;
 	use crate::status_line::announced;
 	use crate::testing::{
-		FakeBackend, cancel_login_when_started, confirm_login_when_started, episode_id,
-		episode_info, installed_api, installed_api_and_backend, installed_prompt, refresh,
+		FakeBackend, assert_open_failure_reported, cancel_login_when_started,
+		confirm_login_when_started, episode_id, episode_info, installed_api,
+		installed_api_and_backend, installed_prompt, main_window_gone, refresh, strings,
 		track_info, wait_until,
 	};
 	use crate::window::brought_up;
@@ -554,10 +549,6 @@ mod tests {
 		WINDOW.inspect(titles).expect("the window is open")
 	}
 
-	fn strings(items: &[&str]) -> Vec<String> {
-		items.iter().map(|&item| item.to_owned()).collect()
-	}
-
 	#[test]
 	fn the_view_menu_has_a_spotify_popup_with_search() {
 		let popup = MainMenuHandle::new(mainmenu_popup_service::<ViewSpotifyMenu>());
@@ -604,25 +595,16 @@ mod tests {
 	#[test]
 	fn a_search_window_that_cant_open_is_reported_and_the_command_succeeds() {
 		let api = installed_api();
-		let gone = hidden_window();
-		destroy(Dialog::from_hwnd(gone));
-		api.set_main_window(gone);
+		main_window_gone(api);
 		let command = MainMenuHandle::new(mainmenu_command_service::<SearchSpotify>());
 		command.execute(0, None).expect("the command reports the failure itself");
 		assert!(WINDOW.current().is_none());
 		assert_eq!(brought_up(), 0);
-		let popups = api.popups();
-		assert_eq!(popups.len(), 1, "{popups:?}");
-		let (title, message, icon) = &popups[0];
-		assert_eq!(title, "Can't search Spotify");
-		assert!(message.starts_with("Search Spotify\n\ncan't create a dialog: "), "{message}");
-		assert_eq!(*icon, PopupIcon::Error);
-		let console = api.console_lines();
-		assert!(
-			console.iter().any(|line| line.starts_with(
-				"foo_librespot: can't open the Search Spotify window: can't create a dialog: "
-			)),
-			"{console:?}"
+		assert_open_failure_reported(
+			api,
+			"Can't search Spotify",
+			"Search Spotify",
+			"can't open the Search Spotify window",
 		);
 	}
 

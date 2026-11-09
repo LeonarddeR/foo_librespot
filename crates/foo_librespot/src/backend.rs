@@ -205,6 +205,26 @@ impl CoreSlot {
 			Ok(core)
 		})
 	}
+
+	/// Runs `work` with the core on a new thread named "foo_librespot `name`", which starts the
+	/// core when it doesn't run yet, and hands what it answers to `on_done`. Once the core is
+	/// shut down, `work`'s abort check turns true and `on_done` isn't called. When the thread
+	/// can't start, logs that it couldn't `what`.
+	fn answer_in_background<T: 'static>(
+		&'static self,
+		name: &str,
+		what: &str,
+		on_done: Box<dyn FnOnce(Result<T, CoreError>) + Send>,
+		work: impl FnOnce(&Core, &dyn Fn() -> bool) -> Result<T, CoreError> + Send + 'static,
+	) {
+		spawn(name, what, move || {
+			let shut_down = || self.is_shut_down();
+			let result = self.core().and_then(|core| work(&core, &shut_down));
+			if !shut_down() {
+				on_done(result);
+			}
+		});
+	}
 }
 
 /// Runs `work` on a new thread named "foo_librespot `name`". When the thread can't start, logs
@@ -336,30 +356,24 @@ impl Backend for CoreBackend {
 	/// Looks up on a thread of its own, which starts the core when it doesn't run yet. Once the
 	/// core is shut down, the lookup stops and `on_done` isn't called.
 	fn related(&self, item: ItemId, what: Related, on_done: OnRelated) {
-		let slot = self.slot;
-		spawn("related", "start a Spotify lookup", move || {
-			let shut_down = || slot.is_shut_down();
-			let result = slot.core().and_then(|core| core.related(item, &what, &shut_down));
-			if !shut_down() {
-				on_done(result);
-			}
-		});
+		self.slot.answer_in_background(
+			"related",
+			"start a Spotify lookup",
+			on_done,
+			move |core, stop| core.related(item, &what, stop),
+		);
 	}
 
 	/// Searches on a thread of its own, which starts the core when it doesn't run yet. Once the
 	/// core is shut down, the search stops and `on_done` isn't called. A newer search doesn't stop
 	/// an older one; whoever asked drops the older answer.
 	fn search(&self, words: String, on_done: OnSearched) {
-		let slot = self.slot;
-		spawn("search", "start a Spotify search", move || {
-			let shut_down = || slot.is_shut_down();
-			let result = slot.core().and_then(|core| {
-				core.resolve(&Link::Search(words), ArtistTracks::Popular, &shut_down)
-			});
-			if !shut_down() {
-				on_done(result);
-			}
-		});
+		self.slot.answer_in_background(
+			"search",
+			"start a Spotify search",
+			on_done,
+			move |core, stop| core.resolve(&Link::Search(words), ArtistTracks::Popular, stop),
+		);
 	}
 }
 
