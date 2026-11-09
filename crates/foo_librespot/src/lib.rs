@@ -26,6 +26,8 @@ mod prefs;
 mod related;
 #[cfg_attr(not(test), expect(dead_code, reason = "no search window uses the history yet"))]
 mod search_history;
+#[cfg_attr(not(test), expect(dead_code, reason = "no menu command opens the search window yet"))]
+mod search_window;
 mod settings;
 mod spotify_menu;
 mod status_line;

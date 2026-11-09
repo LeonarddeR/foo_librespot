@@ -332,6 +332,12 @@ impl LoginController {
 	pub fn unsubscribe(&self, id: u64) {
 		self.0.lock().subscribers.retain(|(subscriber, _)| *subscriber != id);
 	}
+
+	/// How many subscribe to the login.
+	#[cfg(test)]
+	pub fn subscribers(&self) -> usize {
+		self.0.lock().subscribers.len()
+	}
 }
 
 static CONTROLLER: OnceLock<LoginController> = OnceLock::new();
