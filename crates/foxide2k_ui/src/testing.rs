@@ -6,9 +6,9 @@ use crate::bindings::Windows::Win32::{
 	MSG, PM_REMOVE, PeekMessageW, SendMessageW, TranslateMessage, WM_CLOSE, WM_COMMAND,
 	WM_GETDLGCODE, WPARAM,
 };
-use crate::dialog::host::{Dialog, DialogHandler, create_modeless_dialog};
-use crate::dialog::style::WS_POPUP;
-use crate::dialog::template::{DialogTemplate, shell_font};
+use crate::host::{Dialog, DialogHandler, create_modeless_dialog};
+use crate::style::WS_POPUP;
+use crate::template::{DialogTemplate, shell_font};
 
 /// The owner's handler, which does nothing.
 struct Owner;
@@ -61,7 +61,7 @@ pub fn with_handler<R>(
 	dialog: &Dialog,
 	look: impl FnOnce(&mut dyn DialogHandler, &Dialog) -> R,
 ) -> Option<R> {
-	crate::dialog::host::call(HWND(dialog.hwnd() as _), look)
+	crate::host::call(HWND(dialog.hwnd() as _), look)
 }
 
 /// Sends `WM_COMMAND` from control `id`, as a click or a selection change does.

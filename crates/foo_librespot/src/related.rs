@@ -109,9 +109,10 @@ mod tests {
 	use foo_librespot_core::CoreError;
 	use foo_librespot_core::related::{Found, Related};
 	use foxide2k::abi::{main_thread, playlist};
-	use foxide2k::dialog::host::{Dialog, destroy};
 	use foxide2k::popup::PopupIcon;
-	use foxide2k::testing::{FakeApi, pump_messages};
+	use foxide2k::testing::FakeApi;
+	use foxide2k_ui::host::{Dialog, destroy};
+	use foxide2k_ui::testing::pump_messages;
 
 	use super::open_related;
 	use crate::artist_window;

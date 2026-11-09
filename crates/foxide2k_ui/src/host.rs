@@ -1,7 +1,7 @@
 //! Windows made from [`DialogTemplate`]s, driven by a Rust [`DialogHandler`].
 //!
 //! The dialog procedure is `extern "system"` and must never unwind into user32: every handler
-//! call runs inside `catch_unwind`, and a panic is reported on the console.
+//! call runs inside `catch_unwind`, and a panic is reported as a `tracing` error.
 
 use std::any::Any;
 use std::cell::Cell;
@@ -10,7 +10,6 @@ use std::sync::Once;
 
 use windows_core::{PCWSTR, PWSTR};
 
-use super::template::{ControlClass, DialogTemplate};
 use crate::bindings::Windows::Win32::{
 	BM_GETCHECK, BM_SETCHECK, BST_CHECKED, BST_UNCHECKED, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL,
 	CreateDialogIndirectParamW, DWLP_MSGRESULT, DestroyWindow, EnableWindow, GWL_STYLE,
@@ -26,10 +25,9 @@ use crate::bindings::Windows::Win32::{
 	SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, WM_APP,
 	WM_COMMAND, WM_INITDIALOG, WM_NCDESTROY, WM_NEXTDLGCTL, WPARAM, WS_VISIBLE,
 };
-use crate::console;
-use crate::cxx::ExceptionKind;
 use crate::error::{Error, Result};
-use crate::strings::wide;
+use crate::template::{ControlClass, DialogTemplate};
+use crate::wide;
 
 /// `DWLP_USER` on 64-bit Windows: after the message result and the dialog procedure.
 const DWLP_USER: i32 = DWLP_MSGRESULT + 16;
@@ -417,7 +415,7 @@ pub(crate) fn call<R>(
 			call(window, DialogHandler::refresh);
 		}
 	}
-	result.map_err(|_| console::print("Foxide2k: a dialog handler panicked")).ok()
+	result.map_err(|_| tracing::error!("a dialog handler panicked")).ok()
 }
 
 unsafe extern "system" fn dialog_proc(
@@ -428,7 +426,7 @@ unsafe extern "system" fn dialog_proc(
 ) -> isize {
 	catch_unwind(AssertUnwindSafe(|| handle(window, message, wparam, lparam))).unwrap_or_else(
 		|_| {
-			console::print("Foxide2k: a dialog procedure panicked");
+			tracing::error!("a dialog procedure panicked");
 			0
 		},
 	)
@@ -543,7 +541,7 @@ fn create(
 		if claimed != slot as usize {
 			drop(unsafe { Box::from_raw(slot) });
 		}
-		return Err(Error::new(ExceptionKind::Std, format!("can't create a dialog: {error}")));
+		return Err(Error { message: format!("can't create a dialog: {error}") });
 	}
 	Ok(Dialog(window.0 as isize))
 }
@@ -579,7 +577,13 @@ pub fn destroy(dialog: Dialog) {
 pub(crate) mod tests {
 	use std::any::Any;
 	use std::cell::RefCell;
+	use std::fmt;
 	use std::rc::Rc;
+	use std::sync::{Arc, Mutex};
+
+	use tracing::field::{Field, Visit};
+	use tracing::{Event, Level, Subscriber};
+	use tracing_subscriber::layer::{Context, Layer, SubscriberExt as _};
 
 	use super::{Dialog, DialogHandler, create_child_dialog, create_modeless_dialog, destroy};
 	use crate::bindings::Windows::Win32::{
@@ -589,8 +593,8 @@ pub(crate) mod tests {
 		WM_CLOSE, WM_COMMAND, WPARAM, WS_BORDER, WS_CAPTION, WS_CHILD, WS_POPUP, WS_SYSMENU,
 		WS_TABSTOP, WS_VSCROLL,
 	};
-	use crate::dialog::style;
-	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
+	use crate::style;
+	use crate::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
 	use crate::testing::wants_all_keys;
 
 	#[test]
@@ -1053,5 +1057,43 @@ pub(crate) mod tests {
 		assert!(dialog.is_alive());
 		destroy(dialog);
 		assert!(record.borrow().dropped);
+	}
+
+	/// Records the level and message of every event.
+	#[derive(Clone, Default)]
+	struct Events(Arc<Mutex<Vec<(Level, String)>>>);
+
+	impl<S: Subscriber> Layer<S> for Events {
+		fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
+			struct Message(String);
+
+			impl Visit for Message {
+				fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+					if field.name() == "message" {
+						self.0 = format!("{value:?}");
+					}
+				}
+			}
+
+			let mut message = Message(String::new());
+			event.record(&mut message);
+			self.0.lock().unwrap().push((*event.metadata().level(), message.0));
+		}
+	}
+
+	#[test]
+	fn a_panicking_handler_is_reported_through_tracing() {
+		let mut recorder = Recorder::default();
+		recorder.panic_on_command = true;
+		let (dialog, _record) = child(recorder);
+		let events = Events::default();
+		let subscriber = tracing_subscriber::registry().with(events.clone());
+		tracing::subscriber::with_default(subscriber, || click(dialog, 102));
+		assert_eq!(
+			*events.0.lock().unwrap(),
+			[(Level::ERROR, "a dialog handler panicked".to_owned())]
+		);
+		assert!(dialog.is_alive());
+		destroy(dialog);
 	}
 }

@@ -17,6 +17,9 @@ workspace = true
 windows-core = { workspace = true }
 libloading = { workspace = true, optional = true }
 
+[dev-dependencies]
+foxide2k_ui = { path = "../foxide2k_ui", features = ["testing"] }
+
 [features]
 # A fake foobar2000 host and a DLL loader, for testing components.
 testing = ["dep:libloading"]

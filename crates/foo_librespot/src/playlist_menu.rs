@@ -50,10 +50,11 @@ mod tests {
 	use foo_librespot_core::link::{ItemId, item_path};
 	use foxide2k::abi::contextmenu::ENABLED_DEFAULT_ON;
 	use foxide2k::contextmenu::{ContextMenuCommand, ContextMenuGroup};
-	use foxide2k::dialog::notify::{BN_CLICKED, IDOK};
 	use foxide2k::guid::Guid;
 	use foxide2k::popup::PopupIcon;
-	use foxide2k::testing::{FakeHandleList, send_command};
+	use foxide2k::testing::FakeHandleList;
+	use foxide2k_ui::notify::{BN_CLICKED, IDOK};
+	use foxide2k_ui::testing::send_command;
 
 	use super::AddToPlaylist;
 	use crate::playlist_window::{LIST, WINDOW};

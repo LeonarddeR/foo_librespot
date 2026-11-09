@@ -1,0 +1,23 @@
+[package]
+name = "foxide2k_ui"
+description = "Win32 dialogs for foobar2000 components written in Rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+windows-core = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+
+[features]
+# The window test helpers: a hidden owner, the message pump, and the messages a user sends.
+testing = []

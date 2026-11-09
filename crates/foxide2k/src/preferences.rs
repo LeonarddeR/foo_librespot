@@ -237,8 +237,9 @@ mod tests {
 		GUID_TOOLS, INSTANCE_IID, PAGE_IID, PAGE_V2_IID, PAGE_V3_IID, STATE_CHANGED,
 		STATE_RESETTABLE,
 	};
+	use foxide2k_ui::testing::hidden_window;
+
 	use crate::bindings::Windows::Win32::{HWND, IsWindow};
-	use crate::dialog::host::tests::hidden_parent;
 	use crate::error::Result;
 	use crate::guid::Guid;
 	use crate::testing::{FakePageCallback, PreferencesHandle};
@@ -346,7 +347,7 @@ mod tests {
 
 	#[test]
 	fn final_release_destroys_a_window_still_alive() {
-		let window = hidden_parent();
+		let window = hidden_window();
 		let (callback, _destroyed) = FakePageCallback::new();
 		let instance = page().instantiate(window, &callback);
 		assert!(unsafe { IsWindow(Some(HWND(window as _))) }.as_bool());

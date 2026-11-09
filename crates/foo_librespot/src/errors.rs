@@ -48,6 +48,11 @@ pub fn host_error(error: CoreError) -> Error {
 	}
 }
 
+/// The foobar2000 exception for a dialog that Windows refused, with the same message.
+pub fn from_ui(error: foxide2k_ui::error::Error) -> Error {
+	Error::new(ExceptionKind::Std, error.message)
+}
+
 /// Shows `message` in a popup titled `title`. When the popup can't be shown, the console says
 /// the title and the message instead, and why.
 pub fn show_message(title: &str, message: &str, icon: PopupIcon) {

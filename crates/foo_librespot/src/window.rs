@@ -5,13 +5,13 @@ use std::any::TypeId;
 use std::cell::RefCell;
 use std::marker::PhantomData;
 
-use foxide2k::dialog::host::{Dialog, DialogHandler, create_modeless_dialog, refresh_poster};
-use foxide2k::dialog::template::DialogTemplate;
 use foxide2k::error::Result;
 use foxide2k::host::host;
 use foxide2k::main_thread::{add_modeless, remove_modeless};
+use foxide2k_ui::host::{Dialog, DialogHandler, create_modeless_dialog, refresh_poster};
+use foxide2k_ui::template::DialogTemplate;
 
-use crate::errors::report_failure;
+use crate::errors::{from_ui, report_failure};
 
 thread_local! {
 	/// The open window of each kind, by the type of its handler. Only foobar2000's main thread
@@ -47,7 +47,7 @@ impl<H: DialogHandler + Default> SingleWindow<H> {
 		}
 		let key = TypeId::of::<H>();
 		let handler = Box::new(Single { handler: H::default(), key, dialog: None });
-		let dialog = create_modeless_dialog(owner, &(self.template)(), handler)?;
+		let dialog = create_modeless_dialog(owner, &(self.template)(), handler).map_err(from_ui)?;
 		OPEN.with_borrow_mut(|open| {
 			open.retain(|(open, _)| *open != key);
 			open.push((key, dialog));
@@ -79,7 +79,7 @@ impl<H: DialogHandler + Default> SingleWindow<H> {
 	#[cfg(test)]
 	pub fn inspect<R>(&self, look: impl FnOnce(&H, Dialog) -> R) -> Option<R> {
 		let dialog = self.current()?;
-		foxide2k::testing::with_handler(&dialog, |handler, dialog| {
+		foxide2k_ui::testing::with_handler(&dialog, |handler, dialog| {
 			let handler: &dyn std::any::Any = handler;
 			handler.downcast_ref::<Single<H>>().map(|single| look(&single.handler, *dialog))
 		})
@@ -148,11 +148,11 @@ impl<H> Drop for Single<H> {
 
 #[cfg(test)]
 mod tests {
-	use foxide2k::dialog::host::{Dialog, DialogHandler, destroy};
-	use foxide2k::dialog::style::{WS_CAPTION, WS_POPUP};
-	use foxide2k::dialog::template::{DialogTemplate, shell_font};
 	use foxide2k::popup::PopupIcon;
-	use foxide2k::testing::{hidden_window, pump_messages, send_close};
+	use foxide2k_ui::host::{Dialog, DialogHandler, destroy};
+	use foxide2k_ui::style::{WS_CAPTION, WS_POPUP};
+	use foxide2k_ui::template::{DialogTemplate, shell_font};
+	use foxide2k_ui::testing::{hidden_window, pump_messages, send_close};
 
 	use super::{SingleWindow, brought_up};
 	use crate::testing::installed_api;
@@ -180,7 +180,7 @@ mod tests {
 		}
 
 		fn command(&mut self, dialog: &Dialog, id: u16, _notification: u16) {
-			if id == foxide2k::dialog::notify::IDCANCEL {
+			if id == foxide2k_ui::notify::IDCANCEL {
 				destroy(*dialog);
 			}
 		}

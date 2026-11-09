@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use foo_librespot_core::library::LibraryState;
-use foxide2k::dialog::host::{Dialog, refresh_poster};
+use foxide2k_ui::host::{Dialog, refresh_poster};
 
 use crate::backend::backend;
 use crate::first_use::ask_for_login;

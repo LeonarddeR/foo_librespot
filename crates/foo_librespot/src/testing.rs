@@ -19,9 +19,10 @@ use foo_librespot_core::replaygain::ReplayGain;
 use foo_librespot_core::resolve::{ArtistTracks, Resolved};
 use foo_librespot_core::{CoreError, SpotifyId};
 use foxide2k::contextmenu::{ContextMenuCommand, context_menu_command_service};
-use foxide2k::dialog::host::{Dialog, refresh_poster};
 use foxide2k::guid::Guid;
-use foxide2k::testing::{ContextMenuHandle, FakeApi, FakeFields, FakeHandleList, pump_messages};
+use foxide2k::testing::{ContextMenuHandle, FakeApi, FakeFields, FakeHandleList};
+use foxide2k_ui::host::{Dialog, refresh_poster};
+use foxide2k_ui::testing::pump_messages;
 
 use crate::backend::{Backend, LoginTask, OnCode, OnDone, OnRelated, PcmTrack};
 use crate::playlist_save::Planned;

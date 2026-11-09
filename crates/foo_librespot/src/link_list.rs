@@ -6,13 +6,13 @@
 
 use foo_librespot_core::link::Link;
 use foo_librespot_core::related::Opened;
-use foxide2k::dialog::host::{Dialog, destroy};
-use foxide2k::dialog::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
-use foxide2k::dialog::style::{
+use foxide2k_ui::host::{Dialog, destroy};
+use foxide2k_ui::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
+use foxide2k_ui::style::{
 	BS_DEFPUSHBUTTON, DS_CENTER, DS_MODALFRAME, LBS_NOTIFY, SS_NOPREFIX, WS_BORDER, WS_CAPTION,
 	WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
 };
-use foxide2k::dialog::template::{ControlClass, DialogTemplate, shell_font};
+use foxide2k_ui::template::{ControlClass, DialogTemplate, shell_font};
 
 use crate::account::item;
 use crate::errors::report_failure;
@@ -170,7 +170,7 @@ impl LinkList {
 
 #[cfg(test)]
 mod tests {
-	use foxide2k::dialog::notify::{IDCANCEL, IDOK};
+	use foxide2k_ui::notify::{IDCANCEL, IDOK};
 
 	use super::{Ids, template};
 

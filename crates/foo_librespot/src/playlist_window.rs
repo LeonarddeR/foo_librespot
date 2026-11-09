@@ -13,11 +13,11 @@ use std::collections::HashSet;
 
 use foo_librespot_core::library::{Edit, LIKED_SONGS, Library, LibraryState, Target};
 use foo_librespot_core::link::ItemId;
-use foxide2k::dialog::host::{Dialog, DialogHandler, destroy};
-use foxide2k::dialog::notify::{IDCANCEL, IDOK};
-use foxide2k::dialog::style::CHECK_LIST;
-use foxide2k::dialog::template::{ControlClass, DialogTemplate};
 use foxide2k::popup::PopupIcon;
+use foxide2k_ui::host::{Dialog, DialogHandler, destroy};
+use foxide2k_ui::notify::{IDCANCEL, IDOK};
+use foxide2k_ui::style::CHECK_LIST;
+use foxide2k_ui::template::{ControlClass, DialogTemplate};
 
 use crate::errors::show_message;
 use crate::library_watch::{self, LibraryWatch};
@@ -245,11 +245,11 @@ mod tests {
 	use foo_librespot_core::SpotifyId;
 	use foo_librespot_core::library::{Edit, Library, LibraryPlaylist, LibraryState, Target};
 	use foo_librespot_core::link::ItemId;
-	use foxide2k::dialog::host::{Dialog, destroy};
-	use foxide2k::dialog::notify::{BN_CLICKED, IDCANCEL, IDOK};
-	use foxide2k::dialog::style::{BS_DEFPUSHBUTTON, CHECK_LIST};
-	use foxide2k::dialog::template::ControlClass;
-	use foxide2k::testing::{hidden_window, pump_messages, send_close, send_command};
+	use foxide2k_ui::host::{Dialog, destroy};
+	use foxide2k_ui::notify::{BN_CLICKED, IDCANCEL, IDOK};
+	use foxide2k_ui::style::{BS_DEFPUSHBUTTON, CHECK_LIST};
+	use foxide2k_ui::template::ControlClass;
+	use foxide2k_ui::testing::{hidden_window, pump_messages, send_close, send_command};
 
 	use super::{LABEL, LIST, PlaylistWindow, STATUS, WINDOW, show_for, window_template};
 	use crate::playlist_save::Planned;

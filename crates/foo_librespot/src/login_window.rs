@@ -7,12 +7,10 @@
 //! window closes by itself once the login succeeds: the import or play that opened it then
 //! goes on.
 
-use foxide2k::dialog::host::{Dialog, DialogHandler, destroy, refresh_poster};
-use foxide2k::dialog::notify::IDCANCEL;
-use foxide2k::dialog::style::{
-	DS_CENTER, DS_MODALFRAME, WS_CAPTION, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
-};
-use foxide2k::dialog::template::{ControlClass, DialogTemplate, shell_font};
+use foxide2k_ui::host::{Dialog, DialogHandler, destroy, refresh_poster};
+use foxide2k_ui::notify::IDCANCEL;
+use foxide2k_ui::style::{DS_CENTER, DS_MODALFRAME, WS_CAPTION, WS_POPUP, WS_SYSMENU, WS_TABSTOP};
+use foxide2k_ui::template::{ControlClass, DialogTemplate, shell_font};
 
 use crate::account::{self, AccountPanel, CODE, LoginControls, item};
 use crate::login::{LoginState, controller};
@@ -75,9 +73,9 @@ fn logged_in() -> bool {
 
 #[cfg(test)]
 mod tests {
-	use foxide2k::dialog::host::destroy;
-	use foxide2k::dialog::notify::IDCANCEL;
-	use foxide2k::testing::{hidden_window, pump_messages, send_close};
+	use foxide2k_ui::host::destroy;
+	use foxide2k_ui::notify::IDCANCEL;
+	use foxide2k_ui::testing::{hidden_window, pump_messages, send_close};
 
 	use foo_librespot_core::CoreError;
 	use foo_librespot_core::login::LoginError;

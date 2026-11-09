@@ -4,14 +4,13 @@ use std::mem::ManuallyDrop;
 
 use windows_core::GUID;
 
-use super::host::Dialog;
 use crate::bindings::Windows::Win32::{
 	CHILDID_SELF, CLSCTX_INPROC_SERVER, CLSID_AccPropServices, CoCreateInstance,
 	EVENT_OBJECT_LIVEREGIONCHANGED, IAccPropServices, NotifyWinEvent, OBJID_CLIENT, Polite,
 	VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VARTYPE, VT_I4,
 };
-use crate::cxx::ExceptionKind;
 use crate::error::{Error, Result};
+use crate::host::Dialog;
 
 /// UI Automation's `LiveSetting_Property_GUID` (`UIAutomationClient.h`), which is not in the
 /// Win32 metadata.
@@ -21,8 +20,8 @@ const LIVE_SETTING_PROPERTY: GUID = GUID::from_u128(0xc12bcd8e_2a8e_4950_8ae7_36
 /// [`announce`] without moving focus. Needs COM on the calling thread, as foobar2000's main
 /// thread has.
 pub fn make_live_region(dialog: &Dialog, id: u16) -> Result<()> {
-	let fail = |error: windows_core::Error| {
-		Error::new(ExceptionKind::Std, format!("can't make a live region: {error}"))
+	let fail = |error: windows_core::Error| Error {
+		message: format!("can't make a live region: {error}"),
 	};
 	let services: IAccPropServices =
 		unsafe { CoCreateInstance(&CLSID_AccPropServices, None, CLSCTX_INPROC_SERVER) }
@@ -67,21 +66,20 @@ pub fn announce(dialog: &Dialog, id: u16) {
 #[cfg(test)]
 mod tests {
 	use super::{announce, make_live_region};
-	use crate::dialog::host::tests::hidden_parent;
-	use crate::dialog::host::{create_child_dialog, destroy};
-	use crate::dialog::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
+	use crate::host::tests::hidden_parent;
+	use crate::host::{create_child_dialog, destroy};
+	use crate::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
 
 	struct Nothing;
 
-	impl crate::dialog::host::DialogHandler for Nothing {
-		fn init(&mut self, _dialog: &crate::dialog::host::Dialog) -> Option<u16> {
+	impl crate::host::DialogHandler for Nothing {
+		fn init(&mut self, _dialog: &crate::host::Dialog) -> Option<u16> {
 			None
 		}
 
-		fn command(&mut self, _dialog: &crate::dialog::host::Dialog, _id: u16, _notification: u16) {
-		}
+		fn command(&mut self, _dialog: &crate::host::Dialog, _id: u16, _notification: u16) {}
 
-		fn refresh(&mut self, _dialog: &crate::dialog::host::Dialog) {}
+		fn refresh(&mut self, _dialog: &crate::host::Dialog) {}
 	}
 
 	#[test]

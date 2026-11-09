@@ -1,8 +1,8 @@
 //! A dialog's status line: a polite live region, so a screen reader reads each new status.
 
 use foxide2k::console;
-use foxide2k::dialog::accessibility::{announce, make_live_region};
-use foxide2k::dialog::host::Dialog;
+use foxide2k_ui::accessibility::{announce, make_live_region};
+use foxide2k_ui::host::Dialog;
 
 /// The status line of one open dialog, and the text it shows.
 pub struct StatusLine {
@@ -33,10 +33,11 @@ impl StatusLine {
 
 #[cfg(test)]
 mod tests {
-	use foxide2k::dialog::host::{Dialog, DialogHandler, create_modeless_dialog, destroy};
-	use foxide2k::dialog::style::{SS_NOPREFIX, WS_CAPTION, WS_POPUP};
-	use foxide2k::dialog::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
-	use foxide2k::testing::{FakeApi, hidden_window};
+	use foxide2k::testing::FakeApi;
+	use foxide2k_ui::host::{Dialog, DialogHandler, create_modeless_dialog, destroy};
+	use foxide2k_ui::style::{SS_NOPREFIX, WS_CAPTION, WS_POPUP};
+	use foxide2k_ui::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
+	use foxide2k_ui::testing::hidden_window;
 
 	use super::StatusLine;
 

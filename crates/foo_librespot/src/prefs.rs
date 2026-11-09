@@ -7,17 +7,18 @@ use foo_librespot_core::audio::format::Bitrate;
 use foo_librespot_core::resolve::ArtistTracks;
 use foxide2k::abi::preferences::{GUID_TOOLS, STATE_CHANGED, STATE_RESETTABLE};
 use foxide2k::console;
-use foxide2k::dialog::host::{Dialog, DialogHandler, create_child_dialog};
-use foxide2k::dialog::notify::{BN_CLICKED, CBN_SELCHANGE};
-use foxide2k::dialog::style::{
-	BS_AUTOCHECKBOX, BS_GROUPBOX, CBS_DROPDOWNLIST, DS_CONTROL, WS_CHILD, WS_TABSTOP, WS_VSCROLL,
-};
-use foxide2k::dialog::template::{ControlClass, DialogTemplate, shell_font};
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
 use foxide2k::preferences::{PageChanged, PageInstance, PreferencesPage};
+use foxide2k_ui::host::{Dialog, DialogHandler, create_child_dialog};
+use foxide2k_ui::notify::{BN_CLICKED, CBN_SELCHANGE};
+use foxide2k_ui::style::{
+	BS_AUTOCHECKBOX, BS_GROUPBOX, CBS_DROPDOWNLIST, DS_CONTROL, WS_CHILD, WS_TABSTOP, WS_VSCROLL,
+};
+use foxide2k_ui::template::{ControlClass, DialogTemplate, shell_font};
 
 use crate::account::{self, AccountPanel, LoginControls, item};
+use crate::errors::from_ui;
 use crate::settings::{self, bitrate_at, bitrate_index};
 
 const ACCOUNT_GROUP: u16 = 100;
@@ -75,7 +76,8 @@ impl PreferencesPage for SpotifyPage {
 
 	fn create(parent: isize, changed: PageChanged) -> Result<Box<dyn PageInstance>> {
 		let handler = PageHandler { panel: None, changed: changed.clone() };
-		let dialog = create_child_dialog(parent, &page_template(), Box::new(handler))?;
+		let dialog =
+			create_child_dialog(parent, &page_template(), Box::new(handler)).map_err(from_ui)?;
 		Ok(Box::new(OpenPage { dialog, changed }))
 	}
 }
@@ -174,13 +176,11 @@ mod tests {
 	use std::sync::{Arc, Mutex, PoisonError};
 
 	use foxide2k::abi::preferences::{GUID_TOOLS, STATE_CHANGED, STATE_RESETTABLE};
-	use foxide2k::dialog::host::Dialog;
-	use foxide2k::dialog::notify::{BN_CLICKED, CBN_SELCHANGE};
 	use foxide2k::preferences::preferences_page_service;
-	use foxide2k::testing::{
-		FakeApi, FakePageCallback, PageInstanceHandle, PreferencesHandle, hidden_window,
-		pump_messages, send_command, wants_all_keys,
-	};
+	use foxide2k::testing::{FakeApi, FakePageCallback, PageInstanceHandle, PreferencesHandle};
+	use foxide2k_ui::host::Dialog;
+	use foxide2k_ui::notify::{BN_CLICKED, CBN_SELCHANGE};
+	use foxide2k_ui::testing::{hidden_window, pump_messages, send_command, wants_all_keys};
 
 	use super::{SpotifyPage, page_template};
 	use crate::account::{ACCOUNT, BROWSER, CODE, CODE_LABEL, PAGE, PAGE_LABEL, STATUS};

@@ -1,8 +1,27 @@
-//! Win32 dialogs for components: templates built in Rust, and the windows made from them.
+//! Win32 dialogs for components: templates built in Rust, and the windows made from them. Plain
+//! Win32, with nothing of foobar2000 in it.
 
 pub mod accessibility;
+#[allow(
+	non_snake_case,
+	non_camel_case_types,
+	non_upper_case_globals,
+	dead_code,
+	clippy::all,
+	clippy::pedantic,
+	clippy::nursery
+)]
+mod bindings;
+pub mod error;
 pub mod host;
 pub mod template;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
+/// `text` as a NUL-terminated UTF-16 string, for Win32.
+fn wide(text: &str) -> Vec<u16> {
+	text.encode_utf16().chain([0]).collect()
+}
 
 /// Window and control styles for dialog templates, as `u32`.
 pub mod style {

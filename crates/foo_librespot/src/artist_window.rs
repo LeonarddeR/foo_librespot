@@ -14,9 +14,9 @@
 use std::cell::{Cell, RefCell};
 
 use foo_librespot_core::related::Opened;
-use foxide2k::dialog::host::{Dialog, DialogHandler, destroy};
-use foxide2k::dialog::notify::IDCANCEL;
-use foxide2k::dialog::template::DialogTemplate;
+use foxide2k_ui::host::{Dialog, DialogHandler, destroy};
+use foxide2k_ui::notify::IDCANCEL;
+use foxide2k_ui::template::DialogTemplate;
 
 use crate::link_list::{self, Ids, LinkList, is_pick};
 use crate::status_line::StatusLine;
@@ -169,12 +169,12 @@ mod tests {
 	use foo_librespot_core::link::LinkKind;
 	use foo_librespot_core::related::Opened;
 	use foxide2k::abi::playlist;
-	use foxide2k::dialog::host::{Dialog, destroy};
-	use foxide2k::dialog::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
-	use foxide2k::dialog::style::BS_DEFPUSHBUTTON;
-	use foxide2k::dialog::template::ControlClass;
 	use foxide2k::popup::PopupIcon;
-	use foxide2k::testing::{hidden_window, pump_messages, send_close, send_command};
+	use foxide2k_ui::host::{Dialog, destroy};
+	use foxide2k_ui::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
+	use foxide2k_ui::style::BS_DEFPUSHBUTTON;
+	use foxide2k_ui::template::ControlClass;
+	use foxide2k_ui::testing::{hidden_window, pump_messages, send_close, send_command};
 
 	use super::{LABEL, LIST, STATUS, WINDOW, settle, show_loading, take_ticket, window_template};
 	use crate::testing::{GETTY_TRACK, KEITH_ID, KRISTYN_ID, getty_artists, installed_api};

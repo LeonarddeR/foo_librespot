@@ -150,13 +150,14 @@ fn shown(playing: Option<&SpotifyItem>, kind: Kind) -> Shown {
 mod tests {
 	use foo_librespot_core::related::Related;
 	use foxide2k::abi::mainmenu::{COMMANDS_V2_IID, FLAG_DISABLED, SORT_PRIORITY_BASE};
-	use foxide2k::dialog::host::destroy;
 	use foxide2k::guid::Guid;
 	use foxide2k::mainmenu::{
 		MainMenuCommand, MainMenuPopup, mainmenu_command_service, mainmenu_popup_service,
 	};
 	use foxide2k::popup::PopupIcon;
-	use foxide2k::testing::{MainMenuHandle, pump_messages};
+	use foxide2k::testing::MainMenuHandle;
+	use foxide2k_ui::host::destroy;
+	use foxide2k_ui::testing::pump_messages;
 
 	use super::{
 		PlayingAddToPlaylist, PlayingAlbum, PlayingArtist, PlayingRadio, PlayingShow, PlayingTrack,

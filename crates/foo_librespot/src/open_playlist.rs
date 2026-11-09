@@ -7,13 +7,13 @@
 use foo_librespot_core::library::{LIKED_SONGS, Library, LibraryState};
 use foo_librespot_core::link::Link;
 use foxide2k::abi::mainmenu::{GROUP_FILE, SORT_PRIORITY_BASE};
-use foxide2k::dialog::host::{Dialog, DialogHandler, destroy};
-use foxide2k::dialog::notify::IDCANCEL;
-use foxide2k::dialog::template::DialogTemplate;
 use foxide2k::error::Result;
 use foxide2k::guid::Guid;
 use foxide2k::host::host;
 use foxide2k::mainmenu::{MainMenuCommand, MainMenuPopup};
+use foxide2k_ui::host::{Dialog, DialogHandler, destroy};
+use foxide2k_ui::notify::IDCANCEL;
+use foxide2k_ui::template::DialogTemplate;
 
 use crate::library_watch::{self, LibraryWatch};
 use crate::link_list::{self, Entry, Ids, LinkList, is_pick};
@@ -122,16 +122,15 @@ mod tests {
 	use foo_librespot_core::library::LibraryState;
 	use foxide2k::abi::mainmenu::{COMMANDS_IID, GROUP_FILE, GROUP_IID, SORT_PRIORITY_BASE};
 	use foxide2k::abi::playlist;
-	use foxide2k::dialog::host::destroy;
-	use foxide2k::dialog::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
-	use foxide2k::dialog::template::ControlClass;
 	use foxide2k::guid::Guid;
 	use foxide2k::mainmenu::{
 		MainMenuCommand, MainMenuPopup, mainmenu_command_service, mainmenu_popup_service,
 	};
-	use foxide2k::testing::{
-		FakeApi, MainMenuHandle, hidden_window, pump_messages, send_close, send_command,
-	};
+	use foxide2k::testing::{FakeApi, MainMenuHandle};
+	use foxide2k_ui::host::destroy;
+	use foxide2k_ui::notify::{BN_CLICKED, IDCANCEL, IDOK, LBN_DBLCLK};
+	use foxide2k_ui::template::ControlClass;
+	use foxide2k_ui::testing::{hidden_window, pump_messages, send_close, send_command};
 
 	use super::{LABEL, LIST, OpenPlaylist, STATUS, SpotifyMenu, WINDOW, window_template};
 	use crate::login::controller;

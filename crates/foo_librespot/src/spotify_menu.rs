@@ -304,10 +304,11 @@ mod tests {
 		ENABLED_DEFAULT_ON, FLAG_DISABLED, FLAG_GRAYED, GROUP_ROOT, TYPE_COMMAND,
 	};
 	use foxide2k::contextmenu::{ContextMenuGroup, Shown, context_menu_group_service};
-	use foxide2k::dialog::host::destroy;
 	use foxide2k::guid::Guid;
 	use foxide2k::popup::PopupIcon;
-	use foxide2k::testing::{ContextMenuGroupHandle, FakeFields, FakeHandleList, pump_messages};
+	use foxide2k::testing::{ContextMenuGroupHandle, FakeFields, FakeHandleList};
+	use foxide2k_ui::host::destroy;
+	use foxide2k_ui::testing::pump_messages;
 
 	use super::{Kind, OpenAlbum, OpenArtist, OpenShow, SpotifyGroup, TrackRadio, shown_among};
 	use crate::artist_window::{self, LIST, STATUS, WINDOW};
