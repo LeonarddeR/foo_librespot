@@ -431,9 +431,12 @@ impl Dialog {
 	fn next_selected(self, id: u16, after: Option<usize>) -> Option<usize> {
 		// A search after row -1 starts at the first row; LVNI_ALL searches by index, so the rows
 		// come in order.
-		let after = after.unwrap_or(usize::MAX);
+		let start = after.unwrap_or(usize::MAX);
 		let flags = (LVNI_ALL | LVNI_SELECTED) as isize;
-		usize::try_from(self.send(id, LVM_GETNEXTITEM, after, flags)).ok()
+		let row = usize::try_from(self.send(id, LVM_GETNEXTITEM, start, flags)).ok()?;
+		// A control that is gone or isn't a list view answers 0 every time. Only an existing row
+		// after `after` counts, so a search from row to row always ends.
+		(row < self.row_count(id) && after.is_none_or(|after| row > after)).then_some(row)
 	}
 
 	/// Selects row `index`, makes it the row the arrow keys act on, and scrolls the list until
@@ -1168,6 +1171,35 @@ mod tests {
 		dialog.report_add(LIST, &["1", &long]);
 		assert_eq!(dialog.report_columns(LIST), [long.as_str(), "Artist"]);
 		assert_eq!(dialog.report_row(LIST, 0), ["1", long.as_str()]);
+		destroy(dialog);
+	}
+
+	#[test]
+	fn a_check_list_in_a_dialog_that_is_gone_has_no_selection() {
+		let dialog = dialog_with(vec![check_list()]);
+		dialog.check_list_init(LIST);
+		dialog.check_list_add(LIST, "Liked Songs", false);
+		dialog.check_list_select(LIST, 0);
+		destroy(dialog);
+		assert_eq!(dialog.check_list_selection(LIST), None);
+	}
+
+	#[test]
+	fn a_report_list_in_a_dialog_that_is_gone_has_no_selected_rows() {
+		let dialog = dialog_with(vec![report_list()]);
+		dialog.report_init(LIST, &[("Title", 100)]);
+		dialog.report_add(LIST, &["In Christ Alone"]);
+		dialog.report_select_only(LIST, 0);
+		destroy(dialog);
+		assert!(dialog.report_selected(LIST).is_empty());
+	}
+
+	#[test]
+	fn a_control_that_isnt_a_list_view_has_no_selected_rows() {
+		let dialog = dialog_with(vec![search_field()]);
+		dialog.combo_add(SEARCH, "in christ alone");
+		assert!(dialog.report_selected(999).is_empty(), "there is no control 999");
+		assert!(dialog.report_selected(SEARCH).is_empty(), "a combo box has no rows");
 		destroy(dialog);
 	}
 
