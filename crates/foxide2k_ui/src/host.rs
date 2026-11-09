@@ -574,14 +574,14 @@ pub fn destroy(dialog: Dialog) {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
 	use std::any::Any;
 	use std::cell::RefCell;
 	use std::fmt;
 	use std::rc::Rc;
 	use std::sync::{Arc, Mutex};
 
-	use tracing::field::{Field, Visit};
+	use tracing::field::Field;
 	use tracing::{Event, Level, Subscriber};
 	use tracing_subscriber::layer::{Context, Layer, SubscriberExt as _};
 
@@ -595,7 +595,7 @@ pub(crate) mod tests {
 	};
 	use crate::style;
 	use crate::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
-	use crate::testing::wants_all_keys;
+	use crate::testing::{hidden_window, pump_messages, wants_all_keys};
 
 	#[test]
 	fn a_dialog_created_during_another_ones_creation_keeps_its_own_claim() {
@@ -606,17 +606,6 @@ pub(crate) mod tests {
 			assert_eq!(inner, 2);
 		});
 		assert_eq!(outer, 1);
-	}
-
-	/// A hidden top-level window to own the dialogs under test. Also initialises COM for the
-	/// live-region tests, which need COM on the calling thread.
-	pub fn hidden_parent() -> isize {
-		crate::testing::hidden_window()
-	}
-
-	/// Handles every message waiting for this thread.
-	pub fn pump() {
-		crate::testing::pump_messages();
 	}
 
 	fn item(id: u16, class: ControlClass, text: &str, style: i32) -> DialogItem {
@@ -685,7 +674,7 @@ pub(crate) mod tests {
 			self.record.borrow_mut().commands.push((id, notification));
 			if self.pump_on_command {
 				super::refresh_poster(dialog).post();
-				pump();
+				pump_messages();
 			}
 			if self.destroy_on_command {
 				destroy(*dialog);
@@ -708,7 +697,7 @@ pub(crate) mod tests {
 	fn child(recorder: Recorder) -> (Dialog, Rc<RefCell<Record>>) {
 		let record = Rc::clone(&recorder.record);
 		let dialog =
-			create_child_dialog(hidden_parent(), &child_template(), Box::new(recorder)).unwrap();
+			create_child_dialog(hidden_window(), &child_template(), Box::new(recorder)).unwrap();
 		(dialog, record)
 	}
 
@@ -733,7 +722,7 @@ pub(crate) mod tests {
 		let mut recorder = Recorder::default();
 		recorder.focus = Some(104);
 		let dialog =
-			create_modeless_dialog(hidden_parent(), &template(MODELESS), Box::new(recorder))
+			create_modeless_dialog(hidden_window(), &template(MODELESS), Box::new(recorder))
 				.unwrap();
 		let mut caption = [0u16; 64];
 		let length = unsafe {
@@ -760,10 +749,10 @@ pub(crate) mod tests {
 		let recorder = Recorder::default();
 		let record = Rc::clone(&recorder.record);
 		let dialog =
-			create_modeless_dialog(hidden_parent(), &template(MODELESS), Box::new(recorder))
+			create_modeless_dialog(hidden_window(), &template(MODELESS), Box::new(recorder))
 				.unwrap();
 		unsafe { SendMessageW(HWND(dialog.hwnd() as _), WM_CLOSE as u32, WPARAM(0), LPARAM(0)) };
-		pump();
+		pump_messages();
 		assert!(
 			record.borrow().commands.iter().any(|&(id, _)| id == 2),
 			"{:?}",
@@ -802,7 +791,7 @@ pub(crate) mod tests {
 			..template(MODELESS)
 		};
 		let dialog =
-			create_modeless_dialog(hidden_parent(), &template, Box::new(Recorder::default()))
+			create_modeless_dialog(hidden_window(), &template, Box::new(Recorder::default()))
 				.unwrap();
 		for text in ["Liked Songs", "Church / Sunday set", "Getty favourites"] {
 			dialog.list_add(109, text);
@@ -831,7 +820,7 @@ pub(crate) mod tests {
 
 	fn check_list_dialog(items: Vec<DialogItem>) -> Dialog {
 		let template = DialogTemplate { items, ..template(MODELESS) };
-		create_modeless_dialog(hidden_parent(), &template, Box::new(Recorder::default())).unwrap()
+		create_modeless_dialog(hidden_window(), &template, Box::new(Recorder::default())).unwrap()
 	}
 
 	#[test]
@@ -928,7 +917,7 @@ pub(crate) mod tests {
 			..child_template()
 		};
 		let dialog =
-			create_child_dialog(hidden_parent(), &template, Box::new(Recorder::default())).unwrap();
+			create_child_dialog(hidden_window(), &template, Box::new(Recorder::default())).unwrap();
 		assert!(!dialog.is_checked(108));
 		dialog.set_checked(108, true);
 		assert!(dialog.is_checked(108));
@@ -969,7 +958,7 @@ pub(crate) mod tests {
 			WS_TABSTOP | ES_READONLY | ES_MULTILINE,
 		));
 		let dialog =
-			create_child_dialog(hidden_parent(), &with_multiline, Box::new(Recorder::default()))
+			create_child_dialog(hidden_window(), &with_multiline, Box::new(Recorder::default()))
 				.unwrap();
 		assert!(!wants_all_keys(&dialog, 102));
 		assert!(!wants_all_keys(&dialog, 104));
@@ -983,11 +972,11 @@ pub(crate) mod tests {
 		let poster = super::refresh_poster(&dialog);
 		let from_another_thread = poster.clone();
 		std::thread::spawn(move || from_another_thread.post()).join().unwrap();
-		pump();
+		pump_messages();
 		assert_eq!(record.borrow().refreshes, 1);
 		destroy(dialog);
 		poster.post();
-		pump();
+		pump_messages();
 		assert_eq!(record.borrow().refreshes, 1);
 	}
 
@@ -1009,7 +998,7 @@ pub(crate) mod tests {
 		let (dialog, record) = child(recorder);
 		click(dialog, 102);
 		assert_eq!(record.borrow().refreshes, 1, "the refresh was dropped");
-		pump();
+		pump_messages();
 		assert_eq!(record.borrow().refreshes, 1);
 		destroy(dialog);
 	}
@@ -1065,19 +1054,13 @@ pub(crate) mod tests {
 
 	impl<S: Subscriber> Layer<S> for Events {
 		fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
-			struct Message(String);
-
-			impl Visit for Message {
-				fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-					if field.name() == "message" {
-						self.0 = format!("{value:?}");
-					}
+			let mut message = String::new();
+			event.record(&mut |field: &Field, value: &dyn fmt::Debug| {
+				if field.name() == "message" {
+					message = format!("{value:?}");
 				}
-			}
-
-			let mut message = Message(String::new());
-			event.record(&mut message);
-			self.0.lock().unwrap().push((*event.metadata().level(), message.0));
+			});
+			self.0.lock().unwrap().push((*event.metadata().level(), message));
 		}
 	}
 

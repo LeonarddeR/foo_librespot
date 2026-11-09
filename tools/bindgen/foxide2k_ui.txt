@@ -50,7 +50,6 @@
     GWL_STYLE
     GetWindowTextLengthW
     GetWindowTextW
-    HWND
     IAccPropServices
     ICC_LISTVIEW_CLASSES
     IDCANCEL

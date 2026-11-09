@@ -65,9 +65,9 @@ pub fn announce(dialog: &Dialog, id: u16) {
 #[cfg(test)]
 mod tests {
 	use super::{announce, make_live_region};
-	use crate::host::tests::hidden_parent;
 	use crate::host::{create_child_dialog, destroy};
 	use crate::template::{ControlClass, DialogItem, DialogTemplate, shell_font};
+	use crate::testing::hidden_window;
 
 	struct Nothing;
 
@@ -100,7 +100,7 @@ mod tests {
 				cy: 16,
 			}],
 		};
-		let dialog = create_child_dialog(hidden_parent(), &template, Box::new(Nothing)).unwrap();
+		let dialog = create_child_dialog(hidden_window(), &template, Box::new(Nothing)).unwrap();
 		make_live_region(&dialog, 101).unwrap();
 		announce(&dialog, 101);
 		destroy(dialog);

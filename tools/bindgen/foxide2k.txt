@@ -14,7 +14,6 @@
     UNWIND_HISTORY_TABLE
     CreateEventW
     DestroyWindow
-    HWND
     IsWindow
     ShellExecuteW
     SW_SHOWNORMAL

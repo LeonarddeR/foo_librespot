@@ -123,18 +123,12 @@ fn redact_url(url: &str, out: &mut String) {
 #[derive(Default)]
 struct FieldList(String);
 
-impl FieldList {
-	fn push(&mut self, field: &Field, value: &dyn fmt::Debug) {
+impl Visit for FieldList {
+	fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
 		if !self.0.is_empty() {
 			self.0.push(' ');
 		}
 		let _ = write!(self.0, "{}={value:?}", field.name());
-	}
-}
-
-impl Visit for FieldList {
-	fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-		self.push(field, value);
 	}
 }
 
@@ -161,23 +155,28 @@ impl Visit for EventFields {
 				let _ = write!(self.message, "{value:?}");
 			}
 			"log.target" | "log.module_path" | "log.file" | "log.line" => {}
-			_ => self.others.push(field, value),
+			_ => self.others.record_debug(field, value),
 		}
 	}
 }
 
 /// Prints each event [`wanted`] lets through as one console line: "foo_librespot: ", the spans it
 /// happened in from the outermost, its message and its other fields, with every URL redacted.
-pub struct ConsoleLayer;
+struct ConsoleLayer;
 
 impl<S> Layer<S> for ConsoleLayer
 where
 	S: Subscriber + for<'a> LookupSpan<'a>,
 {
-	/// Trace never shows. Whether anything else does depends on the switch, which can change at
-	/// any time, so it is asked again each time.
+	/// What never shows, even in detail, such as trace, is never asked about again. Whether
+	/// anything else does depends on the switch, which can change at any time, so it is asked
+	/// again each time.
 	fn register_callsite(&self, metadata: &'static Metadata<'static>) -> Interest {
-		if *metadata.level() == Level::TRACE { Interest::never() } else { Interest::sometimes() }
+		if wanted(metadata.target(), *metadata.level(), true) {
+			Interest::sometimes()
+		} else {
+			Interest::never()
+		}
 	}
 
 	fn max_level_hint(&self) -> Option<LevelFilter> {
@@ -215,6 +214,11 @@ where
 		if !wanted(target, *metadata.level(), DETAILED.load(Ordering::Relaxed)) {
 			return;
 		}
+		let mut fields = EventFields::default();
+		event.record(&mut fields);
+		if held_back(target, &fields.message) {
+			return;
+		}
 		let mut line = String::from("foo_librespot: ");
 		if let Some(scope) = ctx.event_scope(event) {
 			for span in scope.from_root() {
@@ -226,11 +230,6 @@ where
 				}
 				line.push_str(": ");
 			}
-		}
-		let mut fields = EventFields::default();
-		event.record(&mut fields);
-		if held_back(target, &fields.message) {
-			return;
 		}
 		line.push_str(&fields.message);
 		if !fields.others.0.is_empty() {
