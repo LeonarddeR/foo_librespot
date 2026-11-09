@@ -97,6 +97,13 @@ librespot is an unofficial Spotify client.
 Spotify can change its service at any time in a way that breaks or blocks it, and then this component stops working until librespot is fixed.
 That's exactly why this component has librespot in its name: if librespot breaks, we're done, and ripe for the GitHub Arctic Code Vault.
 
+For some accounts this has already happened.
+Spotify changed how it hands out the keys that decrypt its audio.
+According to [librespot](https://github.com/librespot-org/librespot), accounts created after an apparent cutoff date can no longer get those keys, with any version of librespot.
+On such an account no Spotify track plays in foo_librespot: playback fails with an audio key error.
+No workaround is known, and the restriction is on Spotify's side, so neither librespot nor this component can fix it.
+See [librespot issue #1649](https://github.com/librespot-org/librespot/issues/1649) for the details.
+
 ## Licence
 
 foo_librespot is released under the MIT licence; see [LICENSE](LICENSE).
