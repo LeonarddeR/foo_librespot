@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- foo_librespot reaches Spotify again on networks that cut Spotify's connection on port 443. There, 0.3.1 failed every link and track with "Invalid state { early eof }", because it used only the access points on port 443. It now tries those first and then every port Spotify lists, and next time starts with whichever worked, so networks that block Spotify's own port 4070 keep working too.
 - When File > Spotify > Open playlist… can't open its window, it says why in a popup instead of handing the error to foobar2000.
 - When a Spotify playlist, album, artist or radio opens in a tab of its own and the tracks can't be put in that tab, for example because the tab is locked, the console says why instead of handing the error to foobar2000.
 

@@ -5,7 +5,7 @@ use std::future::Future;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use librespot_core::cache::Cache;
@@ -374,21 +374,124 @@ pub async fn wait_for_attribute(
 	}
 }
 
+/// Which of the access points Spotify lists librespot may connect to.
+///
+/// Networks differ: some block Spotify's own port 4070, where librespot would wait about 21
+/// seconds per try for Windows' connect timeout; others cut Spotify's protocol on ports 443 and 80
+/// right after the TCP connect ("early eof"). So a connect tries one choice, then the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApPorts {
+	/// Only the access points on port 443, which networks that block 4070 let through.
+	Only443,
+	/// Every access point, in Spotify's order of preference: port 4070 first.
+	Any,
+}
+
+impl ApPorts {
+	/// librespot's `SessionConfig::ap_port` for this choice.
+	const fn ap_port(self) -> Option<u16> {
+		match self {
+			Self::Only443 => Some(443),
+			Self::Any => None,
+		}
+	}
+
+	/// Which access points the choice takes, for the console.
+	const fn describe(self) -> &'static str {
+		match self {
+			Self::Only443 => "on port 443",
+			Self::Any => "on any port",
+		}
+	}
+}
+
+/// The choice of ports to try first: the one that connected last, 443 only to begin with.
+#[derive(Default)]
+struct PortPreference {
+	any_first: AtomicBool,
+}
+
+impl PortPreference {
+	fn order(&self) -> [ApPorts; 2] {
+		if self.any_first.load(Ordering::SeqCst) {
+			[ApPorts::Any, ApPorts::Only443]
+		} else {
+			[ApPorts::Only443, ApPorts::Any]
+		}
+	}
+
+	fn worked(&self, ports: ApPorts) {
+		self.any_first.store(ports == ApPorts::Any, Ordering::SeqCst);
+	}
+}
+
+/// How long one choice of ports may take to log in before the other is tried. Two tries and the
+/// wait for the account type fit in [`CONNECT_TIMEOUT`].
+const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Runs `attempt` for each choice in `order` until one connects, giving each [`ATTEMPT_TIMEOUT`],
+/// and answers the choice that connected with what it gave. A refused login isn't tried again on
+/// other ports; when every choice fails, the last one's error is answered.
+async fn first_connected<T, F, Fut>(
+	order: [ApPorts; 2],
+	mut attempt: F,
+) -> Result<(ApPorts, T), CoreError>
+where
+	F: FnMut(ApPorts) -> Fut,
+	Fut: Future<Output = Result<T, CoreError>>,
+{
+	let mut last = None;
+	for ports in order {
+		let error = match tokio::time::timeout(ATTEMPT_TIMEOUT, attempt(ports)).await {
+			Ok(Ok(connected)) => return Ok((ports, connected)),
+			Ok(Err(CoreError::Spotify(error))) if rejects_credentials(&error) => {
+				return Err(CoreError::Spotify(error));
+			}
+			Ok(Err(error)) => error,
+			Err(_) => CoreError::Io(io::Error::new(
+				io::ErrorKind::TimedOut,
+				format!(
+					"Spotify's access points didn't answer within {} seconds",
+					ATTEMPT_TIMEOUT.as_secs()
+				),
+			)),
+		};
+		tracing::warn!("couldn't reach Spotify's access points {}: {error}", ports.describe());
+		last = Some(error);
+	}
+	Err(last.unwrap_or_else(|| CoreError::Unavailable("no access points to try".to_owned())))
+}
+
 /// Connects real librespot sessions.
 pub struct LibrespotConnector {
-	config: SessionConfig,
+	device_id: String,
+	ports: PortPreference,
 }
 
 impl LibrespotConnector {
 	pub fn new(device_id: String) -> Self {
-		Self {
-			config: SessionConfig {
-				device_id,
-				// librespot then connects only to the access points Spotify lists on port 443.
-				ap_port: Some(443),
-				..SessionConfig::default()
-			},
+		Self { device_id, ports: PortPreference::default() }
+	}
+
+	fn config(&self, ports: ApPorts) -> SessionConfig {
+		SessionConfig {
+			device_id: self.device_id.clone(),
+			ap_port: ports.ap_port(),
+			..SessionConfig::default()
 		}
+	}
+
+	/// A session logged in to an access point of `ports`.
+	async fn log_in(&self, ports: ApPorts, credentials: Credentials) -> Result<Session, CoreError> {
+		// Credentials stay in memory: foo_librespot stores them itself, encrypted.
+		let cache = Cache::new(None::<PathBuf>, None, None, None)?.with_memory_credentials();
+		let session = Session::new(self.config(ports), Some(cache));
+		// A session dropped mid-connect, when its try runs out of time, needs no shutdown.
+		if let Err(error) = session.connect(credentials, true).await {
+			session.shutdown();
+			return Err(error.into());
+		}
+		Ok(session)
 	}
 }
 
@@ -396,10 +499,10 @@ impl Connector for LibrespotConnector {
 	type Session = Session;
 
 	async fn connect(&self, credentials: Credentials) -> Result<Connected<Session>, CoreError> {
-		// Credentials stay in memory: foo_librespot stores them itself, encrypted.
-		let cache = Cache::new(None::<PathBuf>, None, None, None)?.with_memory_credentials();
-		let session = Session::new(self.config.clone(), Some(cache));
-		session.connect(credentials, true).await?;
+		let (ports, session) =
+			first_connected(self.ports.order(), |ports| self.log_in(ports, credentials.clone()))
+				.await?;
+		self.ports.worked(ports);
 		// The account type and the country arrive in separate packets after the login; which
 		// tracks are available depends on the country.
 		let _ = wait_for_attribute(
@@ -440,8 +543,8 @@ mod tests {
 	use std::time::{Duration, Instant};
 
 	use super::{
-		Connected, Connector, LibrespotConnector, SessionHandle, SessionManager,
-		check_account_type, wait_for_attribute,
+		ApPorts, Connected, Connector, LibrespotConnector, PortPreference, SessionHandle,
+		SessionManager, check_account_type, first_connected, wait_for_attribute,
 	};
 	use crate::profile::Profile;
 	use crate::{CoreError, Credentials};
@@ -900,9 +1003,89 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn sessions_reach_spotify_only_on_port_443() {
-		let config = LibrespotConnector::new("device".to_owned()).config;
-		let session = librespot_core::Session::new(config, None);
-		assert_eq!(session.apresolver().port_config(), Some(443));
+	async fn each_choice_of_ports_configures_librespot_so() {
+		let connector = LibrespotConnector::new("device".to_owned());
+		for (ports, expected) in [(ApPorts::Only443, Some(443)), (ApPorts::Any, None)] {
+			let session = librespot_core::Session::new(connector.config(ports), None);
+			assert_eq!(session.apresolver().port_config(), expected, "{ports:?}");
+		}
+	}
+
+	#[test]
+	fn the_first_connect_tries_port_443_then_every_port() {
+		assert_eq!(PortPreference::default().order(), [ApPorts::Only443, ApPorts::Any]);
+	}
+
+	#[test]
+	fn the_ports_that_worked_are_tried_first_next_time() {
+		let preference = PortPreference::default();
+		preference.worked(ApPorts::Any);
+		assert_eq!(preference.order(), [ApPorts::Any, ApPorts::Only443]);
+		preference.worked(ApPorts::Only443);
+		assert_eq!(preference.order(), [ApPorts::Only443, ApPorts::Any]);
+	}
+
+	/// What librespot gives when an access point cuts the connection before the login.
+	fn early_eof() -> CoreError {
+		CoreError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "early eof"))
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn when_port_443_fails_every_port_is_tried() {
+		let tried = Mutex::new(Vec::new());
+		let connected = first_connected([ApPorts::Only443, ApPorts::Any], |ports| {
+			tried.lock().unwrap().push(ports);
+			async move {
+				match ports {
+					ApPorts::Only443 => Err(early_eof()),
+					ApPorts::Any => Ok("session"),
+				}
+			}
+		})
+		.await
+		.unwrap();
+		assert_eq!(connected, (ApPorts::Any, "session"));
+		assert_eq!(*tried.lock().unwrap(), [ApPorts::Only443, ApPorts::Any]);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn ports_that_dont_answer_give_way_after_their_limit() {
+		let started = tokio::time::Instant::now();
+		let connected = first_connected([ApPorts::Any, ApPorts::Only443], |ports| async move {
+			if ports == ApPorts::Any {
+				std::future::pending::<()>().await;
+			}
+			Ok("session")
+		})
+		.await
+		.unwrap();
+		assert_eq!(connected, (ApPorts::Only443, "session"));
+		assert_eq!(started.elapsed(), super::ATTEMPT_TIMEOUT);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_refused_login_is_not_tried_on_other_ports() {
+		let tried = Mutex::new(Vec::new());
+		let error = first_connected([ApPorts::Only443, ApPorts::Any], |ports| {
+			tried.lock().unwrap().push(ports);
+			async { Err::<(), _>(login_failed("Bad credentials")) }
+		})
+		.await
+		.unwrap_err();
+		assert_eq!(error.to_string(), login_failed("Bad credentials").to_string());
+		assert_eq!(*tried.lock().unwrap(), [ApPorts::Only443]);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn when_every_port_fails_the_last_error_is_returned() {
+		let error = first_connected([ApPorts::Only443, ApPorts::Any], |ports| async move {
+			Err::<(), _>(match ports {
+				ApPorts::Only443 => early_eof(),
+				ApPorts::Any => unavailable(),
+			})
+		})
+		.await
+		.unwrap_err();
+		assert_eq!(error.to_string(), unavailable().to_string());
 	}
 }
