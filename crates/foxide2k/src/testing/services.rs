@@ -2,7 +2,7 @@
 //! popups and questions, the settings store, the main thread, the modeless window list and the player.
 
 use std::collections::HashMap;
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -19,6 +19,7 @@ use crate::abi::playback_control::{self, PlaybackControlVtbl};
 use crate::abi::playlist;
 use crate::abi::popup::{self, BUTTON_NO, BUTTON_YES, PopupMessageVtbl, PopupV3Vtbl, Query};
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
+use crate::abi::string::{self, StringVtbl};
 use crate::cxx::try_host;
 use crate::guid::Guid;
 use crate::popup::PopupIcon;
@@ -32,6 +33,8 @@ pub(super) struct FakeState {
 	questions: Mutex<Vec<(String, String, u32)>>,
 	answer_yes: AtomicBool,
 	config: Mutex<HashMap<String, i64>>,
+	config_strings: Mutex<HashMap<String, CString>>,
+	live_config_strings: AtomicUsize,
 	main_thread: Mutex<Vec<ServicePtr>>,
 	modeless: Mutex<Vec<isize>>,
 	pub(super) playlists: super::playlists::PlaylistsState,
@@ -69,6 +72,17 @@ impl FakeApi {
 	/// The integer stored under `name` in the fake settings store.
 	pub fn config_int(&self, name: &str) -> Option<i64> {
 		self.state.config.lock().unwrap_or_else(PoisonError::into_inner).get(name).copied()
+	}
+
+	/// The string stored under `name` in the fake settings store.
+	pub fn config_string(&self, name: &str) -> Option<String> {
+		let strings = self.state.config_strings.lock().unwrap_or_else(PoisonError::into_inner);
+		strings.get(name).map(|value| value.to_string_lossy().into_owned())
+	}
+
+	/// How many strings the fake settings store handed out that are not released yet.
+	pub fn live_config_strings(&self) -> usize {
+		self.state.live_config_strings.load(Ordering::SeqCst)
 	}
 
 	/// Runs the main-thread callbacks queued so far, on the calling thread, as foobar2000's main
@@ -179,6 +193,9 @@ unsafe impl ServiceImpl for FakeConfigStore {
 		commit_blocking: config_commit,
 		get_config_int: config_get_int,
 		set_config_int: config_set_int,
+		delete_config_int: config_delete_int,
+		get_config_string: config_get_string,
+		set_config_string: config_set_string,
 	};
 }
 
@@ -213,6 +230,77 @@ unsafe extern "C-unwind" fn config_set_int(
 ) {
 	let state = &unsafe { ServiceObject::<FakeConfigStore>::value(this) }.0;
 	state.config.lock().unwrap_or_else(PoisonError::into_inner).insert(config_name(name), value);
+}
+
+unsafe extern "C-unwind" fn config_delete_int(this: *mut ServiceBase, name: *const c_char) {
+	let state = &unsafe { ServiceObject::<FakeConfigStore>::value(this) }.0;
+	state.config.lock().unwrap_or_else(PoisonError::into_inner).remove(&config_name(name));
+}
+
+/// Builds the answer in `ret`, as a hidden return value: a new fake string holding the stored
+/// value, or else the default, whose reference the caller then owns.
+unsafe extern "C-unwind" fn config_get_string(
+	this: *mut ServiceBase,
+	ret: *mut *mut ServiceBase,
+	name: *const c_char,
+	default: ByValueServicePtr,
+) -> *mut *mut ServiceBase {
+	let state = &unsafe { ServiceObject::<FakeConfigStore>::value(this) }.0;
+	let stored = state
+		.config_strings
+		.lock()
+		.unwrap_or_else(PoisonError::into_inner)
+		.get(&config_name(name))
+		.cloned();
+	let answer = match stored {
+		Some(value) => {
+			// Passed by value: dropping it releases the default, as a callee's.
+			drop(default);
+			state.live_config_strings.fetch_add(1, Ordering::SeqCst);
+			Some(new_service(FakeString { state: Arc::clone(state), value }))
+		}
+		None => default.into_ptr(),
+	};
+	unsafe { ret.write(answer.map_or(std::ptr::null_mut(), ServicePtr::into_raw)) };
+	ret
+}
+
+unsafe extern "C-unwind" fn config_set_string(
+	this: *mut ServiceBase,
+	name: *const c_char,
+	value: *const c_char,
+) {
+	let state = &unsafe { ServiceObject::<FakeConfigStore>::value(this) }.0;
+	let value = unsafe { CStr::from_ptr(value) }.to_owned();
+	state
+		.config_strings
+		.lock()
+		.unwrap_or_else(PoisonError::into_inner)
+		.insert(config_name(name), value);
+}
+
+/// An `fb2k::string` the fake settings store hands out, counted in
+/// [`FakeApi::live_config_strings`] until it is released.
+struct FakeString {
+	state: Arc<FakeState>,
+	value: CString,
+}
+
+impl Drop for FakeString {
+	fn drop(&mut self) {
+		self.state.live_config_strings.fetch_sub(1, Ordering::SeqCst);
+	}
+}
+
+unsafe impl ServiceImpl for FakeString {
+	type Vtbl = StringVtbl;
+	const IIDS: &'static [Guid] = &[string::IID];
+	const VTBL: &'static StringVtbl =
+		&StringVtbl { base: ServiceBaseVtbl::new::<Self>(), c_str: fake_string_c_str };
+}
+
+unsafe extern "C-unwind" fn fake_string_c_str(this: *mut ServiceBase) -> *const c_char {
+	unsafe { ServiceObject::<FakeString>::value(this) }.value.as_ptr()
 }
 
 struct FakeMainThread(Arc<FakeState>);

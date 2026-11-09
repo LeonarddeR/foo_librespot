@@ -21,13 +21,14 @@
 // CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
 // THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! `fb2k::configStore` (`SDK\configStore.h:22-36`): foobar2000's own settings store. Only the
-//! slots up to `setConfigInt` are declared; Foxide2k calls no later ones.
+//! `fb2k::configStore` (`SDK\configStore.h:22-39`): foobar2000's own settings store. Only the
+//! slots up to `setConfigString` are declared; Foxide2k calls no later ones.
 
 use std::ffi::c_char;
 
 use crate::abi::service::{ServiceBase, ServiceBaseVtbl};
 use crate::guid::Guid;
+use crate::service::ByValueServicePtr;
 
 pub const IID: Guid = Guid::from_u128(0x97aad7fd_b216_4286_9eb3_188d35ee841c);
 
@@ -48,4 +49,35 @@ pub struct ConfigStoreVtbl {
 	) -> i64,
 	pub set_config_int:
 		unsafe extern "C-unwind" fn(this: *mut ServiceBase, name: *const c_char, value: i64),
+	/// `void deleteConfigInt(const char * name)`. Not called.
+	pub delete_config_int: unsafe extern "C-unwind" fn(this: *mut ServiceBase, name: *const c_char),
+	/// `fb2k::stringRef getConfigString(const char * name, fb2k::stringRef defaVal)`: an
+	/// `fb2k::string`, returned through a hidden pointer. The default is passed by value, so the
+	/// callee releases it, and comes back when nothing is stored under `name`.
+	pub get_config_string: unsafe extern "C-unwind" fn(
+		this: *mut ServiceBase,
+		ret: *mut *mut ServiceBase,
+		name: *const c_char,
+		default: ByValueServicePtr,
+	) -> *mut *mut ServiceBase,
+	pub set_config_string: unsafe extern "C-unwind" fn(
+		this: *mut ServiceBase,
+		name: *const c_char,
+		value: *const c_char,
+	),
+}
+
+#[cfg(test)]
+mod tests {
+	use std::mem::offset_of;
+
+	use super::ConfigStoreVtbl;
+
+	#[test]
+	fn the_settings_slots_are_in_sdk_order() {
+		assert_eq!(offset_of!(ConfigStoreVtbl, get_config_int), 5 * 8);
+		assert_eq!(offset_of!(ConfigStoreVtbl, set_config_int), 6 * 8);
+		assert_eq!(offset_of!(ConfigStoreVtbl, get_config_string), 8 * 8);
+		assert_eq!(offset_of!(ConfigStoreVtbl, set_config_string), 9 * 8);
+	}
 }
